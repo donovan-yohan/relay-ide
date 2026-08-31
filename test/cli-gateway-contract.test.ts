@@ -276,6 +276,10 @@ describe('CLI gateway contract', () => {
       'channels.post',
       'cockpit.list',
       'cockpit.get',
+      'agent-profiles.list',
+      'agent-profiles.get',
+      'agent-profiles.create',
+      'agent-profiles.update',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -361,8 +365,10 @@ describe('CLI gateway contract', () => {
       })
     ).toBe(false);
 
-    const data = commandSpec('channels.receipts').outputSchema.properties?.['data'];
-    if (!data) throw new Error('channels.receipts output data schema is missing');
+    const data =
+      commandSpec('channels.receipts').outputSchema.properties?.['data'];
+    if (!data)
+      throw new Error('channels.receipts output data schema is missing');
     const receipt = {
       messageId: 'chm:request',
       channelId: 'channel-1',

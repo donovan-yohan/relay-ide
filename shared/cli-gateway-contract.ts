@@ -115,6 +115,10 @@ export type RelayCliGatewayCommand =
   | 'channels.post'
   | 'cockpit.list'
   | 'cockpit.get'
+  | 'agent-profiles.list'
+  | 'agent-profiles.get'
+  | 'agent-profiles.create'
+  | 'agent-profiles.update'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -578,6 +582,126 @@ const workspaceTopicOutputDataSchema: RelayJsonSchema = {
     mutationPolicy: workspaceTopicMutationPolicySchema,
   },
   required: ['topic'],
+};
+
+/**
+ * #1473: the agent-profile overlay, projected for the CLI/agent gateway.
+ *
+ * `additionalProperties: false` plus the deliberate absence of a `hermesApiKey`
+ * property is the CONTRACT-level half of the write-only rule the store enforces
+ * structurally (`docs/SECURITY_POLICY.md` § Agent-profile gateway secrets): a
+ * profile read carries only `hermesApiKeySet`, never the key.
+ */
+const agentProfileSchema: RelayJsonSchema = {
+  title: 'AgentProfile',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    providerId: stringSchema,
+    displayName: stringSchema,
+    avatar: {
+      type: ['object', 'null'],
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        sha256: stringSchema,
+        mediaType: stringSchema,
+        byteCount: { type: 'number' },
+      },
+    },
+    systemPrompt: stringSchema,
+    model: stringSchema,
+    provider: stringSchema,
+    effort: stringSchema,
+    envVars: { type: 'object', additionalProperties: true },
+    hermesProfile: stringSchema,
+    hermesApiKeySet: booleanSchema,
+    namePool: { type: 'array', items: stringSchema },
+    respondTo: {
+      type: 'string',
+      enum: ['owner-only', 'allowlist', 'anyone'],
+    },
+    respondToAllowlist: { type: 'array', items: stringSchema },
+    isDefault: booleanSchema,
+    isBuiltIn: booleanSchema,
+  },
+  required: ['id', 'providerId', 'displayName', 'isDefault', 'isBuiltIn'],
+};
+
+const agentProfilesListInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {},
+};
+
+const agentProfilesGetInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+/**
+ * Shared body shape for create/update. `hermesApiKey` IS accepted on the wire
+ * (it is the only way to store one) but never comes back; the CLI additionally
+ * refuses to read it from argv, so it reaches this body only from an env var,
+ * a file, or stdin.
+ */
+const agentProfileWriteProperties: Record<string, RelayJsonSchema> = {
+  providerId: stringSchema,
+  displayName: stringSchema,
+  avatar: { type: ['object', 'null'], additionalProperties: true },
+  systemPrompt: nullableStringSchema,
+  model: nullableStringSchema,
+  provider: nullableStringSchema,
+  effort: nullableStringSchema,
+  envVars: { type: ['object', 'null'], additionalProperties: true },
+  hermesProfile: nullableStringSchema,
+  hermesApiKey: nullableStringSchema,
+  namePool: { type: ['array', 'null'], items: stringSchema },
+  respondTo: {
+    anyOf: [
+      { type: 'string', enum: ['owner-only', 'allowlist', 'anyone'] },
+      { type: 'null' },
+    ],
+  },
+  respondToAllowlist: { type: ['array', 'null'], items: stringSchema },
+  isDefault: booleanSchema,
+};
+
+const agentProfilesCreateInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesCreateInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { ...agentProfileWriteProperties },
+  required: ['providerId', 'displayName'],
+};
+
+const agentProfilesUpdateInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesUpdateInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, ...agentProfileWriteProperties },
+  required: ['id'],
+};
+
+const agentProfilesListOutputDataSchema: RelayJsonSchema = {
+  title: 'AgentProfilesListData',
+  type: 'object',
+  additionalProperties: false,
+  properties: { profiles: { type: 'array', items: agentProfileSchema } },
+  required: ['profiles'],
+};
+
+const agentProfileOutputDataSchema: RelayJsonSchema = {
+  title: 'AgentProfileData',
+  type: 'object',
+  additionalProperties: false,
+  properties: { profile: agentProfileSchema },
+  required: ['profile'],
 };
 
 const controlActorSchema: RelayJsonSchema = {
@@ -7523,6 +7647,112 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'agent-profiles.list',
+    cli: ['relay-ide', 'v1', 'agent-profiles', 'list', '--json'],
+    summary:
+      'List the hub-local agent profiles. Reads carry hermesApiKeySet only; the gateway key itself is never returned.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: agentProfilesListInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesListOutput',
+      agentProfilesListOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.get',
+    cli: ['relay-ide', 'v1', 'agent-profiles', 'get', '--id', '<id>', '--json'],
+    summary:
+      'Read one hub-local agent profile by id. The response carries hermesApiKeySet only; the gateway key itself is never returned.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: agentProfilesGetInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesGetOutput',
+      agentProfileOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.create',
+    cli: [
+      'relay-ide',
+      'v1',
+      'agent-profiles',
+      'create',
+      '--provider',
+      '<providerId>',
+      '--name',
+      '<displayName>',
+      '--json',
+    ],
+    summary:
+      'Create a hub-local agent profile (optionally bound to a Hermes multiplex profile). Host-local operator authority only; the write-only gateway key never comes back on the response.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: agentProfilesCreateInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesCreateOutput',
+      agentProfileOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.update',
+    cli: [
+      'relay-ide',
+      'v1',
+      'agent-profiles',
+      'update',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Patch a hub-local agent profile: rebind or clear its Hermes profile, set or clear its write-only gateway key, or edit its overlay fields. Host-local operator authority only.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: agentProfilesUpdateInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesUpdateOutput',
+      agentProfileOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
     ],
   },
   {

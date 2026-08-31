@@ -223,6 +223,10 @@ Redaction is structural, not procedural. The value lives in its own `agent_profi
 
 The stored value is restricted to printable, space-free US-ASCII (max 4096 characters), so it cannot carry CR/LF into the `Authorization` header it becomes. The store DB is chmod'ed `0600` before WAL is enabled, best effort. There is no at-rest encryption: the hub has no key management, and `pinHash`, the GitHub access token, and the VAPID private key already live in a config-dir `config.json`.
 
+#1473 puts the profile overlay on the CLI gateway so a web-UI-free host can configure it. `agent-profiles.list` / `agent-profiles.get` are ordinary `context:read` verbs on the scoped-actor lane. `agent-profiles.create` / `agent-profiles.update` are operator-grade: `createAgentProfileRouter` refuses any DELEGATED scoped actor credential outright (`AGENT_PROFILE_HOST_LOCAL_REQUIRED`, 403), so only the #1467 hub-minted host-local trust token or the browser/operator lane can mint a profile, rebind its Hermes profile, or set its gateway key — a bound agent runtime carrying `context:write` for channel posts cannot. Delete and set-default stay browser-only.
+
+The `relay-ide v1 agent-profiles create|update` CLI refuses to read the key from argv (`--hermes-api-key <value>` is rejected with a hint, as is a `hermesApiKey` property inside `--input-json`/`--input-file`): argv is visible in the process table and in shell history. The accepted sources are `--hermes-api-key-env <VAR>` (an environment variable NAME), `--hermes-api-key-file <path>`, and `--hermes-api-key-stdin`. A rejected key names the field and its source, never the value.
+
 Related open gap: agent-profile `envVars` are still persisted and returned raw (#1464).
 
 ## Operator visibility

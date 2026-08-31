@@ -62,7 +62,8 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '/api/analytics/*',
       '/telemetry/*',
       '/work-contexts/*',
-      '/agent-profiles/*',
+      '/agent-profiles/:id (DELETE)',
+      'POST /agent-profiles/:id/default',
     ],
     acceptedLanes: ['browser-session'],
     middleware: 'requireAuth',
@@ -139,6 +140,20 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     middleware: 'requireCliGatewayAuth',
     notes:
       'CLI gateway calls retain scoped actor and browser-session compatibility; this does not make browser cookies node credentials.',
+  },
+  {
+    surface: 'CLI gateway agent-profile APIs',
+    routes: [
+      'GET /agent-profiles',
+      'GET /agent-profiles/:id',
+      'POST /agent-profiles',
+      'PATCH /agent-profiles/:id',
+    ],
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    middleware:
+      'requireCliGatewayAuthForActorCommand + host-local write gate in createAgentProfileRouter',
+    notes:
+      '#1473: list/get answer on the ordinary scoped-actor read lane (context:read). create/update additionally require host-local operator authority — the router refuses any DELEGATED scoped actor credential, so only the #1467 hub-minted local trust token or the browser/operator lane can mint or rebind a profile or set its write-only gateway key. Delete and set-default stay on the browser-session lane.',
   },
   {
     surface: 'CLI gateway channel APIs',

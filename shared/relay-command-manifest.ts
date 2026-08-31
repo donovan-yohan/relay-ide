@@ -183,6 +183,10 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'channels.post': 'post channel message',
   'cockpit.list': 'terminal attention cockpit',
   'cockpit.get': 'terminal cockpit detail',
+  'agent-profiles.list': 'list agent profiles',
+  'agent-profiles.get': 'agent profile details',
+  'agent-profiles.create': 'create agent profile',
+  'agent-profiles.update': 'update agent profile',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -255,6 +259,8 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.create',
   'workspace-topics.update',
   'channels.post',
+  'agent-profiles.create',
+  'agent-profiles.update',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -310,6 +316,10 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('workspace-surfaces.'))
     return ['work-context', 'repo', 'worktree', 'node'];
   if (name.startsWith('cockpit.')) return ['work-context', 'session'];
+  // Agent profiles are hub-local configuration rows, like settings/webhooks:
+  // they belong to the node that hosts the hub, not to a repo, worktree,
+  // WorkContext, or session.
+  if (name.startsWith('agent-profiles.')) return ['node'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('channels.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];

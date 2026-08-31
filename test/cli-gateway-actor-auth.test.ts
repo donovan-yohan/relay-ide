@@ -686,6 +686,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'context.list',
     'inbox.list',
     'inbox.get',
+    'agent-profiles.list',
+    'agent-profiles.get',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -933,6 +935,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
+    'agent-profiles.create',
+    'agent-profiles.update',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {

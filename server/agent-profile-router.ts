@@ -11,6 +11,11 @@ import {
 } from '../shared/agent-profile.js';
 import { providerDescriptor } from './protocol-adapters/index.js';
 import {
+  authenticatedCliGatewayActorCredential,
+  isLocalHubCliActorCredential,
+  type CliGatewayActorCommand,
+} from './cli-gateway-actor-auth.js';
+import {
   AgentProfileStoreError,
   type AgentProfileCreateInput,
   type AgentProfileStore,
@@ -18,12 +23,27 @@ import {
   type SeedFramework,
 } from './agent-profile-store.js';
 
+/**
+ * Builds the auth middleware for one gateway verb. `server/index.ts` passes
+ * `requireCliGatewayAuthForActorCommand`, which admits a scoped actor token
+ * carrying the verb's capability bit and otherwise falls back to the
+ * browser/operator lane.
+ */
+export type AgentProfileActorAuthFactory = (
+  command: CliGatewayActorCommand
+) => RequestHandler;
+
 /** Browser/operator CRUD for the local AgentProfile overlay (#1232 slice 7). */
 export interface AgentProfileRouterDeps {
   store: AgentProfileStore | null;
   /** The live framework catalog, already resolved from the current config. */
   listConfiguredFrameworks: () => readonly SeedFramework[];
   requireAuth?: RequestHandler;
+  /**
+   * #1473: CLI-gateway lane for the four `agent-profiles.*` verbs. Omitted in
+   * unit fixtures, where the routes fall back to `requireAuth`.
+   */
+  requireGatewayAuthForCommand?: AgentProfileActorAuthFactory;
 }
 
 const RESPOND_TO_VALUES: readonly AgentProfileRespondTo[] = [
@@ -72,13 +92,15 @@ function sendError(
   res.status(status).json({
     error: {
       code:
-        status === 404
-          ? 'NOT_FOUND'
-          : status === 409
-            ? 'SESSION_CONFLICT'
-            : status >= 500
-              ? 'SERVER_UNAVAILABLE'
-              : 'INVALID_ARGUMENT',
+        status === 403
+          ? 'FORBIDDEN'
+          : status === 404
+            ? 'NOT_FOUND'
+            : status === 409
+              ? 'SESSION_CONFLICT'
+              : status >= 500
+                ? 'SERVER_UNAVAILABLE'
+                : 'INVALID_ARGUMENT',
       message,
       retryable: status >= 500,
       details: { reasonCode, ...(details ?? {}) },
@@ -419,170 +441,238 @@ function createInputFromPatch(
   return input;
 }
 
+/**
+ * #1473 privilege boundary for the gateway lane.
+ *
+ * Agent-profile writes mint identities and store a provider gateway credential,
+ * so they are operator-grade: only the hub's OWN host-local trust token (#1467,
+ * whose 0600 config-dir file already implies filesystem access as the hub uid)
+ * and the browser/operator lane may run them. A DELEGATED scoped actor
+ * credential — the kind handed to a bound agent runtime, which routinely
+ * carries `context:write` for channel posts — is refused here, so widening the
+ * capability map can never widen who may create or rebind a profile.
+ *
+ * Returns `true` when it has already answered with a 403.
+ */
+function denyDelegatedActorWrite(req: Request, res: Response): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  // No actor credential attached means the browser/operator lane authenticated
+  // this request; it keeps the authority it always had.
+  if (!credential) return false;
+  if (isLocalHubCliActorCredential(credential)) return false;
+  sendError(
+    res,
+    403,
+    'AGENT_PROFILE_HOST_LOCAL_REQUIRED',
+    'agent profile writes require host-local operator authority'
+  );
+  return true;
+}
+
 export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
   const router = Router();
   const auth =
     deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  const gatewayAuth = (command: CliGatewayActorCommand): RequestHandler =>
+    deps.requireGatewayAuthForCommand?.(command) ?? auth;
 
-  router.get('/agent-profiles', auth, (_req, res) => {
-    const store = storeOr503(res, deps.store);
-    if (!store) return;
-    if (
-      !configuredAndSeededFrameworksOr503(
+  router.get(
+    '/agent-profiles',
+    gatewayAuth('agent-profiles.list'),
+    (_req, res) => {
+      const store = storeOr503(res, deps.store);
+      if (!store) return;
+      if (
+        !configuredAndSeededFrameworksOr503(
+          res,
+          store,
+          deps.listConfiguredFrameworks
+        )
+      )
+        return;
+      res.json({ profiles: store.list() });
+    }
+  );
+
+  // #1473: `agent-profiles.get`. The list route already existed; a single-row
+  // read did not, and the gateway verb needs one it can address by id.
+  router.get(
+    '/agent-profiles/:id',
+    gatewayAuth('agent-profiles.get'),
+    (req, res) => {
+      const store = storeOr503(res, deps.store);
+      if (!store) return;
+      // Deliberately NOT `configuredAndSeededFrameworksOr503`: a single-row read
+      // is a read. The list route heals a missing built-in default; making a
+      // by-id GET write rows on behalf of a read-only caller would not.
+      const profile = store.get(req.params['id'] ?? '');
+      if (!profile) {
+        return void sendError(
+          res,
+          404,
+          'AGENT_PROFILE_NOT_FOUND',
+          'agent profile not found'
+        );
+      }
+      res.json({ profile });
+    }
+  );
+
+  router.post(
+    '/agent-profiles',
+    gatewayAuth('agent-profiles.create'),
+    (req, res) => {
+      if (denyDelegatedActorWrite(req, res)) return;
+      const store = storeOr503(res, deps.store);
+      if (!store) return;
+      const body = bodyRecord(req);
+      if (!body)
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_BODY_REQUIRED',
+          'request body must be an object'
+        );
+      if (hasOwn(body, 'isBuiltIn')) {
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_IS_BUILT_IN_MANAGED',
+          'isBuiltIn is managed by the server',
+          { field: 'isBuiltIn' }
+        );
+      }
+      const frameworks = configuredAndSeededFrameworksOr503(
         res,
         store,
         deps.listConfiguredFrameworks
-      )
-    )
-      return;
-    res.json({ profiles: store.list() });
-  });
+      );
+      if (!frameworks) return;
+      const providerId = requireConfiguredProvider(
+        res,
+        body['providerId'],
+        frameworks
+      );
+      if (!providerId) return;
+      const displayName = trimString(body['displayName']);
+      if (!displayName) {
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_DISPLAY_NAME_REQUIRED',
+          'displayName is required',
+          { field: 'displayName' }
+        );
+      }
+      const patch = parsePatch(res, body, frameworks);
+      if (!patch) return;
+      if (!gatewaySecretAllowedForProvider(res, providerId, patch)) return;
+      try {
+        const profile = store.create(
+          createInputFromPatch(providerId, displayName, patch)
+        );
+        res.status(201).json({ profile });
+      } catch (error) {
+        mapStoreError(res, error);
+      }
+    }
+  );
 
-  router.post('/agent-profiles', auth, (req, res) => {
-    const store = storeOr503(res, deps.store);
-    if (!store) return;
-    const body = bodyRecord(req);
-    if (!body)
-      return void sendError(
+  router.patch(
+    '/agent-profiles/:id',
+    gatewayAuth('agent-profiles.update'),
+    (req, res) => {
+      if (denyDelegatedActorWrite(req, res)) return;
+      const store = storeOr503(res, deps.store);
+      if (!store) return;
+      const body = bodyRecord(req);
+      if (!body)
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_BODY_REQUIRED',
+          'request body must be an object'
+        );
+      const existing = store.get(req.params['id'] ?? '');
+      if (!existing)
+        return void sendError(
+          res,
+          404,
+          'AGENT_PROFILE_NOT_FOUND',
+          'agent profile not found'
+        );
+      const frameworks = configuredAndSeededFrameworksOr503(
         res,
-        400,
-        'AGENT_PROFILE_BODY_REQUIRED',
-        'request body must be an object'
+        store,
+        deps.listConfiguredFrameworks
       );
-    if (hasOwn(body, 'isBuiltIn')) {
-      return void sendError(
-        res,
-        400,
-        'AGENT_PROFILE_IS_BUILT_IN_MANAGED',
-        'isBuiltIn is managed by the server',
-        { field: 'isBuiltIn' }
-      );
+      if (!frameworks) return;
+      const patch = parsePatch(res, body, frameworks);
+      if (!patch) return;
+      if (
+        !gatewaySecretAllowedForProvider(
+          res,
+          patch.providerId ?? existing.providerId,
+          patch
+        )
+      ) {
+        return;
+      }
+      if (
+        existing.isBuiltIn &&
+        hasOwn(patch, 'providerId') &&
+        patch.providerId !== existing.providerId
+      ) {
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_BUILT_IN_PROVIDER_CHANGE_FORBIDDEN',
+          'built-in profiles cannot change providerId',
+          { field: 'providerId' }
+        );
+      }
+      if (existing.isDefault && patch.isDefault === false) {
+        return void sendError(
+          res,
+          409,
+          'AGENT_PROFILE_LAST_DEFAULT',
+          'a provider must retain a default profile',
+          { field: 'isDefault' }
+        );
+      }
+      if (
+        existing.isDefault &&
+        patch.providerId &&
+        patch.providerId !== existing.providerId
+      ) {
+        return void sendError(
+          res,
+          409,
+          'AGENT_PROFILE_DEFAULT_PROVIDER_CHANGE_FORBIDDEN',
+          'move a non-default profile, or set another default first.',
+          { field: 'providerId' }
+        );
+      }
+      if (patch.providerId && patch.providerId !== existing.providerId) {
+        // Model and effort semantics belong to the selected vendor. Never carry
+        // those vendor-dependent overrides across a provider change.
+        //
+        // The gateway binding and its secret are cleared by the STORE on the same
+        // condition (`agent-profile-store.ts` `update`/`applyProfilePatch`), so
+        // the invariant sits beside the column it protects and holds for
+        // non-HTTP callers too. Clearing them here as well would also clobber a
+        // key supplied in this very patch — "move to hermes and set its key"
+        // must be one save, not two.
+        patch.model = null;
+        patch.effort = null;
+      }
+      try {
+        res.json({ profile: store.update(existing.id, patch) });
+      } catch (error) {
+        mapStoreError(res, error);
+      }
     }
-    const frameworks = configuredAndSeededFrameworksOr503(
-      res,
-      store,
-      deps.listConfiguredFrameworks
-    );
-    if (!frameworks) return;
-    const providerId = requireConfiguredProvider(
-      res,
-      body['providerId'],
-      frameworks
-    );
-    if (!providerId) return;
-    const displayName = trimString(body['displayName']);
-    if (!displayName) {
-      return void sendError(
-        res,
-        400,
-        'AGENT_PROFILE_DISPLAY_NAME_REQUIRED',
-        'displayName is required',
-        { field: 'displayName' }
-      );
-    }
-    const patch = parsePatch(res, body, frameworks);
-    if (!patch) return;
-    if (!gatewaySecretAllowedForProvider(res, providerId, patch)) return;
-    try {
-      const profile = store.create(
-        createInputFromPatch(providerId, displayName, patch)
-      );
-      res.status(201).json({ profile });
-    } catch (error) {
-      mapStoreError(res, error);
-    }
-  });
-
-  router.patch('/agent-profiles/:id', auth, (req, res) => {
-    const store = storeOr503(res, deps.store);
-    if (!store) return;
-    const body = bodyRecord(req);
-    if (!body)
-      return void sendError(
-        res,
-        400,
-        'AGENT_PROFILE_BODY_REQUIRED',
-        'request body must be an object'
-      );
-    const existing = store.get(req.params['id'] ?? '');
-    if (!existing)
-      return void sendError(
-        res,
-        404,
-        'AGENT_PROFILE_NOT_FOUND',
-        'agent profile not found'
-      );
-    const frameworks = configuredAndSeededFrameworksOr503(
-      res,
-      store,
-      deps.listConfiguredFrameworks
-    );
-    if (!frameworks) return;
-    const patch = parsePatch(res, body, frameworks);
-    if (!patch) return;
-    if (
-      !gatewaySecretAllowedForProvider(
-        res,
-        patch.providerId ?? existing.providerId,
-        patch
-      )
-    ) {
-      return;
-    }
-    if (
-      existing.isBuiltIn &&
-      hasOwn(patch, 'providerId') &&
-      patch.providerId !== existing.providerId
-    ) {
-      return void sendError(
-        res,
-        400,
-        'AGENT_PROFILE_BUILT_IN_PROVIDER_CHANGE_FORBIDDEN',
-        'built-in profiles cannot change providerId',
-        { field: 'providerId' }
-      );
-    }
-    if (existing.isDefault && patch.isDefault === false) {
-      return void sendError(
-        res,
-        409,
-        'AGENT_PROFILE_LAST_DEFAULT',
-        'a provider must retain a default profile',
-        { field: 'isDefault' }
-      );
-    }
-    if (
-      existing.isDefault &&
-      patch.providerId &&
-      patch.providerId !== existing.providerId
-    ) {
-      return void sendError(
-        res,
-        409,
-        'AGENT_PROFILE_DEFAULT_PROVIDER_CHANGE_FORBIDDEN',
-        'move a non-default profile, or set another default first.',
-        { field: 'providerId' }
-      );
-    }
-    if (patch.providerId && patch.providerId !== existing.providerId) {
-      // Model and effort semantics belong to the selected vendor. Never carry
-      // those vendor-dependent overrides across a provider change.
-      //
-      // The gateway binding and its secret are cleared by the STORE on the same
-      // condition (`agent-profile-store.ts` `update`/`applyProfilePatch`), so
-      // the invariant sits beside the column it protects and holds for
-      // non-HTTP callers too. Clearing them here as well would also clobber a
-      // key supplied in this very patch — "move to hermes and set its key"
-      // must be one save, not two.
-      patch.model = null;
-      patch.effort = null;
-    }
-    try {
-      res.json({ profile: store.update(existing.id, patch) });
-    } catch (error) {
-      mapStoreError(res, error);
-    }
-  });
+  );
 
   router.delete('/agent-profiles/:id', auth, (req, res) => {
     const store = storeOr503(res, deps.store);

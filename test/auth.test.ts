@@ -241,7 +241,8 @@ const expectedInventoryCoverage = [
       '/api/analytics/*',
       '/telemetry/*',
       '/work-contexts/*',
-      '/agent-profiles/*',
+      '/agent-profiles/:id (DELETE)',
+      'POST /agent-profiles/:id/default',
     ],
   },
   {
@@ -305,6 +306,18 @@ const expectedInventoryCoverage = [
       '/hub/audit/*',
       '/hub/nodes/:nodeId/logs',
       '/hub/nodes/:nodeId/sessions',
+    ],
+  },
+  {
+    surface: 'CLI gateway agent-profile APIs',
+    middleware:
+      'requireCliGatewayAuthForActorCommand + host-local write gate in createAgentProfileRouter',
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    routes: [
+      'GET /agent-profiles',
+      'GET /agent-profiles/:id',
+      'POST /agent-profiles',
+      'PATCH /agent-profiles/:id',
     ],
   },
   {
@@ -448,6 +461,19 @@ test('auth route lane inventory keeps credential classes distinct', () => {
     'browser-session',
   ]);
   expect(routeToLanes.get('POST /webhooks/manage/setup')).toEqual([
+    'browser-session',
+  ]);
+  // #1473: profile reads/writes moved onto the gateway lane; delete and
+  // set-default deliberately stayed browser-only.
+  expect(routeToLanes.get('POST /agent-profiles')).toEqual([
+    'scoped-actor-credential',
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('PATCH /agent-profiles/:id')).toEqual([
+    'scoped-actor-credential',
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('/agent-profiles/:id (DELETE)')).toEqual([
     'browser-session',
   ]);
   expect(routeToLanes.get('POST /webhooks')).toEqual(['public-local-only']);
