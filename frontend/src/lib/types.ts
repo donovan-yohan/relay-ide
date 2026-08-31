@@ -15,7 +15,11 @@ import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
-import type { ControlActor } from '../../../shared/control-state.js';
+import type {
+  ControlActor,
+  ControlFreshness,
+  ControlMode,
+} from '../../../shared/control-state.js';
 import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
 import type {
   WorkContext,
@@ -175,9 +179,13 @@ export interface SessionSummary {
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
   currentActivity?: CurrentActivity | undefined;
+  controlMode?: ControlMode | undefined;
+  activeActors?: ControlActor[] | undefined;
   lastInterventionAt?: string | null;
   lastInterventionBy?: ControlActor | null;
   lastInterventionEventId?: string | null;
+  controlFreshness?: ControlFreshness | undefined;
+  controlReason?: string | undefined;
   dataQuality?: EventSourceType | undefined;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
@@ -189,6 +197,7 @@ export interface SessionSummary {
 
 export interface WorkContextSessionSummary {
   id: string;
+  spawnedBySessionId?: string;
   nodeId: NodeId;
   globalSessionId?: GlobalSessionId;
   tabKind: WorkContextTabKind;
@@ -204,9 +213,13 @@ export interface WorkContextSessionSummary {
   durability?: SessionSummary['durability'];
   activityState?: SessionSummary['activityState'];
   currentActivity?: SessionSummary['currentActivity'];
+  controlMode?: ControlMode;
+  activeActors?: ControlActor[];
   lastInterventionAt?: string | null;
   lastInterventionBy?: ControlActor | null;
   lastInterventionEventId?: string | null;
+  controlFreshness?: ControlFreshness;
+  controlReason?: string;
   lastActivity?: string;
   relationship: string;
   associatedAt: string;
