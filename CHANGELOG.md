@@ -146,14 +146,16 @@ workflow.
   ```sh
   relay-ide v1 agent-profiles credential mint --id <profile> --json \
     | node dist/scripts/install-profile-credential.js \
-        --env-file ~/.hermes/profiles/<profile>/.env
+        --profile-env ~/.hermes/profiles/<profile>/.env
   ```
 
   The token travels down the pipe, so it never appears in a command line, a
   shell history, or the script's output. Re-running it rotates the value in
   place rather than appending a second one, every other line of the file is left
   exactly as it was, a backup is taken first, and a file other users can read is
-  refused rather than written to (#1455)
+  refused rather than written to. The hub has to be on the same machine or
+  reachable on its loopback port — `relay-ide v1` dials `127.0.0.1` only
+  (#1455)
 
 - `docs/references/hermes-multiplex-setup.md` now carries the end-to-end recipe
   for a Hermes profile: mint, plant, and the one line a turn needs in order to

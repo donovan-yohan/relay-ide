@@ -98,7 +98,7 @@ export class EnvFileError extends Error {
  * alone: it is documentation, and rewriting somebody's note is not our job.
  */
 function assignmentPattern(name: string): RegExp {
-  return new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`);
+  return new RegExp(`^(\\s*)(export\\s+)?${name}\\s*=`);
 }
 
 /**
@@ -151,11 +151,18 @@ const QUOTED_VALUE_START =
  *     -----END PRIVATE KEY-----"
  *
  * A naive line scanner that matched inside that block would rewrite a line of
- * somebody's private key. Escaped quotes are not modelled; the approximation
- * errs toward treating a block as still open, which at worst appends a second
- * assignment instead of replacing one — never toward writing inside a value.
+ * somebody's private key. Escaped quotes are not modelled.
+ *
+ * A block still open at end of file is REFUSED rather than appended to: an
+ * append there would land inside that value for every parser that supports
+ * multi-line quoted values, so the variable would silently never be set while
+ * the receipt claimed success. Refusing is the only honest answer — we cannot
+ * tell a truncated file from a dialect we do not understand.
  */
-function quotedContinuationLines(lines: readonly SplitLine[]): Set<number> {
+function quotedContinuationLines(lines: readonly SplitLine[]): {
+  inside: Set<number>;
+  unterminated: boolean;
+} {
   const inside = new Set<number>();
   let openQuote: string | null = null;
   for (let index = 0; index < lines.length; index += 1) {
@@ -170,7 +177,7 @@ function quotedContinuationLines(lines: readonly SplitLine[]): Set<number> {
     const quote = match[1] as string;
     if (!text.slice(match[0].length).includes(quote)) openQuote = quote;
   }
-  return inside;
+  return { inside, unterminated: openQuote !== null };
 }
 
 /** The terminator to give an appended line: whatever the file already uses. */
@@ -221,7 +228,11 @@ function readExistingMode(envFile: string): number | null {
   let stats: fs.Stats;
   try {
     stats = fs.statSync(envFile);
-  } catch {
+  } catch (error) {
+    // ONLY "it is not there" means "create it". An ELOOP, EACCES, or EOVERFLOW
+    // swallowed here would take the create branch — no backup, then a rename
+    // straight over a file we could not read. Fail loudly instead.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return null;
   }
   if (!stats.isFile()) {
@@ -277,34 +288,68 @@ function writeBackup(
 }
 
 function atomicWrite(envFile: string, contents: string, mode: number): void {
-  const tempPath = path.join(
-    path.dirname(envFile),
-    `.${path.basename(envFile)}.tmp-${process.pid}-${Date.now()}`
-  );
-  try {
-    fs.writeFileSync(tempPath, contents, { encoding: 'utf8', mode });
-    // writeFileSync's mode is subject to umask; chmod is not.
-    fs.chmodSync(tempPath, mode);
-    fs.renameSync(tempPath, envFile);
-  } finally {
+  const directory = path.dirname(envFile);
+  const prefix = `.${path.basename(envFile)}.tmp-${process.pid}-${Date.now()}`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const tempPath = path.join(
+      directory,
+      attempt === 0 ? prefix : `${prefix}-${attempt}`
+    );
     try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      /* already renamed into place */
+      // `wx`, not the default `w`. `writeFileSync`'s `mode` is honoured only
+      // when the call CREATES the file, and `chmodSync` runs after the bytes
+      // are already on disk — so with `w` a pre-existing world-readable file
+      // at this path (or a symlink planted there by anyone who can write the
+      // directory) would receive the token first and be tightened afterwards,
+      // or not at all. `wx` refuses both: EEXIST on a regular file and on a
+      // symlink alike.
+      fs.writeFileSync(tempPath, contents, {
+        encoding: 'utf8',
+        mode,
+        flag: 'wx',
+      });
+      try {
+        fs.chmodSync(tempPath, mode);
+        fs.renameSync(tempPath, envFile);
+      } catch (error) {
+        try {
+          fs.unlinkSync(tempPath);
+        } catch {
+          /* nothing to clean up */
+        }
+        throw error;
+      }
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
   }
+  throw new EnvFileError(
+    `could not create a temporary file next to ${envFile}`,
+    'TEMP_EXHAUSTED'
+  );
 }
 
 /**
  * Upsert `assignments` into `envFile`, returning what changed. Never returns or
  * throws a value.
  */
-export function preflightEnvFile(envFilePath: string): {
+export interface EnvFilePreflight {
   /** The real path written to: a symlink is followed, never replaced. */
   envFile: string;
+  /**
+   * The path the caller named. Backups are taken HERE rather than beside the
+   * resolved file: a `.env` symlinked into a dotfiles checkout is the whole
+   * reason we follow the link, and dropping a secret-bearing `.bak-` beside
+   * the link target would put the previous credential inside a git working
+   * tree, one `git add -A` from being committed.
+   */
+  requestedPath: string;
   /** Current mode when the file exists, null when it does not yet. */
   existingMode: number | null;
-} {
+}
+
+export function preflightEnvFile(envFilePath: string): EnvFilePreflight {
   const requested = path.resolve(envFilePath);
   const directory = path.dirname(requested);
   if (!fs.existsSync(directory)) {
@@ -324,7 +369,11 @@ export function preflightEnvFile(envFilePath: string): {
   } catch {
     /* does not exist yet; the requested path is the one to create */
   }
-  return { envFile, existingMode: readExistingMode(envFile) };
+  return {
+    envFile,
+    requestedPath: requested,
+    existingMode: readExistingMode(envFile),
+  };
 }
 
 export function upsertEnvFile(
@@ -333,7 +382,9 @@ export function upsertEnvFile(
   validateAssignments(options.assignments);
   const now = options.now?.() ?? new Date();
 
-  const { envFile, existingMode } = preflightEnvFile(options.envFile);
+  const { envFile, requestedPath, existingMode } = preflightEnvFile(
+    options.envFile
+  );
   const mode = existingMode ?? AGENT_HOST_ENV_FILE_MODE;
   const original =
     existingMode === null ? '' : fs.readFileSync(envFile, 'utf8');
@@ -345,14 +396,20 @@ export function upsertEnvFile(
   for (const { name, value } of options.assignments) {
     // Recomputed per assignment: the previous one may have spliced a duplicate
     // out, and a stale index set would then point at the wrong lines.
-    const insideQuotedValue = quotedContinuationLines(lines);
+    const quoted = quotedContinuationLines(lines);
+    if (quoted.unterminated) {
+      throw new EnvFileError(
+        `${envFile} ends inside an unterminated quoted value; fix the quoting before planting a credential`,
+        'UNBALANCED_QUOTE'
+      );
+    }
     const pattern = assignmentPattern(name);
-    const rendered = `${name}=${value}`;
     let replaced = false;
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       const line = lines[index];
-      if (!line || insideQuotedValue.has(index)) continue;
-      if (!pattern.test(line.text)) continue;
+      if (!line || quoted.inside.has(index)) continue;
+      const match = pattern.exec(line.text);
+      if (!match) continue;
       if (replaced) {
         // A duplicate earlier in the file. Drop it so the result does not
         // depend on the reader's first-wins/last-wins convention.
@@ -360,10 +417,12 @@ export function upsertEnvFile(
         duplicatesRemoved += 1;
         continue;
       }
-      // Rewrite in place: the assignment keeps its position and its neighbours
-      // keep their comments.
+      // Rewrite in place, keeping the line's indent AND its `export ` prefix.
+      // Dropping `export` would be a silent functional regression: a `.env`
+      // read by a plain `. file` would stop exporting the variable, and the
+      // agent's child process would stop seeing it.
       lines[index] = {
-        text: rendered,
+        text: `${match[1] ?? ''}${match[2] ?? ''}${name}=${value}`,
         terminator: line.terminator || terminator,
       };
       replaced = true;
@@ -375,7 +434,7 @@ export function upsertEnvFile(
       // assignment does not graft onto it.
       lines[lines.length - 1] = { text: last.text, terminator };
     }
-    lines.push({ text: rendered, terminator });
+    lines.push({ text: `${name}=${value}`, terminator });
   }
 
   const next = joinLines(lines);
@@ -392,7 +451,7 @@ export function upsertEnvFile(
   const backupFile =
     existingMode === null
       ? undefined
-      : writeBackup(envFile, original, mode, now);
+      : writeBackup(requestedPath, original, mode, now);
   atomicWrite(envFile, next, mode);
 
   return {
@@ -435,8 +494,11 @@ export function extractMintedToken(raw: string): string {
     throw new EnvFileError('stdin was not valid JSON', 'INVALID_JSON');
   }
   const envelope = parsed as Record<string, unknown>;
-  if (envelope['ok'] === false) {
-    const error = envelope['error'] as Record<string, unknown> | undefined;
+  // `ok === false` OR a bare `error` object: a failure envelope that omitted
+  // `ok` must not fall through to the "only mint returns a token" message,
+  // which would misdiagnose an upstream refusal as operator error.
+  if (envelope['ok'] === false || typeof envelope['error'] === 'object') {
+    const error = envelope['error'] as Record<string, unknown> | null;
     throw new EnvFileError(
       `mint failed upstream: ${String(error?.['code'] ?? 'UNKNOWN')} ${String(error?.['message'] ?? '')}`.trim(),
       'MINT_FAILED'

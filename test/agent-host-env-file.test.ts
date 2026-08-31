@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   symlinkSync,
   readdirSync,
@@ -10,6 +11,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AGENT_HOST_ENV_FILE_MODE,
@@ -144,8 +147,9 @@ describe('upsertEnvFile', () => {
     const result = install(file);
 
     expect(result.duplicatesRemoved).toBe(1);
+    // The surviving line is the last one, and it keeps its `export ` prefix.
     expect(readFileSync(file, 'utf8')).toBe(
-      `A=1\n${ACTOR_TOKEN_VARIABLE}=${TOKEN}\n`
+      `A=1\nexport ${ACTOR_TOKEN_VARIABLE}=${TOKEN}\n`
     );
   });
 
@@ -268,7 +272,7 @@ describe('upsertEnvFile', () => {
 
     expect(result.duplicatesRemoved).toBe(2);
     expect(readFileSync(file, 'utf8')).toBe(
-      `A=1\n${ACTOR_TOKEN_VARIABLE}=${TOKEN}\n`
+      `A=1\n  export ${ACTOR_TOKEN_VARIABLE}=${TOKEN}\n`
     );
   });
 
@@ -301,6 +305,7 @@ describe('upsertEnvFile', () => {
     const fresh = envPath();
     expect(preflightEnvFile(fresh)).toEqual({
       envFile: fresh,
+      requestedPath: fresh,
       existingMode: null,
     });
   });
@@ -309,6 +314,73 @@ describe('upsertEnvFile', () => {
     const file = path.join(tempDir(), 'missing-profile', '.env');
 
     expect(() => install(file)).toThrow(/does not exist/);
+  });
+
+  it('preserves an `export ` prefix and the line indent when rotating', () => {
+    const file = envPath(`  export ${ACTOR_TOKEN_VARIABLE}=stale\nA=1\n`);
+
+    install(file);
+
+    // Dropping `export` would silently stop a `. file` consumer from exporting
+    // the variable to the agent's child process.
+    expect(readFileSync(file, 'utf8')).toBe(
+      `  export ${ACTOR_TOKEN_VARIABLE}=${TOKEN}\nA=1\n`
+    );
+  });
+
+  it('refuses a file that ends inside an unterminated quoted value', () => {
+    // Appending here would land inside FOO's value for every parser that
+    // supports multi-line quoted values, so the variable would never be set.
+    const original = 'FOO="abc\n';
+    const file = envPath(original);
+
+    expect(() => install(file)).toThrow(/unterminated quoted value/);
+    expect(readFileSync(file, 'utf8')).toBe(original);
+    expect(backupsIn(file)).toHaveLength(0);
+  });
+
+  it('refuses rather than silently leaving a stale assignment inside an open quote', () => {
+    const original = `FOO="abc\n${ACTOR_TOKEN_VARIABLE}=stale\n`;
+    const file = envPath(original);
+
+    expect(() => install(file)).toThrow(EnvFileError);
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  });
+
+  it('takes the backup beside the path the caller named, not beside the link target', () => {
+    // A .env symlinked into a dotfiles checkout: a secret-bearing .bak- there
+    // is one `git add -A` from being committed.
+    const checkout = tempDir();
+    const target = path.join(checkout, 'env');
+    writeFileSync(target, 'A=1\n', { encoding: 'utf8', mode: 0o600 });
+    chmodSync(target, 0o600);
+    const profileDir = tempDir();
+    const link = path.join(profileDir, '.env');
+    symlinkSync(target, link);
+
+    const result = upsertEnvFile({
+      envFile: link,
+      assignments: buildAssignments(TOKEN, undefined),
+    });
+
+    expect(result.envFile).toBe(target);
+    expect(path.dirname(result.backupFile as string)).toBe(profileDir);
+    expect(readdirSync(checkout)).toEqual(['env']);
+  });
+
+  it('refuses a stat failure that is not "missing" instead of taking the create branch', () => {
+    // A path whose parent component is a file, not a directory: stat gives
+    // ENOTDIR. Guessing "create" there would skip the backup and rename over
+    // whatever is really at the end of that path.
+    const dir = tempDir();
+    const notADirectory = path.join(dir, 'regular-file');
+    writeFileSync(notADirectory, 'x', { mode: 0o600 });
+    expect(() =>
+      upsertEnvFile({
+        envFile: path.join(notADirectory, '.env'),
+        assignments: buildAssignments(TOKEN, undefined),
+      })
+    ).toThrow(/ENOTDIR|does not exist/);
   });
 
   it('never puts the value in the result or in a refusal message', () => {
@@ -415,26 +487,48 @@ describe('extractMintedToken', () => {
 describe('parseInstallArgs', () => {
   it('refuses a token on argv', () => {
     expect(() =>
-      parseInstallArgs(['--env-file', '/tmp/.env', '--token', TOKEN])
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--token', TOKEN])
     ).toThrow(/argv is readable by every local process/);
   });
 
-  it('requires --env-file and validates --port', () => {
-    expect(() => parseInstallArgs([])).toThrow(/--env-file is required/);
+  it("refuses --env-file, which is Node's own flag", () => {
+    expect(() => parseInstallArgs(['--env-file', '/tmp/.env'])).toThrow(
+      /Use --profile-env/
+    );
+  });
+
+  it('requires --profile-env and normalizes --port', () => {
+    expect(() => parseInstallArgs([])).toThrow(/--profile-env is required/);
     expect(() =>
-      parseInstallArgs(['--env-file', '/tmp/.env', '--port', '0'])
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port', '0'])
     ).toThrow(/not a valid port/);
     expect(() =>
-      parseInstallArgs(['--env-file', '/tmp/.env', '--port', 'abc'])
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port', 'abc'])
+    ).toThrow(/not a valid port/);
+    expect(() =>
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port', '99999'])
     ).toThrow(/not a valid port/);
     expect(
-      parseInstallArgs(['--env-file', '/tmp/.env', '--port', '3481'])
-    ).toEqual({ envFile: '/tmp/.env', port: '3481', dryRun: false });
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port', '3481'])
+    ).toEqual({ profileEnv: '/tmp/.env', port: '3481', dryRun: false });
+    // `+3481` parses but is not a port string any reader would accept.
+    expect(
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port', '+3481'])
+    ).toEqual({ profileEnv: '/tmp/.env', port: '3481', dryRun: false });
+  });
+
+  it('refuses a flag-shaped value instead of silently using it as a path', () => {
+    expect(() => parseInstallArgs(['--profile-env', '--dry-run'])).toThrow(
+      /--profile-env needs a value/
+    );
+    expect(() =>
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--port'])
+    ).toThrow(/--port needs a value/);
   });
 
   it('rejects an unknown flag rather than ignoring it', () => {
     expect(() =>
-      parseInstallArgs(['--env-file', '/tmp/.env', '--wat'])
+      parseInstallArgs(['--profile-env', '/tmp/.env', '--wat'])
     ).toThrow(/unknown argument --wat/);
   });
 
@@ -443,5 +537,96 @@ describe('parseInstallArgs', () => {
     expect(expandHome('~', '/home/agent')).toBe('/home/agent');
     expect(expandHome('/abs/.env', '/home/agent')).toBe('/abs/.env');
     expect(expandHome('./rel/.env', '/home/agent')).toBe('./rel/.env');
+  });
+});
+
+describe('install-profile-credential run through node', () => {
+  // The unit tests above call `parseInstallArgs` as a function, which is
+  // exactly why the `--env-file`/Node collision survived review: the flag never
+  // reached Node's own parser. These spawn the real script.
+  const script = fileURLToPath(
+    new URL('../scripts/install-profile-credential.ts', import.meta.url)
+  ).replace(/\.ts$/, '.js');
+  const built = fileURLToPath(
+    new URL('../dist/scripts/install-profile-credential.js', import.meta.url)
+  );
+  const entry = existsSync(built) ? built : script;
+  const runnable = existsSync(entry);
+
+  function run(
+    args: string[],
+    input = ''
+  ): { status: number; stdout: string; stderr: string } {
+    try {
+      const stdout = execFileSync(process.execPath, [entry, ...args], {
+        input,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      return { status: 0, stdout, stderr: '' };
+    } catch (error) {
+      const spawned = error as {
+        status?: number | null;
+        stdout?: string;
+        stderr?: string;
+      };
+      return {
+        status: spawned.status ?? -1,
+        stdout: spawned.stdout ?? '',
+        stderr: spawned.stderr ?? '',
+      };
+    }
+  }
+
+  it.runIf(runnable)(
+    'creates a missing file through the real CLI entry point',
+    () => {
+      const file = path.join(tempDir(), '.env');
+
+      const result = run(['--profile-env', file, '--port', '3481'], TOKEN);
+
+      expect(result.status).toBe(0);
+      const receipt = JSON.parse(result.stdout) as { action: string };
+      expect(receipt.action).toBe('created');
+      expect(readFileSync(file, 'utf8')).toBe(
+        `${ACTOR_TOKEN_VARIABLE}=${TOKEN}\n${HUB_PORT_VARIABLE}=3481\n`
+      );
+      // The receipt is the whole of stdout, and it does not carry the token.
+      expect(result.stdout).not.toContain(TOKEN);
+      expect(result.stderr).not.toContain(TOKEN);
+    }
+  );
+
+  it.runIf(runnable)('refuses --env-file with the reason', () => {
+    const file = path.join(tempDir(), '.env');
+    writeFileSync(file, 'A=1\n', { encoding: 'utf8', mode: 0o600 });
+    chmodSync(file, 0o600);
+
+    const result = run(['--env-file', file], TOKEN);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}${result.stdout}`).toMatch(/--profile-env/);
+    expect(readFileSync(file, 'utf8')).toBe('A=1\n');
+  });
+
+  it.runIf(runnable)('dry-run consumes no token and writes nothing', () => {
+    const file = path.join(tempDir(), '.env');
+
+    const result = run(['--profile-env', file, '--dry-run']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      action: 'would-create',
+      dryRun: true,
+    });
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.runIf(runnable)('prints usage without touching anything', () => {
+    const result = run(['--help']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--profile-env');
+    expect(result.stdout).not.toContain('relay-sac-v1.');
   });
 });

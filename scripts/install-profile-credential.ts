@@ -7,17 +7,28 @@
  *
  *   relay-ide v1 agent-profiles credential mint --id agent-profile:hermes:tako \
  *     | node dist/scripts/install-profile-credential.js \
- *         --env-file ~/.hermes/profiles/tako-planner/.env
+ *         --profile-env ~/.hermes/profiles/tako-planner/.env
+ *
+ * The flag is `--profile-env`, NOT `--env-file`: Node itself owns `--env-file`
+ * and consumes it even when it appears after the script path, so
+ * `--env-file <missing path>` aborts the runtime with `not found` before this
+ * file executes — exactly the first-run case — and an existing path is silently
+ * hydrated into this process's environment. `--env-file` is refused with that
+ * explanation whenever argv still carries it.
  *
  * The pipe is the point. The token is read from stdin and written to the file;
  * it is never an argument (argv is world-readable in /proc), never echoed, and
  * never part of this script's output or of any error it raises. What the
  * operator sees is a JSON receipt naming the file, the action, and the backup.
  *
- * This is deliberately a script and not a `relay-ide` subcommand. `relay-ide`
- * runs on the Relay host; this runs wherever the agent's profile lives, which
- * on a paired setup is a different machine with no Relay hub on it. Keeping it
- * out of the CLI keeps that asymmetry visible.
+ * This is deliberately a script and not a `relay-ide` subcommand: it runs where
+ * the agent's PROFILE lives, which is not necessarily where the hub runs.
+ *
+ * Note that the CLI's gateway lane dials `127.0.0.1:<port>` and nothing else
+ * (`bin/relay-ide.ts` — "v1 commands only ever dial loopback"), so a profile on
+ * a genuinely different machine needs an SSH tunnel to the hub's port before
+ * the planted credential can reach it. This script plants the token; it does
+ * not create that path.
  *
  * Nothing here knows what Hermes is. `--env-file` is a path; the Hermes-side
  * recipe (which profile, which toolset, how the file is hydrated) lives in
@@ -45,22 +56,24 @@ const USAGE = `install-profile-credential — plant a Relay actor credential in 
 
 Usage:
   relay-ide v1 agent-profiles credential mint --id <profileId> \\
-    | node dist/scripts/install-profile-credential.js --env-file <path> [--port <port>]
+    | node dist/scripts/install-profile-credential.js --profile-env <path> [--port <port>]
 
 Options:
-  --env-file <path>   Environment file to upsert. Its directory must exist.
-  --port <port>       Also write ${HUB_PORT_VARIABLE}, the hub port the agent's
-                      relay-ide dials. Omit when the hub is on the default port.
-  --token-file <path> Read the token from a file instead of stdin.
-  --dry-run           Report what would change without writing.
-  --help              This text.
+  --profile-env <path>  Environment file to upsert. Its directory must exist.
+                        (Not --env-file: Node owns that flag and eats it.)
+  --port <port>         Also write ${HUB_PORT_VARIABLE}, the hub port the agent's
+                        relay-ide dials on loopback. Omit for the default port.
+  --token-file <path>   Read the token from a file instead of stdin.
+  --dry-run             Check the target file without writing. Reads no token,
+                        so it never consumes a freshly minted one.
+  --help                This text.
 
 The token is read from stdin (the mint envelope, or the bare token) or from
 --token-file. There is no --token flag: a secret in argv is readable by every
 local process.`;
 
 export interface ParsedInstallArgs {
-  envFile: string;
+  profileEnv: string;
   port?: string;
   tokenFile?: string;
   dryRun: boolean;
@@ -74,32 +87,48 @@ export function expandHome(value: string, home: string): string {
 }
 
 export function parseInstallArgs(argv: readonly string[]): ParsedInstallArgs {
-  let envFile = '';
+  let profileEnv = '';
   let port: string | undefined;
   let tokenFile: string | undefined;
   let dryRun = false;
+  // A flag's value must not itself look like a flag. `--profile-env --dry-run`
+  // silently setting the path to "--dry-run" is the failure mode
+  // `parseChannelCliFlags` in bin/relay-ide.ts already refuses; the same rule
+  // applies where the value names a file we are about to rewrite.
+  const valueFor = (flag: string, next: string | undefined): string => {
+    if (next === undefined || next.startsWith('--')) {
+      throw new EnvFileError(`${flag} needs a value`, 'USAGE');
+    }
+    return next;
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = argv[index + 1];
     switch (arg) {
-      case '--env-file':
-        if (!next) throw new EnvFileError('--env-file needs a path', 'USAGE');
-        envFile = next;
+      case '--profile-env':
+        profileEnv = valueFor('--profile-env', next);
         index += 1;
         break;
       case '--port':
-        if (!next) throw new EnvFileError('--port needs a value', 'USAGE');
-        port = next;
+        port = valueFor('--port', next);
         index += 1;
         break;
       case '--token-file':
-        if (!next) throw new EnvFileError('--token-file needs a path', 'USAGE');
-        tokenFile = next;
+        tokenFile = valueFor('--token-file', next);
         index += 1;
         break;
       case '--dry-run':
         dryRun = true;
         break;
+      case '--env-file':
+        // Only reachable when the path exists — Node aborts the runtime first
+        // when it does not. Refusing with the reason beats accepting a flag
+        // whose side effect is loading somebody's secrets into our own
+        // environment.
+        throw new EnvFileError(
+          "--env-file is Node's own flag and is consumed before this script runs (and hydrates that file into this process). Use --profile-env.",
+          'RESERVED_FLAG'
+        );
       case '--token':
         // Refused, not accepted-with-a-warning. `bin/relay-ide.ts` already
         // refuses secrets in argv for agent-profile writes; the same rule has
@@ -112,16 +141,20 @@ export function parseInstallArgs(argv: readonly string[]): ParsedInstallArgs {
         throw new EnvFileError(`unknown argument ${String(arg)}`, 'USAGE');
     }
   }
-  if (!envFile) throw new EnvFileError('--env-file is required', 'USAGE');
+  if (!profileEnv) throw new EnvFileError('--profile-env is required', 'USAGE');
+  let normalizedPort: string | undefined;
   if (port !== undefined) {
     const parsed = Number(port);
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
       throw new EnvFileError(`--port ${port} is not a valid port`, 'USAGE');
     }
+    // Write the NORMALIZED value: `+3481` and `3481.0` both parse here but
+    // neither is a port number any reader would accept out of the file.
+    normalizedPort = String(parsed);
   }
   return {
-    envFile,
-    ...(port ? { port } : {}),
+    profileEnv,
+    ...(normalizedPort ? { port: normalizedPort } : {}),
     ...(tokenFile ? { tokenFile } : {}),
     dryRun,
   };
@@ -154,24 +187,23 @@ async function main(): Promise<void> {
   }
   const args = parseInstallArgs(argv);
   const home = os.homedir();
-  const envFile = expandHome(args.envFile, home);
-
-  const raw = args.tokenFile
-    ? fs.readFileSync(expandHome(args.tokenFile, home), 'utf8')
-    : await readStdin();
-  const token = extractMintedToken(raw);
-  const assignments = buildAssignments(token, args.port);
+  const envFile = expandHome(args.profileEnv, home);
 
   if (args.dryRun) {
-    // A real preflight, not a formatting exercise: this resolves the symlink
-    // and throws on a missing directory or a group/other-readable file, exactly
-    // as the write would.
+    // Deliberately reads NO token. A dry run that drained stdin would consume
+    // the one-time output of a `credential mint` that has already revoked its
+    // predecessor — a preflight that destroys the thing it is checking. This
+    // resolves the symlink and throws on a missing directory or a
+    // group/other-readable file, exactly as the write would.
     const preflight = preflightEnvFile(envFile);
     console.log(
       JSON.stringify(
         {
           envFile: preflight.envFile,
-          variables: assignments.map((assignment) => assignment.name),
+          variables: [
+            ACTOR_TOKEN_VARIABLE,
+            ...(args.port ? [HUB_PORT_VARIABLE] : []),
+          ],
           action:
             preflight.existingMode === null ? 'would-create' : 'would-update',
           dryRun: true,
@@ -182,6 +214,12 @@ async function main(): Promise<void> {
     );
     return;
   }
+
+  const raw = args.tokenFile
+    ? fs.readFileSync(expandHome(args.tokenFile, home), 'utf8')
+    : await readStdin();
+  const token = extractMintedToken(raw);
+  const assignments = buildAssignments(token, args.port);
 
   const result = upsertEnvFile({ envFile, assignments });
   // The receipt names the file and the action. It cannot name the token: the

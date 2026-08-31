@@ -163,17 +163,28 @@ Hermes profile. On the **Hermes** host, plant it:
 ```bash
 relay-ide v1 agent-profiles credential mint --id <agent-profile-id> --json \
   | node dist/scripts/install-profile-credential.js \
-      --env-file ~/.hermes/profiles/coder/.env
+      --profile-env ~/.hermes/profiles/coder/.env
 ```
 
-When the two hosts differ, the pipe becomes an `ssh` — the point is that the
-token goes stdout-to-stdin and never becomes a command-line argument, which
+The flag is `--profile-env`, **not** `--env-file`: Node owns `--env-file` and
+consumes it even after the script path, so `--env-file` against a path that does
+not exist yet aborts the runtime before the script runs — and against one that
+does, silently loads that file's secrets into the installer's own environment.
+The script refuses `--env-file` and says so.
+
+The token goes stdout-to-stdin and never becomes a command-line argument, which
 every other local process can read out of `/proc`. There is deliberately no
-`--token` flag. `--token-file` is the other accepted source.
+`--token` flag; `--token-file` is the other accepted source. `--dry-run` checks
+the target without reading a token, so it cannot burn a freshly minted one.
+
+**Both hosts must be the same machine, or joined by a tunnel.** `relay-ide v1`
+dials `127.0.0.1:<port>` and nothing else — there is no `--url` and
+`RELAY_IDE_URL` belongs to a different lane. A Hermes host that is genuinely
+elsewhere needs an SSH tunnel forwarding the hub's port to its own loopback
+before the planted credential can reach anything.
 
 The installer writes `RELAY_IDE_ACTOR_TOKEN`, and `RELAY_IDE_PORT` too if you
-pass `--port` (the CLI's gateway lane dials `127.0.0.1:<port>`, so the hub has
-to be reachable on loopback from the Hermes host). It rewrites the assignment in
+pass `--port`. It rewrites the assignment in
 place if one is already there, leaves every other line of the file untouched,
 takes a timestamped backup first, keeps the file's mode, and refuses outright to
 write a file that is group- or other-readable. Running it twice with the same
@@ -200,6 +211,13 @@ own `.env`:
 ```bash
 set -a; . "$HERMES_HOME/.env"; set +a; relay-ide v1 channels history --channel-id <id> --json
 ```
+
+Note that `.` **evaluates** the file: anything in it containing `$(…)`,
+backticks, or an unquoted space runs as shell. That is a property of the profile
+`.env` you already have, not something the credential introduces — but it is
+worth knowing before you source one you did not write. The installer constrains
+only the value it writes, to a charset every dotenv dialect and the shell agree
+on.
 
 Put that prefix in a profile-local skill (`skills/<category>/<name>/SKILL.md`)
 so the agent has the working invocation to hand. A skill is prompt text and
