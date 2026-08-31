@@ -358,6 +358,7 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'worktrees.delete' ||
     spec.name === 'worktrees.archive' ||
     spec.name === 'workspace-topics.archive' ||
+    spec.name === 'channels.remove-member' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||
     spec.capabilityHints.includes('rpc:fs:write')
   );

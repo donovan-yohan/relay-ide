@@ -3159,8 +3159,10 @@ async function main(): Promise<void> {
       channelArchiveActivity: channelAgentBinder
         ? (channelId) => channelAgentBinder.archiveActivityForChannel(channelId)
         : null,
-      // #1455 slice 2: a channel IS a workspace topic, so `channels.create`
-      // lands on this route. Without enrolling the creator, an agent that
+      // #1455 slice 2: a channel IS a workspace topic — `channelKind` only
+      // categorizes one (repo/product-area/journal/ops/research/topic), it does
+      // not gate one — so `channels.create` lands on this route and so does
+      // every other topic create. Without enrolling the creator, an agent that
       // created a channel would be refused by the slice-1 membership gate on
       // its very next request — it could open a room it may not enter. Best
       // effort on purpose: the channel is already durable, and the boot

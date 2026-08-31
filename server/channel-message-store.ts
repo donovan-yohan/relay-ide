@@ -801,8 +801,13 @@ CREATE TABLE IF NOT EXISTS channel_members (
   -- paths re-upsert on every durable reply — so a deleted row would be
   -- resurrected by the next boot sweep or the next agent turn and removal
   -- would silently not stick. A retained row with removed_at set is a
-  -- member that is NOT a member: every read filters it out, every additive
-  -- writer collides with it, and only an explicit invite re-admits.
+  -- member that is NOT a member: every read filters it out, and only an
+  -- explicit invite re-admits.
+  --
+  -- Removal is a property of the fold CLASS, not of one row. Rows are stored
+  -- verbatim and every write collides only on an exact primary key, so an
+  -- implicit writer arriving under the participant's OTHER spelling inherits
+  -- the class stamp instead of inserting a live row (see memberFoldKey).
   removed_at    TEXT,
   removed_by    TEXT,
   PRIMARY KEY (channel_id, member_kind, member_id)
@@ -2772,6 +2777,27 @@ function defaultProfileVendorId(id: string): string | undefined {
 }
 
 /**
+ * The single value that identifies one PARTICIPANT, collapsing every spelling
+ * `memberMatchParams` matches (#1455 slice 2).
+ *
+ * Membership is decided on a fold, but rows are stored verbatim and every
+ * primary-key write collides only on an exact id. Removal therefore has to be a
+ * property of the fold CLASS, not of the rows that happened to exist when it
+ * ran: otherwise an implicit writer arriving under the participant's OTHER
+ * spelling (`deriveSender` stamps `agent:<actor>`, the bridge and binder use
+ * the bare profile Actor id) inserts a brand-new LIVE row and silently
+ * re-admits an agent that was removed. That is not hypothetical — binding
+ * bookkeeping alone re-enrolls on cursor advance, session persist, unbind, and
+ * restart.
+ */
+function memberFoldKey(kind: 'human' | 'agent', id: string): string {
+  // Human ids never fold: `canonicalChannelMemberId` only strips `agent:`.
+  if (kind !== 'agent') return id;
+  const canonical = canonicalChannelMemberId(id);
+  return defaultProfileVendorId(canonical) ?? canonical;
+}
+
+/**
  * Derive channel membership from durable participation history (#1455 slice 1).
  *
  * Membership became authoritative AFTER channels already existed, so the table
@@ -2833,9 +2859,75 @@ export function backfillChannelMembership(
           GROUP BY channel_id, profile_actor_id`
       )
       .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
+    // The two statements above insert VERBATIM spellings with `INSERT OR
+    // IGNORE`, which collides only on an exact primary key — so a channel that
+    // removed a participant can gain a fresh LIVE row for that same
+    // participant's other spelling. Restore the class invariant (every row in
+    // one fold class shares one removal state) before returning.
+    //
+    // Scoped to channels that actually contain a tombstone, which is normally
+    // none, so this costs a single indexed lookup on the common path.
+    repairRemovedMemberClasses(db);
     return fromMessages + fromBindings;
   });
   return { inserted: inserter() };
+}
+
+/**
+ * Re-tombstone any live member row whose fold class was removed (#1455 slice 2).
+ *
+ * The class invariant is that every stored spelling of one participant shares
+ * one removal state. `inviteMember` clears a whole class and `removeMember`
+ * tombstones a whole class, so only a raw `INSERT` can break it — the two
+ * `backfillChannelMembership` statements, which are SQL over history and cannot
+ * consult the fold.
+ */
+function repairRemovedMemberClasses(db: Database.Database): void {
+  // The v17 migration calls the backfill BEFORE v18 adds the removal columns,
+  // and no tombstone can exist at that point anyway — v17 predates removal.
+  const columns = db
+    .prepare('PRAGMA table_info(channel_members)')
+    .all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'removed_at')) return;
+  const rows = db
+    .prepare(
+      `SELECT channel_id, member_kind, member_id, removed_at, removed_by
+         FROM channel_members
+        WHERE member_kind = 'agent'
+          AND channel_id IN (
+            SELECT channel_id FROM channel_members
+             WHERE member_kind = 'agent' AND removed_at IS NOT NULL
+          )`
+    )
+    .all() as MemberRow[];
+  if (rows.length === 0) return;
+  const classes = new Map<string, MemberRow[]>();
+  for (const row of rows) {
+    const key = `${row.channel_id}\u0000${memberFoldKey('agent', row.member_id)}`;
+    const bucket = classes.get(key);
+    if (bucket) bucket.push(row);
+    else classes.set(key, [row]);
+  }
+  const tombstone = db.prepare(
+    `UPDATE channel_members
+        SET removed_at = @removedAt, removed_by = @removedBy
+      WHERE channel_id = @channelId
+        AND member_kind = 'agent'
+        AND member_id = @memberId`
+  );
+  for (const bucket of classes.values()) {
+    const removed = bucket.find((row) => row.removed_at !== null);
+    if (!removed) continue;
+    for (const row of bucket) {
+      if (row.removed_at !== null) continue;
+      tombstone.run({
+        channelId: row.channel_id,
+        memberId: row.member_id,
+        removedAt: removed.removed_at,
+        removedBy: removed.removed_by,
+      });
+    }
+  }
 }
 
 function runMigrations(db: Database.Database): void {
@@ -3395,8 +3487,8 @@ function runSchemaMigrations(db: Database.Database): void {
   if (current < 18) {
     db.transaction(() => {
       // #1455 slice 2: `channels.remove-member` needs removal to be a durable
-      // FACT, not the absence of a row — `backfillMembership` and every
-      // additive writer would otherwise re-create what was just removed. Purely
+      // FACT, not the absence of a row — `backfillMembership` and the implicit
+      // writers would otherwise re-create what was just removed. Purely
       // additive: existing rows read back as live members (both columns NULL).
       const columns = db
         .prepare(`PRAGMA table_info(channel_members)`)
@@ -3920,12 +4012,18 @@ export function createChannelMessageStore(
    */
   function enrollBoundMember(channelId: string, profileActorId: string): void {
     try {
+      // A durable binding is execution bookkeeping, not an admission. If this
+      // participant's class was removed, the mirrored row is created ALREADY
+      // tombstoned — binding churn (cursor advance, session persist, unbind,
+      // restart) must never re-admit an agent an operator evicted.
+      const stamp = classRemovalStamp(channelId, 'agent', profileActorId);
       enrollBoundMemberStmt.run({
         channelId,
         memberId: profileActorId,
         joinedAt: nowIso(),
         invitedBy: CHANNEL_MEMBERSHIP_BINDING_INVITER,
       });
+      inheritClassRemoval(channelId, 'agent', profileActorId, stamp);
     } catch (error) {
       logger.warn(
         'channel binding member enrollment failed for %s in %s: %s',
@@ -3975,12 +4073,60 @@ export function createChannelMessageStore(
     };
   }
 
+  /**
+   * The removal stamp this participant's fold CLASS currently carries, or
+   * `null` when the class is live or absent (#1455 slice 2).
+   *
+   * An implicit writer inserting a spelling that has no row of its own must
+   * inherit that stamp, or it re-admits a removed agent through the back door.
+   * Only `inviteMember` clears a class.
+   */
+  function classRemovalStamp(
+    channelId: string,
+    kind: 'human' | 'agent',
+    id: string
+  ): { removedAt: string; removedBy: string | null } | null {
+    // Humans do not fold — their class is the exact row — and a human writing
+    // its own way in deliberately clears its tombstone (see `upsertMemberStmt`).
+    if (kind !== 'agent') return null;
+    const rows = matchMemberRowsStmt.all(
+      memberMatchParams(channelId, kind, id)
+    ) as MemberRow[];
+    if (rows.length === 0) return null;
+    const removed = rows.find((row) => row.removed_at !== null);
+    if (!removed || rows.some((row) => row.removed_at === null)) return null;
+    return {
+      removedAt: removed.removed_at as string,
+      removedBy: removed.removed_by,
+    };
+  }
+
+  /** Apply an inherited class stamp to a row an implicit writer just created. */
+  function inheritClassRemoval(
+    channelId: string,
+    kind: 'human' | 'agent',
+    memberId: string,
+    stamp: { removedAt: string; removedBy: string | null } | null
+  ): void {
+    if (!stamp) return;
+    tombstoneMemberStmt.run({
+      channelId,
+      memberKind: kind,
+      memberId,
+      removedAt: stamp.removedAt,
+      removedBy: stamp.removedBy,
+    });
+  }
+
   function memberRowToRef(row: MemberRow): ChannelMemberRef {
     return {
       kind: row.member_kind as 'human' | 'agent',
       id: row.member_id,
       joinedAt: row.joined_at,
       ...(row.invited_by ? { invitedBy: row.invited_by } : {}),
+      // Only ever set on a ref handed back by a WRITE. Every list read filters
+      // tombstones, so this never reaches the wire from `listMembers`.
+      ...(row.removed_at ? { removedAt: row.removed_at } : {}),
     };
   }
 
@@ -5857,27 +6003,46 @@ export function createChannelMessageStore(
     },
 
     upsertMember(input) {
-      const joinedAt = nowIso();
-      const existing = selectMemberExactStmt.get(
-        input.channelId,
-        input.kind,
-        input.id
-      ) as MemberRow | undefined;
-      upsertMemberStmt.run({
-        channelId: input.channelId,
-        memberKind: input.kind,
-        memberId: input.id,
-        joinedAt: existing?.joined_at ?? joinedAt,
-        metadataJson: JSON.stringify(input.metadata ?? {}),
-        invitedBy: input.invitedBy ?? null,
+      const write = db.transaction((): ChannelMemberRef => {
+        const joinedAt = nowIso();
+        const existing = selectMemberExactStmt.get(
+          input.channelId,
+          input.kind,
+          input.id
+        ) as MemberRow | undefined;
+        // Writing your own way in is not an admission, so a NEW spelling of a
+        // participant whose class was removed is created already tombstoned.
+        // An existing row keeps whatever state it has (the SQL revives a HUMAN
+        // and only a human), so this only ever governs the insert.
+        const stamp = existing
+          ? null
+          : classRemovalStamp(input.channelId, input.kind, input.id);
+        upsertMemberStmt.run({
+          channelId: input.channelId,
+          memberKind: input.kind,
+          memberId: input.id,
+          joinedAt: existing?.joined_at ?? joinedAt,
+          metadataJson: JSON.stringify(input.metadata ?? {}),
+          invitedBy: input.invitedBy ?? null,
+        });
+        inheritClassRemoval(input.channelId, input.kind, input.id, stamp);
+        // Read the row back rather than reconstructing it: the caller must not
+        // be handed a live-looking ref for a row `isMember` calls a non-member.
+        const row = selectMemberExactStmt.get(
+          input.channelId,
+          input.kind,
+          input.id
+        ) as MemberRow | undefined;
+        if (row) return memberRowToRef(row);
+        const invitedBy = existing?.invited_by ?? input.invitedBy ?? null;
+        return {
+          kind: input.kind,
+          id: input.id,
+          joinedAt: existing?.joined_at ?? joinedAt,
+          ...(invitedBy ? { invitedBy } : {}),
+        };
       });
-      const invitedBy = existing?.invited_by ?? input.invitedBy ?? null;
-      return {
-        kind: input.kind,
-        id: input.id,
-        joinedAt: existing?.joined_at ?? joinedAt,
-        ...(invitedBy ? { invitedBy } : {}),
-      };
+      return write();
     },
 
     listMembers(channelId) {

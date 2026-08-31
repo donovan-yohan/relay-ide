@@ -24,6 +24,7 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
   CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
   CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
@@ -5001,58 +5002,110 @@ describe('channel-message-store invite and removal (#1455 slice 2)', () => {
     ).toBeNull();
   });
 
-  it('keeps an agent removed against the writers that would resurrect a deleted row', () => {
+  it('keeps an agent removed against every writer that would resurrect it', () => {
     const file = dbPath();
     const s = store(file);
+    // The SAME participant reaches the table under two spellings: `deriveSender`
+    // stamps `agent:<actor>` on a gateway post, while the bridge and binder use
+    // the bare profile Actor id. A tombstone keyed on the row that happened to
+    // exist would let the OTHER spelling walk straight back in, so every case
+    // below removes one spelling and then writes the other.
+    const GATEWAY = 'agent:claude';
+    const BOUND = builtInAgentProfileId('claude');
+    expect(BOUND).not.toBe(GATEWAY);
+
     s.appendComplete({
       channelId: 'topic:tomb',
       sender: AGENT,
       text: 'a durable message from this agent',
     });
-    s.upsertBinding({
-      channelId: 'topic:tomb',
-      profileActorId: 'agent:claude',
-      agentFramework: 'claude',
-    });
-    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(true);
-    s.removeMember({
-      channelId: 'topic:tomb',
-      kind: 'agent',
-      id: 'agent:claude',
-      removedBy: 'human:operator',
-    });
-
-    // 1. The idempotent boot/migration backfill derives membership from the
-    //    message log and the bindings table. Both still name this agent.
-    s.backfillMembership();
-    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(false);
-
-    // 2. The bridge re-upserts on every durable reply (`self`).
+    // The post path enrols its own sender under the gateway spelling.
     s.upsertMember({
       channelId: 'topic:tomb',
       kind: 'agent',
-      id: 'agent:claude',
-      invitedBy: 'self',
+      id: GATEWAY,
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
     });
-    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(false);
+    expect(s.isMember('topic:tomb', 'agent', GATEWAY)).toBe(true);
+    s.removeMember({
+      channelId: 'topic:tomb',
+      kind: 'agent',
+      id: GATEWAY,
+      removedBy: 'human:operator',
+    });
 
-    // 3. Re-opening the database re-runs migrations and the schema DDL.
+    // 1. Binding bookkeeping. `enrollBoundMember` runs on cursor advance,
+    //    provider-session persist, unbind and restart — none of them an
+    //    admission, and all of them under the bound spelling.
+    s.upsertBinding({
+      channelId: 'topic:tomb',
+      profileActorId: BOUND,
+      agentFramework: 'claude',
+    });
+    expect(s.isMember('topic:tomb', 'agent', GATEWAY)).toBe(false);
+    expect(s.isMember('topic:tomb', 'agent', BOUND)).toBe(false);
+
+    // 2. The channel bridge re-upserts a member on every durable reply, also
+    //    under the bound spelling.
+    s.upsertMember({
+      channelId: 'topic:tomb',
+      kind: 'agent',
+      id: BOUND,
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+    });
+    expect(s.isMember('topic:tomb', 'agent', GATEWAY)).toBe(false);
+
+    // 3. The idempotent backfill derives membership from the message log AND
+    //    the surviving binding row, and inserts verbatim spellings.
+    s.backfillMembership();
+    expect(s.isMember('topic:tomb', 'agent', GATEWAY)).toBe(false);
+    expect(s.listMembers('topic:tomb')).toEqual([]);
+
+    // 4. Re-opening re-runs migrations, the schema DDL, and nothing else.
     s.close();
     const reopened = store(file);
-    expect(reopened.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(
-      false
-    );
+    expect(reopened.isMember('topic:tomb', 'agent', GATEWAY)).toBe(false);
 
     // Only an explicit invite re-admits — with the NEW inviter, because the
-    // invite that was revoked is not the invite now in force.
+    // invite that was revoked is not the invite now in force. It clears the
+    // whole class, so the participant is live under BOTH spellings again.
     const readmitted = reopened.inviteMember({
       channelId: 'topic:tomb',
+      kind: 'agent',
+      id: GATEWAY,
+      invitedBy: 'human:operator',
+    });
+    expect(readmitted.invitedBy).toBe('human:operator');
+    expect(readmitted.removedAt).toBeUndefined();
+    expect(reopened.isMember('topic:tomb', 'agent', GATEWAY)).toBe(true);
+    expect(reopened.isMember('topic:tomb', 'agent', BOUND)).toBe(true);
+  });
+
+  it('hands a write back a tombstoned ref rather than a live-looking one', () => {
+    const s = store();
+    s.inviteMember({
+      channelId: 'topic:ref',
       kind: 'agent',
       id: 'agent:claude',
       invitedBy: 'human:operator',
     });
-    expect(readmitted.invitedBy).toBe('human:operator');
-    expect(reopened.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(true);
+    s.removeMember({
+      channelId: 'topic:ref',
+      kind: 'agent',
+      id: 'agent:claude',
+      removedBy: 'human:operator',
+    });
+    const mirrored = s.upsertMember({
+      channelId: 'topic:ref',
+      kind: 'agent',
+      id: builtInAgentProfileId('claude'),
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+    });
+    // The ref must not claim membership the gate would deny.
+    expect(mirrored.removedAt).toBeTruthy();
+    expect(
+      s.isMember('topic:ref', 'agent', builtInAgentProfileId('claude'))
+    ).toBe(false);
   });
 
   it('lets a human writer clear its own tombstone but never an agent', () => {

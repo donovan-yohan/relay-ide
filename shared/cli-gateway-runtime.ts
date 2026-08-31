@@ -718,10 +718,14 @@ export function sanitizedGatewayErrorDetails(
   // `CHANNEL_MEMBER_REMOVE_FORBIDDEN`. Reading only the top level dropped the
   // one field a scripted agent branches on and left it with a bare FORBIDDEN.
   // Top level still wins where a route puts it there.
-  const reasonCode =
-    body?.['reasonCode'] ??
-    (isRecord(upstreamDetails) ? upstreamDetails['reasonCode'] : undefined);
-  if (typeof reasonCode === 'string') details['reasonCode'] = reasonCode;
+  // First value that is actually a STRING wins. `??` would let a malformed
+  // top-level `reasonCode` (a number, an object) mask a valid nested one and
+  // then be dropped by the type check below, reporting no reason code at all.
+  const reasonCode = [
+    body?.['reasonCode'],
+    isRecord(upstreamDetails) ? upstreamDetails['reasonCode'] : undefined,
+  ].find((value): value is string => typeof value === 'string');
+  if (reasonCode !== undefined) details['reasonCode'] = reasonCode;
   const field = isRecord(upstreamDetails)
     ? upstreamDetails['field']
     : body?.['field'];

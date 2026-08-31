@@ -6584,7 +6584,9 @@ describe('channel-agent-binder — DM implicit routing', () => {
     await waitFor(() => repliesIn(store, DM_CH).length === 2);
     expect(store.isMember(DM_CH, 'agent', 'agent:hermes')).toBe(true);
     expect(
-      store.listMembers(DM_CH).find((m) => m.id === builtInAgentProfileId('hermes'))
+      store
+        .listMembers(DM_CH)
+        .find((m) => m.id === builtInAgentProfileId('hermes'))
     ).toMatchObject({ invitedBy: 'human:operator' });
   });
 

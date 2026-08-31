@@ -125,11 +125,11 @@ Attribution is always server-derived from the authenticated lane. `invitedBy`
 is not an input property on either verb and the CLI exposes no flag for it, so
 a member cannot forge an audit row naming somebody else.
 
-| caller                                                  | may invite         | may remove                                  |
-| ------------------------------------------------------- | ------------------ | ------------------------------------------- |
-| browser cookie, host-local `local-cli` (#1467)          | anyone             | anyone                                      |
-| a scoped actor that is a member of the channel          | agent members only | itself, and any **agent** member it invited |
-| a scoped actor that is not a member                     | nothing            | nothing (`CHANNEL_NOT_MEMBER`)              |
+| caller                                         | may invite         | may remove                                  |
+| ---------------------------------------------- | ------------------ | ------------------------------------------- |
+| browser cookie, host-local `local-cli` (#1467) | anyone             | any **governed** member                     |
+| a scoped actor that is a member of the channel | agent members only | itself, and any **agent** member it invited |
+| a scoped actor that is not a member            | nothing            | nothing (`CHANNEL_NOT_MEMBER`)              |
 
 The operator-client lane is deliberately absent: membership verbs are not in
 `OPERATOR_CLIENT_CHANNEL_COMMANDS`, so a paired operator client is refused with
@@ -143,23 +143,51 @@ arriving as `agent-profile:claude:default`. The reserved markers (`self`,
 `creator`, `binding`, `backfill`, `credential-mint`) name no member, so a row
 nobody invited can only be removed by an operator or by its owner leaving.
 Refusals carry `CHANNEL_MEMBER_REMOVE_FORBIDDEN`; naming an id that is not a
-live member is `CHANNEL_MEMBER_NOT_FOUND`.
+live member is `CHANNEL_MEMBER_NOT_FOUND`. A `human:`-namespaced id is refused
+as an agent target, so a human principal can never be smuggled into the
+namespace this check resolves in.
+
+Membership **governs agents, and only agents**. A human member and the
+host-local `local-cli` credential reach channels on operator lanes that are
+never membership-gated, so evicting either would drop a roster row and revoke
+nothing at all. Both are refused with `CHANNEL_MEMBER_NOT_GOVERNED`, for the
+operator too: a control that reports success while changing no access is worse
+than one that refuses.
+
+`channels.invite` caps a channel at `CHANNEL_MEMBER_LIMIT` live members. The
+member list ships whole inside every channel snapshot, so an uncapped invite
+verb is a broadcast amplifier as well as a growth problem — the credential-mint
+path bounds its own enrollment for exactly this reason. Re-inviting an existing
+member is idempotent and never counts; a removal frees capacity. Relay's own
+writers are bounded by real participation and are not capped.
 
 **Removal is a tombstone, not a delete.** `backfillMembership` is additive and
 idempotent and the bridge re-upserts a member on every durable reply, so a
 deleted row would be resurrected by the next boot sweep or the next agent turn.
 The row is retained with `removed_at` set (schema v18): every read filters it
-out, every additive writer collides with it, and only an explicit invite —
-verb or mention — re-admits, restating `invited_by` with the new inviter. A
-**human** member is the one exception: humans are never membership-gated, so a
-stale human tombstone could only make the member list lie, and that member's
-own write clears it.
+out, and only an explicit invite — verb or mention — re-admits, restating
+`invited_by` with the new inviter.
 
-Two things removal deliberately does **not** do, and both are follow-ups:
-it does not tear down a live runtime binding, and it does not blacklist the
-profile — a member naming it again re-admits it. In practice a removed agent
-with a stale binding only acts when addressed, and being addressed *is* the
-re-invite.
+**Removal is a property of the fold class, not of a row.** Membership is
+decided across every spelling of a participant, but rows are stored verbatim
+and each write collides only on an exact primary key. A tombstone keyed on the
+rows that happened to exist would let the participant's _other_ spelling insert
+a fresh live row and walk straight back in — and that is ordinary traffic, not
+an attack: `deriveSender` stamps `agent:<actor>` while the bridge and binder use
+the bare profile Actor id, and binding bookkeeping alone re-enrolls on cursor
+advance, provider-session persist, unbind, and restart. So every implicit writer
+inherits the class's removal stamp and creates its row _already tombstoned_, and
+the SQL backfill runs a repair pass to restore that invariant. Only
+`inviteMember` clears a class. A **human** member is the one exception: humans
+are never membership-gated, so a stale human tombstone could only make the
+member list lie, and that member's own write clears it.
+
+Three things removal deliberately does **not** do, and all are follow-ups: it
+does not tear down a live runtime binding, it does not blacklist the profile (a
+member naming it again re-admits it), and the tombstone's own audit
+(`removed_at`/`removed_by`) is not exposed on any read — `channels.members`
+returns live members only. The tombstone is a durability mechanism, not a
+readable removal log.
 
 Membership is repaired, never rewritten: the boot sweep re-runs the additive
 backfill, so a binding whose membership mirror was lost (that enrollment is

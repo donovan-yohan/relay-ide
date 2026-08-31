@@ -15,6 +15,7 @@ import {
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
+import { LOCAL_HUB_ACTOR_ID } from './local-hub-actor-token.js';
 import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
@@ -54,8 +55,12 @@ import {
   CHANNEL_INVITE_TARGET_INVALID_REASON,
   collidesWithReservedInviter,
   CHANNEL_MEMBER_ID_MAX_CHARS,
+  CHANNEL_MEMBER_LIMIT,
+  CHANNEL_MEMBER_LIMIT_REACHED_REASON,
+  CHANNEL_MEMBER_NOT_GOVERNED_REASON,
   CHANNEL_MEMBER_NOT_FOUND_REASON,
   CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON,
+  canonicalChannelMemberId,
   CHANNEL_MEMBERSHIP_RESERVED_INVITERS,
   CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_NOT_MEMBER_REASON,
@@ -473,6 +478,10 @@ function membershipTargetFromBody(
     id.length > CHANNEL_MEMBER_ID_MAX_CHARS ||
     // eslint-disable-next-line no-control-regex
     /[\s\u0000-\u001f\u007f]/.test(id) ||
+    // A `human:`-namespaced id is never an agent. Allowing one would put a
+    // human principal into the agent namespace, where the removal check
+    // resolves `invited_by` — the same collision class as the reserved markers.
+    (kind === 'agent' && id.startsWith('human:')) ||
     // Defence in depth against the reserved-marker namespace: a member id that
     // folds onto `self`/`creator`/`binding`/`backfill`/`credential-mint` would
     // sit in the same value space as the `invited_by` markers. The removal
@@ -529,25 +538,53 @@ function removalRefusalReason(input: {
   target: ChannelMemberRef;
 }): string | undefined {
   const { store, channelId, actor, target } = input;
+  // Membership governs AGENTS on the delegated lane. A human member and the
+  // host-local `local-cli` credential reach channels on operator lanes that are
+  // never membership-gated, so evicting either would drop a roster row and
+  // revoke nothing at all — a control reporting success while doing nothing.
+  // Refused for every caller, operator included.
+  if (!membershipGovernsTarget(target)) return 'target-not-governed';
   if (!actor) return undefined;
   const self = store.getMember(channelId, actor.kind, actor.id);
   if (self && self.id === target.id && self.kind === target.kind) {
     return undefined; // leaving is always allowed
   }
-  // A delegated actor never evicts a human. Humans are not membership-gated, so
-  // the only effect would be to hide an operator from the member list.
-  if (target.kind === 'human') return 'target-human';
   if (!self) return 'not-a-member';
-  // A reserved marker names a REASON, not a member. Resolving one as an id
-  // would hand removal rights over every row it attributed to whichever actor
-  // happened to fold onto that value (an actor id of `self` canonicalizes to
-  // the `self` marker), so a marker resolves to nobody by construction.
-  const inviter =
-    target.invitedBy && !CHANNEL_MEMBERSHIP_RESERVED_INVITERS.includes(target.invitedBy)
-      ? store.getMember(channelId, 'agent', target.invitedBy)
-      : null;
+  // Resolving `invited_by` back to a member is only meaningful inside the AGENT
+  // namespace, which is the only namespace this check runs in. Two id classes
+  // must never be resolved:
+  //   - a reserved marker, which names a REASON rather than a member (an actor
+  //     id of `self` canonicalizes onto the `self` marker), and
+  //   - a `human:` principal, which is looked up here in the agent namespace
+  //     and would otherwise hand an actor folding onto `human:operator` removal
+  //     rights over every row the operator invited.
+  const inviter = resolvableAgentInviter(target.invitedBy)
+    ? store.getMember(channelId, 'agent', target.invitedBy as string)
+    : null;
   if (inviter && inviter.id === self.id) return undefined;
   return 'not-the-inviter';
+}
+
+/**
+ * True when removing this member would actually revoke something (#1455
+ * slice 2). See `removalRefusalReason`.
+ */
+function membershipGovernsTarget(target: ChannelMemberRef): boolean {
+  if (target.kind !== 'agent') return false;
+  return (
+    canonicalChannelMemberId(target.id) !== LOCAL_HUB_ACTOR_ID &&
+    target.id !== LOCAL_HUB_ACTOR_ID
+  );
+}
+
+/** Only an agent-namespaced, non-marker `invited_by` names a resolvable member. */
+function resolvableAgentInviter(invitedBy: string | undefined): boolean {
+  return (
+    typeof invitedBy === 'string' &&
+    invitedBy.length > 0 &&
+    !CHANNEL_MEMBERSHIP_RESERVED_INVITERS.includes(invitedBy) &&
+    !invitedBy.startsWith('human:')
+  );
 }
 
 /** Private browser/operator REST surfaces are never part of the actor lane. */
@@ -2596,6 +2633,28 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       );
       return;
     }
+    // Bound the durable table and, with it, every channel snapshot: the member
+    // list ships whole to each subscriber on connect and catch-up, so an
+    // uncapped invite verb is a broadcast amplifier as well as a growth
+    // problem. Counted on LIVE members, so removals free capacity, and skipped
+    // for a target that is already a member (idempotent re-invite).
+    if (
+      !store.getMember(topic.id, target.kind, target.id) &&
+      store.listMembers(topic.id).length >= CHANNEL_MEMBER_LIMIT
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'channel has reached its member limit',
+        false,
+        {
+          channelId: topic.id,
+          limit: CHANNEL_MEMBER_LIMIT,
+          reasonCode: CHANNEL_MEMBER_LIMIT_REACHED_REASON,
+        }
+      );
+      return;
+    }
     const inviter = deriveSender(req, undefined);
     try {
       const member = store.inviteMember({
@@ -2646,16 +2705,21 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       target: existing,
     });
     if (refusal) {
+      const notGoverned = refusal === 'target-not-governed';
       sendGatewayError(
         res,
         'FORBIDDEN',
-        'caller may not remove this member',
+        notGoverned
+          ? 'membership does not govern this participant, so removing it would revoke nothing'
+          : 'caller may not remove this member',
         false,
         {
           channelId: topic.id,
           memberId: existing.id,
           reason: refusal,
-          reasonCode: CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON,
+          reasonCode: notGoverned
+            ? CHANNEL_MEMBER_NOT_GOVERNED_REASON
+            : CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON,
         }
       );
       return;

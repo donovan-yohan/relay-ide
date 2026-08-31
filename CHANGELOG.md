@@ -83,13 +83,21 @@ workflow.
 #### Changed
 
 - Who may remove whom: you in the browser, and your hub's own terminal, can
-  remove anyone. An agent can remove only itself — leaving a channel
-  it no longer needs — or an agent it invited, and never a person. A removal
-  takes effect on the member's next request, and a subscription it already had
-  open stops within about a second (#1455)
+  remove any agent. An agent can remove only itself — leaving a channel it no
+  longer needs — or an agent it invited, and never a person. A removal takes
+  effect on the member's next request, and a subscription it already had open
+  stops within about a second (#1455)
+- Removing a person, or your hub's own terminal, is refused rather than
+  silently doing nothing. Neither reaches channels through membership, so
+  removing them would take a name off the list without taking any access away
+  (#1455)
 - A removed agent stays out until somebody invites it back or mentions it by
-  name. Mentioning it is an invite, credited to whoever mentioned it, exactly as
-  it is for an agent that was never in the channel (#1455)
+  name — including across restarts, and while Relay keeps running that agent's
+  own background bookkeeping. Mentioning it is an invite, credited to whoever
+  mentioned it, exactly as it is for an agent that was never in the channel
+  (#1455)
+- A channel accepts up to 128 members, so a looping agent cannot grow the list
+  without bound. Removing someone frees a slot (#1455)
 
 ### CLI-only agent-profile setup
 

@@ -229,6 +229,49 @@ The `relay-ide v1 agent-profiles create|update` CLI refuses to read the key from
 
 Related open gap: agent-profile `envVars` are still persisted and returned raw (#1464).
 
+## Channel membership authority (#1455)
+
+Channel authorization for the scoped-actor lane is hub-owned membership, not
+token scope: any channel id may be _requested_, and the hub answers on
+`channel_members`. Credential `channelIds` scope is still enforced — both must
+hold. The browser cookie lane, operator-client credentials, and the #1467
+host-local `local-cli` credential are the operator and are not membership-gated.
+
+Slice 2 adds the explicit verbs, and their privilege matrix is part of this
+boundary. A delegated actor must be a member of the channel to invite or remove
+at all; it may invite only **agent** members, and may remove only itself
+(leaving) or an **agent** member it invited. It never evicts a human, and it
+never acts on a channel outside its credential scope. Only the browser lane and
+the host-local token carry unrestricted membership authority; membership verbs
+are deliberately absent from `OPERATOR_CLIENT_CHANNEL_COMMANDS`, so a paired
+operator client is refused `unsupported_command`.
+
+Membership governs **agents**. Human members and the host-local `local-cli`
+credential reach channels on lanes that are never membership-gated, so removing
+either is refused (`CHANNEL_MEMBER_NOT_GOVERNED`) rather than answered 200 —
+an access control must not report success while revoking nothing. Invites are
+capped per channel, because the member list is broadcast whole in every channel
+snapshot.
+
+Attribution is structural, not procedural. `invitedBy` and the remover are
+derived from the authenticated lane via `deriveSender` — the same function that
+stamps a durable message row — and are not input properties on either verb, so
+a member cannot forge an audit row naming somebody else. Re-inviting a live
+member preserves the original attribution, so nobody can relabel their own
+admission. The reserved `invited_by` markers (`self`, `creator`, `binding`,
+`backfill`, `credential-mint`) name a reason rather than a member and are never
+resolved as ids: an actor whose own id folded onto one would otherwise inherit
+removal rights over every row that marker attributed. Ids that collide with the
+marker namespace are refused as invite targets for the same reason.
+
+Removal is a durable tombstone rather than a row delete, because the additive
+membership backfill and the channel bridge's per-reply upsert would otherwise
+resurrect what was just removed. It is applied to the participant's whole fold
+class, and every implicit writer inherits the class's removal stamp — a row
+written under the participant's other spelling is created already tombstoned,
+so binding bookkeeping cannot re-admit an evicted agent. Only an explicit
+invite — the verb, or a mention, which is the same code path — re-admits.
+
 ## Operator visibility
 
 The hub UI surfaces each paired node's trust tier, ACL allow/challenge/deny capability posture, scope, capability availability, and high-risk summary from the node summary returned by `/hub/nodes`. Confirmation prompts also show the selected node, trust tier, policy ref, required bits grouped by allow/challenge/deny/unknown posture, and keep canonical params behind a details disclosure instead of making raw JSON the only security context.

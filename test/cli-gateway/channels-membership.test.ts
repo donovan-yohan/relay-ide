@@ -133,10 +133,7 @@ describe('channel membership CLI gateway verbs (#1455 slice 2)', () => {
     expect(commandSpec('channels.remove-member').cli).toContain('--member-id');
     // Attribution is never an input: no CLI projection and no input property
     // names the inviter or the remover.
-    for (const name of [
-      'channels.invite',
-      'channels.remove-member',
-    ] as const) {
+    for (const name of ['channels.invite', 'channels.remove-member'] as const) {
       const spec = commandSpec(name);
       expect(spec.cli).not.toContain('--invited-by');
       expect(spec.cli).not.toContain('--removed-by');
@@ -240,10 +237,7 @@ describe('channel membership CLI gateway verbs (#1455 slice 2)', () => {
   it.each([
     [['members', '--json'], 'channels.members'],
     [['invite', '--channel-id', 'topic:general', '--json'], 'channels.invite'],
-    [
-      ['invite', '--member-id', 'agent:codex', '--json'],
-      'channels.invite',
-    ],
+    [['invite', '--member-id', 'agent:codex', '--json'], 'channels.invite'],
     [
       [
         'invite',

@@ -4774,9 +4774,13 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     ).toBe(false);
 
     // Leaving is always allowed, and it takes effect immediately.
-    const left = await removeMember(h, { id: 'agent:codex' }, {
-      ...scoped(h.channelId, 'context:write', 'codex'),
-    });
+    const left = await removeMember(
+      h,
+      { id: 'agent:codex' },
+      {
+        ...scoped(h.channelId, 'context:write', 'codex'),
+      }
+    );
     expect(left.status).toBe(200);
     const afterLeaving = await members(
       h,
@@ -4809,8 +4813,76 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
       write
     );
     expect(evicted.status).toBe(403);
-    expect(evicted.body.error.details?.['reason']).toBe('target-human');
+    expect(evicted.body.error.details?.['reason']).toBe('target-not-governed');
     expect(h.store.isMember(h.channelId, 'human', 'human:operator')).toBe(true);
+    // A `human:`-namespaced id is also refused as an AGENT target, so a human
+    // principal can never be smuggled into the namespace the removal check
+    // resolves `invited_by` in.
+    const smuggled = await invite(h, { id: 'human:operator' }, write);
+    expect(smuggled.status).toBe(400);
+    expect(smuggled.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_INVITE_TARGET_INVALID'
+    );
+  });
+
+  it('refuses to remove a participant membership does not govern', async () => {
+    const h = await harness();
+    // Both reach channels on lanes that are never membership-gated, so evicting
+    // either would drop a roster row and revoke nothing. Refused for the
+    // OPERATOR too — a control that reports success while changing no access is
+    // worse than one that refuses.
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'human',
+      id: 'human:operator',
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+    });
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: 'agent:local-cli',
+      invitedBy: 'creator',
+    });
+    for (const body of [
+      { kind: 'human', id: 'human:operator' },
+      { id: 'agent:local-cli' },
+    ]) {
+      const res = await removeMember(h, body);
+      expect([JSON.stringify(body), res.status]).toEqual([
+        JSON.stringify(body),
+        403,
+      ]);
+      expect(res.body.error.details?.['reasonCode']).toBe(
+        'CHANNEL_MEMBER_NOT_GOVERNED'
+      );
+    }
+    expect(h.store.isMember(h.channelId, 'agent', 'agent:local-cli')).toBe(
+      true
+    );
+  });
+
+  it('caps how many members one channel can be invited up to', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    const write = scoped(h.channelId, 'context:write');
+    for (let i = h.store.listMembers(h.channelId).length; i < 128; i += 1) {
+      const filled = await invite(h, { id: `agent:filler-${i}` }, write);
+      expect([i, filled.status]).toEqual([i, 201]);
+    }
+    const refused = await invite(h, { id: 'agent:one-too-many' }, write);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MEMBER_LIMIT_REACHED'
+    );
+    // Re-inviting an existing member is idempotent and never hits the cap...
+    expect((await invite(h, { id: 'agent:filler-1' }, write)).status).toBe(201);
+    // ...and a removal frees capacity.
+    expect(
+      (await removeMember(h, { id: 'agent:filler-1' }, write)).status
+    ).toBe(200);
+    expect((await invite(h, { id: 'agent:one-too-many' }, write)).status).toBe(
+      201
+    );
   });
 
   it('gives the browser/operator lane unrestricted membership authority', async () => {
@@ -4820,7 +4892,9 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     expect(invited.body.member.invitedBy).toBe('human:operator');
     const humanInvite = await invite(h, { kind: 'human', id: 'human:sam' });
     expect(humanInvite.status).toBe(201);
-    const removed = await removeMember(h, { id: 'agent-profile:codex:default' });
+    const removed = await removeMember(h, {
+      id: 'agent-profile:codex:default',
+    });
     expect(removed.status).toBe(200);
     expect(h.store.listMembers(h.channelId).map((m) => m.id)).toEqual([
       'human:sam',
@@ -4891,9 +4965,9 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
       'channels.invite',
       'channels.remove-member',
     ]) {
-      expect(OPERATOR_CLIENT_CHANNEL_COMMANDS as readonly string[]).not.toContain(
-        command
-      );
+      expect(
+        OPERATOR_CLIENT_CHANNEL_COMMANDS as readonly string[]
+      ).not.toContain(command);
     }
   });
 
@@ -4960,7 +5034,10 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
       'x-relay-capabilities': 'context:write',
     };
     for (const res of [
-      await members(h, { ...otherScope, 'x-relay-capabilities': 'context:read' }),
+      await members(h, {
+        ...otherScope,
+        'x-relay-capabilities': 'context:read',
+      }),
       await invite(h, { id: 'agent-profile:codex:default' }, otherScope),
       await removeMember(h, { id: 'agent:claude' }, otherScope),
     ]) {
@@ -4978,11 +5055,7 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     for (const [method, url, body] of [
       ['GET', `/channels/${missing}/members`, undefined],
       ['POST', `/channels/${missing}/members`, { id: 'agent:codex' }],
-      [
-        'POST',
-        `/channels/${missing}/members/remove`,
-        { id: 'agent:codex' },
-      ],
+      ['POST', `/channels/${missing}/members/remove`, { id: 'agent:codex' }],
     ] as const) {
       const res = await req<{ error: { code: string } }>({
         port: h.port,

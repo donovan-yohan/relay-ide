@@ -188,6 +188,13 @@ export interface ChannelMemberRef {
    * rewrites the original attribution.
    */
   invitedBy?: string;
+  /**
+   * Set only on a ref returned by a membership WRITE whose row is a removal
+   * tombstone (#1455 slice 2). Every list read filters tombstones, so this
+   * never appears in `channels.members` or a channel snapshot — it exists so a
+   * write cannot hand back a live-looking member that `isMember` denies.
+   */
+  removedAt?: string;
 }
 
 /** Reason code for the hub-authoritative channel membership deny (#1455). */
@@ -213,6 +220,34 @@ export const CHANNEL_INVITE_TARGET_INVALID_REASON =
 
 /** Longest member id the invite verb will durably record. */
 export const CHANNEL_MEMBER_ID_MAX_CHARS = 200;
+
+/**
+ * Ceiling on live members per channel, enforced by `channels.invite` (#1455
+ * slice 2).
+ *
+ * The member list ships whole inside every channel snapshot, so an unbounded
+ * invite verb lets one looping or compromised member agent bloat the durable
+ * table AND amplify every broadcast. The credential-mint path bounds its own
+ * enrollment for exactly this reason; the explicit verb needs the same bound.
+ * Relay's own writers are bounded by real participation and are not capped.
+ */
+export const CHANNEL_MEMBER_LIMIT = 128;
+
+/** `channels.invite` refused because the channel is already at capacity. */
+export const CHANNEL_MEMBER_LIMIT_REACHED_REASON =
+  'CHANNEL_MEMBER_LIMIT_REACHED' as const;
+
+/**
+ * `channels.remove-member` naming a participant that membership does not
+ * govern (#1455 slice 2).
+ *
+ * Human members and the host-local `local-cli` credential reach channels on the
+ * operator lanes, which are never membership-gated — so evicting them would
+ * remove a roster row while revoking exactly nothing. A control that reports
+ * success and changes no access is worse than one that refuses, so it refuses.
+ */
+export const CHANNEL_MEMBER_NOT_GOVERNED_REASON =
+  'CHANNEL_MEMBER_NOT_GOVERNED' as const;
 
 /** `invited_by` value stamped on rows derived from pre-membership history. */
 export const CHANNEL_MEMBERSHIP_BACKFILL_INVITER = 'backfill' as const;
@@ -1540,7 +1575,8 @@ function isMemberRef(value: unknown): value is ChannelMemberRef {
     (value.kind === 'human' || value.kind === 'agent') &&
     typeof value.id === 'string' &&
     typeof value.joinedAt === 'string' &&
-    (value.invitedBy === undefined || typeof value.invitedBy === 'string')
+    (value.invitedBy === undefined || typeof value.invitedBy === 'string') &&
+    (value.removedAt === undefined || typeof value.removedAt === 'string')
   );
 }
 

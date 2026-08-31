@@ -6829,9 +6829,7 @@ async function runGatewayChannelsCreate(channelArgs: string[]): Promise<void> {
 }
 
 /** `channels members` (#1455 slice 2): the durable membership + invite audit. */
-async function runGatewayChannelsMembers(
-  channelArgs: string[]
-): Promise<void> {
+async function runGatewayChannelsMembers(channelArgs: string[]): Promise<void> {
   const values = parseChannelCliFlags('channels.members', channelArgs, [
     '--channel-id',
   ]);

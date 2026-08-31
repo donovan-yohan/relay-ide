@@ -8,6 +8,7 @@ import {
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
 import {
+  CHANNEL_MEMBER_ID_MAX_CHARS,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
 } from './channel-chat-protocol.js';
@@ -4089,7 +4090,11 @@ const channelInviteInputSchema: RelayJsonSchema = {
   properties: {
     channelId: stringSchema,
     kind: { type: 'string', enum: ['human', 'agent'] },
-    id: { type: 'string', minLength: 1, maxLength: 200 },
+    id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: CHANNEL_MEMBER_ID_MAX_CHARS,
+    },
   },
   required: ['channelId', 'id'],
 };
@@ -4112,7 +4117,11 @@ const channelRemoveMemberInputSchema: RelayJsonSchema = {
   properties: {
     channelId: stringSchema,
     kind: { type: 'string', enum: ['human', 'agent'] },
-    id: { type: 'string', minLength: 1, maxLength: 200 },
+    id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: CHANNEL_MEMBER_ID_MAX_CHARS,
+    },
   },
   required: ['channelId', 'id'],
 };
