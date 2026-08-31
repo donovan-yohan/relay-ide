@@ -321,6 +321,17 @@ const expectedInventoryCoverage = [
     ],
   },
   {
+    surface: 'CLI gateway agent-profile credential APIs',
+    middleware:
+      'requireCliGatewayAuthForActorCommand + host-local gate in createAgentProfileRouter (all three verbs, reads included)',
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    routes: [
+      'POST /agent-profiles/:id/credential',
+      'POST /agent-profiles/:id/credential/revoke',
+      'GET /agent-profiles/:id/credential',
+    ],
+  },
+  {
     surface: 'CLI gateway channel APIs',
     middleware: 'requireChannelGatewayAuthForCommand',
     acceptedLanes: [
@@ -474,6 +485,19 @@ test('auth route lane inventory keeps credential classes distinct', () => {
     'browser-session',
   ]);
   expect(routeToLanes.get('/agent-profiles/:id (DELETE)')).toEqual([
+    'browser-session',
+  ]);
+  // #1455 slice 3: the credential lifecycle rides the same two lanes, and the
+  // router refuses a DELEGATED actor on all three verbs (status included).
+  expect(routeToLanes.get('POST /agent-profiles/:id/credential')).toEqual([
+    'scoped-actor-credential',
+    'browser-session',
+  ]);
+  expect(
+    routeToLanes.get('POST /agent-profiles/:id/credential/revoke')
+  ).toEqual(['scoped-actor-credential', 'browser-session']);
+  expect(routeToLanes.get('GET /agent-profiles/:id/credential')).toEqual([
+    'scoped-actor-credential',
     'browser-session',
   ]);
   expect(routeToLanes.get('POST /webhooks')).toEqual(['public-local-only']);

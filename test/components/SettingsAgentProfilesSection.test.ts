@@ -5,15 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { AgentProfile } from '../../shared/agent-profile.js';
+import type { AgentProfileCredentialStatus } from '../../shared/agent-profile-credential.js';
 import { deleteAgentProfile } from '../../frontend/src/lib/api.js';
 import type { FrameworkInfo } from '../../frontend/src/lib/types.js';
 import { SearchableSelect } from '../../frontend/src/components/SearchableSelect.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useConfigStore } from '../../frontend/src/lib/stores/config.js';
 import {
+  AgentProfileCredentialPanel,
   AgentProfileEditor,
   AgentProfileGallery,
   SettingsAgentProfilesSection,
+  credentialStateLabel,
+  formatCredentialMoment,
   groupAgentProfiles,
   hermesProfileDraftError,
   profileDraftFrom,
@@ -994,5 +998,390 @@ describe('deleteAgentProfile', () => {
       { method: 'DELETE' }
     );
     vi.unstubAllGlobals();
+  });
+});
+
+describe('AgentProfileCredentialPanel (#1455 slice 3)', () => {
+  const profileId = 'agent-profile:hermes:product';
+  const otherProfileId = 'agent-profile:claude:reviewer';
+  const TOKEN = 'relay-agent-token-9f3c1b';
+  let host: HTMLDivElement;
+  let root: Root;
+  let client: QueryClient;
+  let calls: string[];
+  let stored: Map<string, AgentProfileCredentialStatus>;
+  let mintHandler: (id: string) => Response;
+
+  const credential = (
+    overrides: Partial<AgentProfileCredentialStatus> = {}
+  ): AgentProfileCredentialStatus => ({
+    profileId,
+    credentialId: 'agent-profile-credential:1',
+    actorId: profileId,
+    capabilities: ['session:read', 'context:read', 'context:write'],
+    issuedAt: '2026-08-29T10:00:00.000Z',
+    expiresAt: '2027-08-29T10:00:00.000Z',
+    revokedAt: null,
+    revokedBy: null,
+    lastUsedAt: null,
+    state: 'active',
+    ...overrides,
+  });
+
+  const jsonResponse = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  const button = (label: string) =>
+    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+      (candidate) => candidate.textContent?.trim() === label
+    );
+  const tokenEl = () =>
+    host.querySelector('[data-testid="agent-profile-credential-token"]');
+  const stateLabel = () =>
+    host
+      .querySelector('.agent-profiles-credential__state')
+      ?.textContent?.trim();
+  const errorText = () =>
+    host.querySelector('.agent-profiles-credential__error')?.textContent;
+
+  const waitFor = async (predicate: () => boolean) => {
+    for (let i = 0; i < 50 && !predicate(); i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      });
+    }
+  };
+
+  const renderPanel = async (id: string = profileId) => {
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client },
+          React.createElement(AgentProfileCredentialPanel, { profileId: id })
+        )
+      );
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', matchMedia);
+    calls = [];
+    stored = new Map();
+    mintHandler = (id: string) => {
+      const next = credential({ profileId: id, actorId: id });
+      stored.set(id, next);
+      return jsonResponse({ credential: next, token: TOKEN });
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        calls.push(`${method} ${url}`);
+        const id = decodeURIComponent(url.split('/')[2] ?? '');
+        if (method === 'GET') {
+          return jsonResponse({ credential: stored.get(id) ?? null });
+        }
+        if (url.endsWith('/revoke')) {
+          const revoked = credential({
+            profileId: id,
+            actorId: id,
+            revokedAt: '2026-08-30T09:00:00.000Z',
+            revokedBy: 'operator',
+            state: 'revoked',
+          });
+          stored.set(id, revoked);
+          return jsonResponse({ credential: revoked });
+        }
+        return mintHandler(id);
+      })
+    );
+    client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it('reads the status on open and mints a show-once token', async () => {
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'not minted');
+    expect(calls).toEqual([
+      `GET /agent-profiles/${encodeURIComponent(profileId)}/credential`,
+    ]);
+    expect(button('mint credential')?.disabled).toBe(false);
+    expect(button('revoke')?.disabled).toBe(true);
+
+    await act(async () => button('mint credential')?.click());
+    await waitFor(() => tokenEl() !== null);
+    expect(tokenEl()?.textContent).toBe(TOKEN);
+    expect(
+      host.querySelector('.agent-profiles-credential__token-warning')
+        ?.textContent
+    ).toContain('never show it again');
+    expect(stateLabel()).toBe('active');
+    // Rotation is one mint call; the hub revokes the live credential itself.
+    expect(button('rotate credential')).toBeTruthy();
+    expect(button('mint credential')).toBeUndefined();
+    expect(calls).toContain(
+      `POST /agent-profiles/${encodeURIComponent(profileId)}/credential`
+    );
+    expect(
+      host.querySelector('.agent-profiles-credential__facts')?.textContent
+    ).toContain('issued');
+  });
+
+  it('copies the token to the clipboard on demand', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'not minted');
+    await act(async () => button('mint credential')?.click());
+    await waitFor(() => tokenEl() !== null);
+    await act(async () => button('copy')?.click());
+    await waitFor(() => button('copied') !== undefined);
+    expect(writeText).toHaveBeenCalledWith(TOKEN);
+    // The clipboard is the only place the token is ever written to. Scan BOTH
+    // browser stores by value rather than probing one guessed key: a component
+    // that persisted the secret under any other name would sail past that.
+    for (const store of [localStorage, sessionStorage]) {
+      const values = Object.keys(store).map((key) => store.getItem(key) ?? '');
+      expect(values.some((value) => value.includes(TOKEN))).toBe(false);
+    }
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('never shows the token again after the panel is reopened', async () => {
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'not minted');
+    await act(async () => button('mint credential')?.click());
+    await waitFor(() => tokenEl() !== null);
+
+    // Closing settings unmounts the panel; reopening mounts a fresh one, which
+    // can only read status. The secret exists nowhere it could come back from.
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'active');
+    expect(tokenEl()).toBeNull();
+    expect(host.textContent).not.toContain(TOKEN);
+    expect(calls.filter((call) => call.startsWith('POST'))).toHaveLength(1);
+  });
+
+  it('drops the token when the panel is repointed at another profile', async () => {
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'not minted');
+    await act(async () => button('mint credential')?.click());
+    await waitFor(() => tokenEl() !== null);
+
+    // Same element type and no key: without the profile-tagged guard React
+    // would keep this state and show one profile's secret under another's name.
+    await renderPanel(otherProfileId);
+    await waitFor(() => tokenEl() === null);
+    expect(host.textContent).not.toContain(TOKEN);
+  });
+
+  it('revokes through the revoke endpoint and flips the state', async () => {
+    stored.set(profileId, credential());
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'active');
+    expect(button('revoke')?.disabled).toBe(false);
+
+    await act(async () => button('revoke')?.click());
+    await waitFor(() => stateLabel() === 'revoked');
+    expect(calls).toContain(
+      `POST /agent-profiles/${encodeURIComponent(profileId)}/credential/revoke`
+    );
+    expect(button('revoke')?.disabled).toBe(true);
+    expect(button('mint credential')).toBeTruthy();
+    expect(
+      host.querySelector('.agent-profiles-credential__facts')?.textContent
+    ).toContain('revoked');
+  });
+
+  it('renders a failed mint from the error envelope instead of throwing', async () => {
+    mintHandler = () =>
+      jsonResponse(
+        {
+          error: {
+            code: 'AGENT_PROFILE_CREDENTIAL_MINT_DENIED',
+            message: 'profile is not a gateway agent',
+            retryable: false,
+            details: { reasonCode: 'AGENT_PROFILE_CREDENTIAL_UNSUPPORTED' },
+          },
+        },
+        400
+      );
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'not minted');
+    await act(async () => button('mint credential')?.click());
+    await waitFor(() => errorText() !== undefined);
+    expect(errorText()).toBe('profile is not a gateway agent');
+    expect(tokenEl()).toBeNull();
+    expect(stateLabel()).toBe('not minted');
+  });
+
+  it('renders a 404 revoke envelope without losing the panel', async () => {
+    stored.set(profileId, credential());
+    await renderPanel();
+    await waitFor(() => stateLabel() === 'active');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: {
+              code: 'NOT_FOUND',
+              message: 'no live credential for this profile',
+              retryable: false,
+              details: { reasonCode: 'AGENT_PROFILE_CREDENTIAL_NOT_FOUND' },
+            },
+          },
+          404
+        )
+      )
+    );
+    await act(async () => button('revoke')?.click());
+    await waitFor(() => errorText() !== undefined);
+    expect(errorText()).toBe('no live credential for this profile');
+    expect(button('revoke')).toBeTruthy();
+  });
+
+  it('labels lifecycle state and formats moments without a locale', () => {
+    expect(credentialStateLabel(null)).toBe('not minted');
+    expect(credentialStateLabel(credential())).toBe('active');
+    expect(credentialStateLabel(credential({ state: 'expired' }))).toBe(
+      'expired'
+    );
+    expect(formatCredentialMoment(null)).toBe('never');
+    expect(formatCredentialMoment('not-a-date')).toBe('unknown');
+    expect(formatCredentialMoment('2026-08-29T10:00:00.000Z')).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/
+    );
+  });
+});
+
+describe('SettingsAgentProfilesSection credential panel wiring (#1455)', () => {
+  const TOKEN = 'relay-agent-token-section';
+  const saved = profile({
+    id: 'agent-profile:hermes:product',
+    providerId: 'hermes',
+    displayName: 'product owner',
+    model: '',
+    effort: '',
+  });
+  const other = profile({
+    id: 'agent-profile:claude:reviewer',
+    displayName: 'reviewer claude',
+  });
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', matchMedia);
+    useConfigStore.setState({ frameworks: hermesFrameworks });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input);
+        const body = (payload: unknown) =>
+          new Response(JSON.stringify(payload), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        if (url === '/agent-profiles')
+          return body({ profiles: [saved, other] });
+        if ((init?.method ?? 'GET') === 'GET')
+          return body({ credential: null });
+        const id = decodeURIComponent(url.split('/')[2] ?? '');
+        return body({
+          credential: {
+            profileId: id,
+            credentialId: 'agent-profile-credential:1',
+            actorId: id,
+            capabilities: ['session:read', 'context:read', 'context:write'],
+            issuedAt: '2026-08-29T10:00:00.000Z',
+            expiresAt: '2027-08-29T10:00:00.000Z',
+            revokedAt: null,
+            revokedBy: null,
+            lastUsedAt: null,
+            state: 'active',
+          },
+          token: TOKEN,
+        });
+      })
+    );
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it('offers the credential block for a saved profile and clears the token on switch', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client },
+          React.createElement(SettingsAgentProfilesSection, { searchQuery: '' })
+        )
+      );
+    });
+    const settle = async (predicate: () => boolean) => {
+      for (let i = 0; i < 50 && !predicate(); i++) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        });
+      }
+    };
+    await settle(() => host.querySelector('.agent-profiles-card') !== null);
+    const editButton = (profileId: string) =>
+      host
+        .querySelector(`[data-profile-id="${profileId}"]`)
+        ?.querySelector<HTMLButtonElement>('button');
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (candidate) => candidate.textContent?.trim() === label
+      );
+    const tokenEl = () =>
+      host.querySelector('[data-testid="agent-profile-credential-token"]');
+
+    // A brand-new draft has no actor id yet, so there is nothing to bind.
+    await act(async () => button('add profile')?.click());
+    expect(host.querySelector('.agent-profiles-credential')).toBeNull();
+    await act(async () => button('cancel')?.click());
+
+    await act(async () => editButton(saved.id)?.click());
+    await settle(() => button('mint credential')?.disabled === false);
+    await act(async () => button('mint credential')?.click());
+    await settle(() => tokenEl() !== null);
+    expect(tokenEl()?.textContent).toBe(TOKEN);
+
+    // Switching the edited profile remounts the panel: the secret is gone.
+    await act(async () => editButton(other.id)?.click());
+    await settle(() => tokenEl() === null);
+    expect(host.textContent).not.toContain(TOKEN);
+    expect(host.querySelector('.agent-profiles-credential')).not.toBeNull();
   });
 });

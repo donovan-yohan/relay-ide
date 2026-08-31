@@ -70,6 +70,10 @@ import type {
   AgentProfile,
   AgentProfileRespondTo,
 } from '../../../shared/agent-profile.js';
+import type {
+  AgentProfileCredentialMintResult,
+  AgentProfileCredentialStatus,
+} from '../../../shared/agent-profile-credential.js';
 import type { TaskRef, WorkContext } from '../../../shared/work-context.js';
 import type {
   PipelineHandoffArtifactEnvelope,
@@ -4080,6 +4084,51 @@ export async function setDefaultAgentProfile(
     })
   );
   return data.profile;
+}
+
+// ── Agent profile credentials (#1455 slice 3) ───────────────────────────────
+
+/**
+ * Current credential status for a profile, or `null` when none was ever minted.
+ * The status never carries the token: the hub keeps only a hash, so a read can
+ * physically not hand the secret back.
+ */
+export async function fetchAgentProfileCredential(
+  id: string
+): Promise<AgentProfileCredentialStatus | null> {
+  const data = await json<{
+    credential?: AgentProfileCredentialStatus | null;
+  }>(
+    await fetch(`${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}/credential`)
+  );
+  return data.credential ?? null;
+}
+
+/**
+ * Mint (or rotate — the hub revokes any live credential first) the profile's
+ * credential. The returned `token` is SHOW-ONCE: nothing can retrieve it again,
+ * so a caller that drops it has lost it.
+ */
+export async function mintAgentProfileCredential(
+  id: string
+): Promise<AgentProfileCredentialMintResult> {
+  return json<AgentProfileCredentialMintResult>(
+    await fetch(`${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}/credential`, {
+      method: 'POST',
+    })
+  );
+}
+
+export async function revokeAgentProfileCredential(
+  id: string
+): Promise<AgentProfileCredentialStatus> {
+  const data = await json<{ credential: AgentProfileCredentialStatus }>(
+    await fetch(
+      `${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}/credential/revoke`,
+      { method: 'POST' }
+    )
+  );
+  return data.credential;
 }
 
 // ── Workspace branch operations ───────────────────────────────────────────────

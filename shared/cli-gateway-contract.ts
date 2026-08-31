@@ -123,6 +123,9 @@ export type RelayCliGatewayCommand =
   | 'agent-profiles.get'
   | 'agent-profiles.create'
   | 'agent-profiles.update'
+  | 'agent-profiles.credential.mint'
+  | 'agent-profiles.credential.revoke'
+  | 'agent-profiles.credential.status'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -706,6 +709,94 @@ const agentProfileOutputDataSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: { profile: agentProfileSchema },
   required: ['profile'],
+};
+
+/**
+ * Token-free credential status (#1455 slice 3). Mirrors
+ * `shared/agent-profile-credential.ts`. The secret is not representable here:
+ * only the mint response carries a token, and only once.
+ */
+const agentProfileCredentialSchema: RelayJsonSchema = {
+  title: 'AgentProfileCredential',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    profileId: stringSchema,
+    credentialId: stringSchema,
+    actorId: stringSchema,
+    capabilities: { type: 'array', items: stringSchema },
+    issuedAt: stringSchema,
+    expiresAt: stringSchema,
+    revokedAt: nullableStringSchema,
+    revokedBy: nullableStringSchema,
+    lastUsedAt: nullableStringSchema,
+    state: { type: 'string', enum: ['active', 'revoked', 'expired'] },
+  },
+  required: [
+    'profileId',
+    'credentialId',
+    'actorId',
+    'capabilities',
+    'issuedAt',
+    'expiresAt',
+    'revokedAt',
+    'revokedBy',
+    'lastUsedAt',
+    'state',
+  ],
+};
+
+const agentProfilesCredentialMintInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesCredentialMintInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, ttlMs: { type: 'number' } },
+  required: ['id'],
+};
+
+const agentProfilesCredentialRevokeInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesCredentialRevokeInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, reason: stringSchema },
+  required: ['id'],
+};
+
+const agentProfilesCredentialStatusInputSchema: RelayJsonSchema = {
+  title: 'AgentProfilesCredentialStatusInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+/** Mint output. `token` appears here and NOWHERE else in the contract. */
+const agentProfileCredentialMintOutputDataSchema: RelayJsonSchema = {
+  title: 'AgentProfileCredentialMintData',
+  type: 'object',
+  additionalProperties: false,
+  properties: { credential: agentProfileCredentialSchema, token: stringSchema },
+  required: ['credential', 'token'],
+};
+
+const agentProfileCredentialOutputDataSchema: RelayJsonSchema = {
+  title: 'AgentProfileCredentialData',
+  type: 'object',
+  additionalProperties: false,
+  properties: { credential: agentProfileCredentialSchema },
+  required: ['credential'],
+};
+
+const agentProfileCredentialStatusOutputDataSchema: RelayJsonSchema = {
+  title: 'AgentProfileCredentialStatusData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    credential: {
+      anyOf: [agentProfileCredentialSchema, { type: 'null' }],
+    },
+  },
+  required: ['credential'],
 };
 
 const controlActorSchema: RelayJsonSchema = {
@@ -7954,6 +8045,99 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.credential.mint',
+    cli: [
+      'relay-ide',
+      'v1',
+      'agent-profiles',
+      'credential',
+      'mint',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      "Mint the durable Relay actor credential for one agent profile, revoking whatever it already held. Host-local operator authority only. The token is returned ONCE and is never retrievable afterwards; the profile's channel reach is decided by hub-owned channel membership, not by the credential's scope.",
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: agentProfilesCredentialMintInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesCredentialMintOutput',
+      agentProfileCredentialMintOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.credential.revoke',
+    cli: [
+      'relay-ide',
+      'v1',
+      'agent-profiles',
+      'credential',
+      'revoke',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Revoke an agent profile\u2019s live Relay actor credential. Host-local operator authority only. Revocation survives a hub restart.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: agentProfilesCredentialRevokeInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesCredentialRevokeOutput',
+      agentProfileCredentialOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'agent-profiles.credential.status',
+    cli: [
+      'relay-ide',
+      'v1',
+      'agent-profiles',
+      'credential',
+      'status',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Read an agent profile credential\u2019s state, issue/expiry times, and coarse last-used stamp. The token is never returned. Host-local operator authority only.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: agentProfilesCredentialStatusInputSchema,
+    outputSchema: okOutput(
+      'AgentProfilesCredentialStatusOutput',
+      agentProfileCredentialStatusOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
       'SERVER_UNAVAILABLE',
     ],
   },

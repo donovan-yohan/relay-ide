@@ -22,6 +22,16 @@ import {
 } from '../shared/security-policy.js';
 
 export const CLI_GATEWAY_ACTOR_AUDIENCE = 'relay:cli-gateway:v1' as const;
+
+/**
+ * The trusted metadata marker on a durable per-profile credential (#1455
+ * slice 3). Exported so the boot rehydrate restores the SAME marker the mint
+ * stamps — a restored credential that lost it would be a member of no channel
+ * it could actually reach.
+ */
+export const AGENT_PROFILE_CREDENTIAL_REASON =
+  'agent-profile-credential' as const;
+
 export const CLI_GATEWAY_READ_SCOPE_TASK_REF =
   'relay:cli-gateway:v1:read' as const;
 export const CLI_GATEWAY_ACTOR_TOKEN_HEADER =
@@ -89,6 +99,11 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'inbox.get',
   'agent-profiles.list',
   'agent-profiles.get',
+  // #1455 slice 3: reading a profile's credential state. On the read lane so
+  // the host-local token can answer `credential status` without a browser, and
+  // gated a second time in the router — a DELEGATED actor is refused there,
+  // because credential lifecycle is host-local operator authority.
+  'agent-profiles.credential.status',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -132,6 +147,12 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   // agent holding `context:write` still cannot mint or rebind a profile.
   'agent-profiles.create',
   'agent-profiles.update',
+  // #1455 slice 3: mint/revoke the durable per-profile actor credential. Same
+  // lane and the same host-local write gate as create/update — a delegated
+  // actor holding `context:write` cannot mint itself (or anybody else) a
+  // credential.
+  'agent-profiles.credential.mint',
+  'agent-profiles.credential.revoke',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -288,6 +309,19 @@ export function renewCliGatewayActorCredential(
     throw new CliGatewayActorGrantError(
       'audience_expansion',
       'the host-local CLI credential is rotated by the hub and cannot be renewed'
+    );
+  }
+  // #1455 slice 3: refuse for BOTH reasons the host-local refusal exists, and
+  // one more. The successor would silently lose the trusted marker (the reason
+  // below is overwritten), downgrading a credential whose holder believes it
+  // just extended — and, worse, it would land in the registry with NO row in
+  // `agent_profile_credentials`, so the operator's revoke button could never
+  // reach it and it would vanish at the next restart. A profile credential is
+  // rotated through `agent-profiles.credential.mint`, which is operator-gated.
+  if (isAgentProfileActorCredential(previous)) {
+    throw new CliGatewayActorGrantError(
+      'audience_expansion',
+      'an agent-profile credential is rotated with agent-profiles.credential.mint and cannot be self-renewed'
     );
   }
   const ttlMs =
@@ -510,11 +544,17 @@ export function cliGatewayActorCommandCapabilities(
   // #1473: agent-profile reads are a roster read; writes are hub-local config
   // mutations. Both resolve explicitly so neither falls into the generic
   // `session:read` read fallback or the `artifact:write` write fallback below.
-  if (command === 'agent-profiles.list' || command === 'agent-profiles.get')
+  if (
+    command === 'agent-profiles.list' ||
+    command === 'agent-profiles.get' ||
+    command === 'agent-profiles.credential.status'
+  )
     return ['context:read'];
   if (
     command === 'agent-profiles.create' ||
-    command === 'agent-profiles.update'
+    command === 'agent-profiles.update' ||
+    command === 'agent-profiles.credential.mint' ||
+    command === 'agent-profiles.credential.revoke'
   )
     return ['context:write'];
   if (
@@ -563,7 +603,11 @@ export function defaultCliGatewayActorScope(
 }
 
 /**
- * The boot-minted host-local credential `token` NAMES (#1467), or undefined.
+ * The credential `token` NAMES, or undefined when it names none.
+ *
+ * Generalized from a hub-local-only lookup (#1467) once #1455 slice 3 needed
+ * the same question asked of a second marker; the CALLER decides which markers
+ * matter, and this returns whatever record the id resolves to.
  *
  * IDENTIFICATION ONLY. It resolves the record by the token's public id and does
  * NOT check the secret, so it must never be used to admit a request — its only
@@ -572,7 +616,7 @@ export function defaultCliGatewayActorScope(
  * a forged token that merely names the local credential's id is rejected there
  * as `malformed_credential` and gains nothing from this returning a record.
  */
-function localHubCliCredentialNamedBy(
+function credentialNamedBy(
   registry: ScopedActorCredentialRegistry,
   token: unknown
 ): ScopedActorCredentialRecord | undefined {
@@ -581,8 +625,7 @@ function localHubCliCredentialNamedBy(
   if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return undefined;
   const id = parts[1];
   if (!id) return undefined;
-  const credential = registry.getCredential(id) ?? undefined;
-  return isLocalHubCliActorCredential(credential) ? credential : undefined;
+  return registry.getCredential(id) ?? undefined;
 }
 
 /** Drop the channel dimension from a requested validation scope (#1476). */
@@ -629,13 +672,24 @@ export function validateCliGatewayActorCredential(
   const requestsChannel =
     requestedScope.channelId !== undefined ||
     requestedScope.channelIds !== undefined;
-  const localCredential = requestsChannel
-    ? localHubCliCredentialNamedBy(registry, input.token)
+  const namedCredential = requestsChannel
+    ? credentialNamedBy(registry, input.token)
     : undefined;
-  const validationScope =
-    localCredential && !localCredential.scope?.channelIds?.length
-      ? withoutRequestedChannelScope(requestedScope)
-      : requestedScope;
+  // #1455 slice 3 rides the SAME mechanism for the durable per-profile
+  // credential, for a different reason: not "this caller is the operator" but
+  // "this caller's channel reach is decided by hub-owned membership, not by
+  // token scope". Membership is enforced in the routers and per-frame on the
+  // subscribe stream, and `actorMemberRef` deliberately does NOT exempt this
+  // marker, so dropping the scope dimension here narrows nothing away — it
+  // hands the decision to the gate that owns it. See
+  // `issueAgentProfileCliGatewayActorCredential`.
+  const defersChannelScope =
+    (isLocalHubCliActorCredential(namedCredential) &&
+      !namedCredential?.scope?.channelIds?.length) ||
+    credentialDefersChannelScopeToMembership(namedCredential);
+  const validationScope = defersChannelScope
+    ? withoutRequestedChannelScope(requestedScope)
+    : requestedScope;
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
@@ -704,16 +758,19 @@ export function cliGatewayActorFailure(input: {
  * sender-id branch and the agent-brake bypass in the channel router,
  * `channel-runtime-read` marks the standing read lease (#1410) so a later
  * consumer can tell an internally minted read handle from an operator-issued
- * one, and `hub-local-cli` (#1467) marks the boot-minted host-local operator
+ * one, `hub-local-cli` (#1467) marks the boot-minted host-local operator
  * credential that is exempt from the channel-scope narrowing every delegated
- * actor credential is held to. Every externally supplied metadata blob is
- * stripped of them, so no caller can forge any marker through the issue/grant
- * surface.
+ * actor credential is held to, and `agent-profile-credential` (#1455 slice 3)
+ * marks the durable per-profile credential whose channel reach is decided by
+ * hub-owned MEMBERSHIP rather than by token scope. Every externally supplied
+ * metadata blob is stripped of them, so no caller can forge any marker through
+ * the issue/grant surface.
  */
 const TRUSTED_INTERNAL_CREDENTIAL_REASONS = [
   'persistent-orchestrator',
   'channel-runtime-read',
   'hub-local-cli',
+  AGENT_PROFILE_CREDENTIAL_REASON,
 ] as const;
 
 type TrustedInternalCredentialReason =
@@ -836,6 +893,112 @@ export function isLocalHubCliActorCredential(
   credential: ScopedActorCredentialRecord | undefined
 ): boolean {
   return credential?.metadata?.reason === 'hub-local-cli';
+}
+
+/**
+ * Trusted in-process issuer for the durable per-profile actor credential
+ * (#1455 slice 3).
+ *
+ * SCOPE VS MEMBERSHIP — the load-bearing decision of this slice.
+ *
+ * This credential is minted with NO `channelIds`, and the marker makes the
+ * channel scope dimension DEFER to hub-owned membership instead of failing
+ * closed. That is not a widening of what the actor may reach; it moves the
+ * question. The redesign's model (issue #1455, operator decision 2026-08-30) is
+ * "authentication = the long-lived per-profile credential, authorization =
+ * hub-authoritative channel membership: any channel id may be REQUESTED, the
+ * hub decides". A `channelIds` list on a credential is the opposite model — it
+ * freezes an agent's reach to the rooms that existed at mint time, so a channel
+ * created tomorrow is unreachable until someone re-mints, and the token in a
+ * Hermes `.env` is exactly the thing that must not need re-minting.
+ *
+ * What is NOT relaxed, and what keeps a remote actor fail-closed:
+ * - **Membership still gates every channel verb.** Unlike `hub-local-cli`,
+ *   `actorMemberRef` deliberately does NOT exempt this marker: the credential
+ *   resolves to the profile's own member ref and a non-member is refused
+ *   `CHANNEL_NOT_MEMBER` on read, write, and per-frame on the subscribe stream.
+ *   Enumeration narrows to the profile's memberships.
+ * - **Only an operator can mint one.** The lifecycle verbs run behind the same
+ *   host-local-or-browser gate as `agent-profiles.create`/`.update` (#1473), so
+ *   a delegated actor cannot mint itself a scope-deferring credential.
+ * - **The marker cannot be forged.** `credentialIssueMetadata` strips every
+ *   trusted reason from caller-supplied metadata; this function is the only
+ *   place that stamps it.
+ * - **Every other dimension is enforced unchanged** — capabilities, expiry,
+ *   revocation, audience, node/session/work-context/repo/path/task scope.
+ * - **An ordinary delegated credential is untouched.** Without this marker a
+ *   channel request against a credential holding no `channelIds` is still
+ *   denied `wrong_channel_scope`, exactly as before.
+ */
+export function issueAgentProfileCliGatewayActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  input: Omit<CliGatewayActorIssueInput, 'metadata'>
+): { token: string; credential: ScopedActorCredentialRecord } {
+  // The registry requires at least one scope dimension, and this credential
+  // deliberately names no channels — so the read task-ref marker is stamped
+  // HERE rather than left to `defaultCliGatewayActorScope`, which only injects
+  // it for a capability set containing `session:read`. Depending on that would
+  // make "which capabilities did we ask for" silently decide whether the mint
+  // throws `SCOPE_REQUIRED`.
+  const scope = coerceScope(input.scope);
+  const canonical = agentProfileCredentialScope();
+  return issueCliGatewayActorCredentialInternal(
+    registry,
+    {
+      ...input,
+      scope: {
+        ...scope,
+        taskRefs: uniqueStrings([
+          ...(canonical.taskRefs ?? []),
+          ...(scope?.taskRefs ?? []),
+        ]),
+      },
+    },
+    AGENT_PROFILE_CREDENTIAL_REASON
+  );
+}
+
+/**
+ * The scope every profile credential carries: no channels (reach is
+ * membership), plus the read task-ref marker that satisfies the registry's
+ * "at least one explicit scope dimension" rule.
+ *
+ * ONE definition, shared by the mint and by the boot rehydrate. Two copies of
+ * this would drift into a restored credential whose stored scope no request
+ * ever satisfies (`missing_scope`) — a whole-fleet outage that only shows up
+ * after a restart.
+ */
+export function agentProfileCredentialScope(): ScopedActorCredentialScope {
+  return { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] };
+}
+
+/** True for a credential minted by `issueAgentProfileCliGatewayActorCredential`. */
+export function isAgentProfileActorCredential(
+  credential: ScopedActorCredentialRecord | undefined
+): boolean {
+  return credential?.metadata?.reason === AGENT_PROFILE_CREDENTIAL_REASON;
+}
+
+/**
+ * True when this credential's CHANNEL scope dimension defers to hub-owned
+ * membership (#1455 slice 3) — i.e. it is a profile-bound credential that names
+ * no channels of its own.
+ *
+ * The `channelIds` guard is deliberate and mirrors the #1476 reasoning: should
+ * a profile credential ever be minted WITH channel scope, dropping the request
+ * would leave the credential's own values unrequested and trip the trailing
+ * `missing_scope` rule in `validateCredentialScope`, turning the deferral into
+ * a total channel outage. A channel-scoped credential is narrowed normally.
+ *
+ * This says nothing about membership, which is enforced separately and always.
+ */
+export function credentialDefersChannelScopeToMembership(
+  credential: ScopedActorCredentialRecord | undefined
+): boolean {
+  return (
+    isAgentProfileActorCredential(credential) &&
+    !credential?.scope?.channelIds?.length
+  );
 }
 
 export function issueCliGatewayActorCredentialWithGrant(

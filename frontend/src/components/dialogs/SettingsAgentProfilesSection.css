@@ -294,3 +294,128 @@
   justify-content: space-between;
   gap: 8px;
 }
+
+/* Relay credential (#1455 slice 3). Same bordered block, type scale and
+   spacing as the editor above it; the token panel is the only emphasized
+   element, and only while the secret is on screen. */
+.agent-profiles-credential {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px;
+}
+
+.agent-profiles-credential h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  font-weight: normal;
+}
+
+.agent-profiles-credential p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.agent-profiles-credential__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-profiles-credential__state {
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+
+.agent-profiles-credential__state[data-state='active'] {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.agent-profiles-credential__state[data-state='revoked'] {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.agent-profiles-credential__state[data-state='expired'] {
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.agent-profiles-credential__facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.agent-profiles-credential__facts dt,
+.agent-profiles-credential__facts dd {
+  margin: 0;
+}
+
+.agent-profiles-credential__facts dd {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.agent-profiles-credential__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-profiles-credential__token {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--accent);
+  padding: 10px;
+}
+
+/* Wins over the block's muted `p` rule, which is one class + one element. */
+.agent-profiles-credential .agent-profiles-credential__token-warning {
+  color: var(--accent);
+}
+
+.agent-profiles-credential__token-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-profiles-credential__token-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-all;
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.agent-profiles-credential .agent-profiles-credential__error {
+  color: var(--status-error);
+}
+
+@media (max-width: 520px) {
+  .agent-profiles-credential__token-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

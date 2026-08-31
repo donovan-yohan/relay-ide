@@ -5072,3 +5072,197 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     }
   });
 });
+
+describe('channel routes — profile-bound credentials defer scope to membership (#1455 slice 3)', () => {
+  /**
+   * The durable per-profile credential: the trusted `agent-profile-credential`
+   * marker and NO `channelIds`. The whole point of the slice is that its reach
+   * is a membership question, so the tests below vary membership only.
+   */
+  const profileCredential = (capability: string) => ({
+    'x-test-actor-id': builtInAgentProfileId('claude'),
+    'x-test-actor-reason': 'agent-profile-credential',
+    'x-relay-capabilities': capability,
+  });
+
+  /** The same shape WITHOUT the marker: an ordinary delegated actor. */
+  const unmarked = (capability: string) => ({
+    'x-test-actor-id': builtInAgentProfileId('claude'),
+    'x-relay-capabilities': capability,
+  });
+
+  it('refuses a non-member with CHANNEL_NOT_MEMBER, not a scope error', async () => {
+    const h = await harness();
+    const id = encodeURIComponent(h.channelId);
+    const read = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${id}/messages`,
+      headers: profileCredential('context:read'),
+    });
+    expect(read.status).toBe(403);
+    // The distinction is the design: scope stopped being the gate, membership
+    // became it. A CHANNEL_OUT_OF_SCOPE here would mean the deferral never ran.
+    expect(read.body.error.details?.reasonCode).toBe('CHANNEL_NOT_MEMBER');
+    const post = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${id}/messages`,
+      headers: profileCredential('context:write'),
+      body: { text: 'let me in' },
+    });
+    expect(post.status).toBe(403);
+    expect(post.body.error.details?.reasonCode).toBe('CHANNEL_NOT_MEMBER');
+    expect(h.store.history(h.channelId)).toHaveLength(0);
+  });
+
+  it('admits the profile once the hub records it as a member, attributed to the profile', async () => {
+    const h = await harness();
+    const profileId = builtInAgentProfileId('claude');
+    // Enrolled under the BARE profile Actor id, the spelling the bridge and
+    // binder write; the credential arrives as `agent:<profileId>`. The
+    // membership fold is what makes those one participant.
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: profileId,
+      invitedBy: 'human:operator',
+    });
+    const read = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: profileCredential('context:read'),
+    });
+    expect(read.status).toBe(200);
+    const posted = await req<{ message: { sender: { id: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: profileCredential('context:write'),
+      body: { text: 'posting as my profile' },
+    });
+    expect(posted.status).toBe(201);
+    // Server-derived from the credential: the profile's own Actor id.
+    expect(posted.body.message.sender.id).toBe(`agent:${profileId}`);
+    // And a body that tries to name a sender is refused outright rather than
+    // quietly ignored — attribution is not negotiable on this lane either.
+    const forged = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: profileCredential('context:write'),
+      body: { text: 'as someone else', sender: { id: 'agent:someone' } },
+    });
+    expect(forged.status).toBe(400);
+  });
+
+  it('enumerates memberships instead of being refused for having no channel scope', async () => {
+    const h = await harness();
+    const other = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: builtInAgentProfileId('claude'),
+      invitedBy: 'human:operator',
+    });
+    const listed = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: profileCredential('context:read'),
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.body.channels.map((channel) => channel.id)).toEqual([
+      h.channelId,
+    ]);
+    expect(listed.body.channels.map((channel) => channel.id)).not.toContain(
+      other
+    );
+    // The same guard (`denyChannelReadWithoutScope`) fronts an unscoped search,
+    // so it is asserted here rather than assumed to follow from the list.
+    for (const channelId of [h.channelId, other]) {
+      h.store.appendComplete({
+        channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: 'shared secret phrase',
+      });
+    }
+    const search = await req<{ results: Array<{ channelId: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=secret',
+      headers: profileCredential('context:read'),
+    });
+    expect(search.status).toBe(200);
+    expect([
+      ...new Set(search.body.results.map((hit) => hit.channelId)),
+    ]).toEqual([h.channelId]);
+  });
+
+  it('keeps an UNMARKED scope-less credential fail-closed, membership or not', async () => {
+    const h = await harness();
+    // The regression guard for the whole slice: the deferral is keyed on a
+    // marker only the hub can stamp. Without it, a credential naming no
+    // channels is still refused at the scope gate even when it IS a member.
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: builtInAgentProfileId('claude'),
+      invitedBy: 'human:operator',
+    });
+    const read = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: unmarked('context:read'),
+    });
+    expect(read.status).toBe(403);
+    expect(read.body.error.details?.reasonCode).toBe('CHANNEL_OUT_OF_SCOPE');
+    const listed = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: unmarked('context:read'),
+    });
+    expect(listed.status).toBe(403);
+    expect(listed.body.error.details?.reasonCode).toBe(
+      'CHANNEL_SCOPE_REQUIRED'
+    );
+  });
+
+  it('still narrows a profile credential that DOES name channels', async () => {
+    const h = await harness();
+    const other = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
+    const profileId = builtInAgentProfileId('claude');
+    for (const channelId of [h.channelId, other]) {
+      h.store.upsertMember({
+        channelId,
+        kind: 'agent',
+        id: profileId,
+        invitedBy: 'human:operator',
+      });
+    }
+    // A profile credential is never minted with channel scope today, but if one
+    // ever is, the deferral must switch OFF rather than silently widen it.
+    const headers = {
+      ...profileCredential('context:read'),
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+    };
+    const allowed = await req({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers,
+    });
+    expect(allowed.status).toBe(200);
+    const denied = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(other)}/messages`,
+      headers,
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.details?.reasonCode).toBe('CHANNEL_OUT_OF_SCOPE');
+  });
+});

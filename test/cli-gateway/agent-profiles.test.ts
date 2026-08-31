@@ -450,3 +450,151 @@ describe('agent-profiles CLI gateway verbs', () => {
     expect(message).toContain('--input-json/--input-file');
   });
 });
+
+describe('agent-profiles credential CLI verbs (#1455 slice 3)', () => {
+  it('declares the three stable verbs with their CLI projections', () => {
+    for (const verb of ['mint', 'revoke', 'status'] as const) {
+      const spec = commandSpec(`agent-profiles.credential.${verb}`);
+      expect(spec.cli).toEqual([
+        'relay-ide',
+        'v1',
+        'agent-profiles',
+        'credential',
+        verb,
+        '--id',
+        '<id>',
+        '--json',
+      ]);
+      expect(spec.stable).toBe(true);
+    }
+  });
+
+  it('mints and prints the token exactly once', async () => {
+    const { envelope, request } = await runCli([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'mint',
+      '--id',
+      'agent-profile:hermes:0001',
+      '--json',
+    ]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'agent-profiles.credential.mint',
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4571/agent-profiles/agent-profile%3Ahermes%3A0001/credential',
+    });
+    const headers = (request as { headers: Record<string, string> }).headers;
+    expect(headers['x-relay-cli-command']).toBe(
+      'agent-profiles.credential.mint'
+    );
+    expect(headers['x-relay-capabilities']).toBe('context:write');
+    // The token reaches stdout, in the envelope, and nowhere else.
+    const data = (envelope as { data: Record<string, unknown> }).data;
+    expect(typeof data['token']).toBe('string');
+    // Nothing about the token was echoed into the REQUEST the CLI sent.
+    expect(JSON.stringify(request)).not.toContain('relay-sac-v1.sac-0001');
+  });
+
+  it('forwards an explicit ttl and rejects a nonsense one before any HTTP', async () => {
+    const { request } = await runCli([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'mint',
+      '--id',
+      'agent-profile:hermes:0001',
+      '--ttl-ms',
+      '86400000',
+      '--json',
+    ]);
+    expect((request as { body: Record<string, unknown> }).body).toMatchObject({
+      ttlMs: 86400000,
+    });
+    const failure = await runCliFailure([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'mint',
+      '--id',
+      'agent-profile:hermes:0001',
+      '--ttl-ms',
+      'forever',
+      '--json',
+    ]);
+    expect(failure).toMatchObject({
+      ok: false,
+      command: 'agent-profiles.credential.mint',
+    });
+  });
+
+  it('revokes with an optional reason', async () => {
+    const { envelope, request } = await runCli([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'revoke',
+      '--id',
+      'agent-profile:hermes:0001',
+      '--reason',
+      'rotating',
+      '--json',
+    ]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'agent-profiles.credential.revoke',
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4571/agent-profiles/agent-profile%3Ahermes%3A0001/credential/revoke',
+      body: { reason: 'rotating' },
+    });
+  });
+
+  it('reads status on the read lane', async () => {
+    const { envelope, request } = await runCli([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'status',
+      '--id',
+      'agent-profile:hermes:0001',
+      '--json',
+    ]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'agent-profiles.credential.status',
+    });
+    expect(request).toMatchObject({
+      method: 'GET',
+      url: 'http://127.0.0.1:4571/agent-profiles/agent-profile%3Ahermes%3A0001/credential',
+    });
+    const headers = (request as { headers: Record<string, string> }).headers;
+    expect(headers['x-relay-capabilities']).toBe('context:read');
+  });
+
+  it('refuses an unknown credential subcommand and a missing --id', async () => {
+    const unknown = await runCliFailure([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'rotate',
+      '--json',
+    ]);
+    expect(unknown).toMatchObject({ ok: false });
+    const missingId = await runCliFailure([
+      'v1',
+      'agent-profiles',
+      'credential',
+      'mint',
+      '--json',
+    ]);
+    expect(missingId).toMatchObject({
+      ok: false,
+      command: 'agent-profiles.credential.mint',
+    });
+  });
+});

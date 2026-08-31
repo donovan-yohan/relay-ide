@@ -156,6 +156,19 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '#1473: list/get answer on the ordinary scoped-actor read lane (context:read). create/update additionally require host-local operator authority — the router refuses any DELEGATED scoped actor credential, so only the #1467 hub-minted local trust token or the browser/operator lane can mint or rebind a profile or set its write-only gateway key. Delete and set-default stay on the browser-session lane.',
   },
   {
+    surface: 'CLI gateway agent-profile credential APIs',
+    routes: [
+      'POST /agent-profiles/:id/credential',
+      'POST /agent-profiles/:id/credential/revoke',
+      'GET /agent-profiles/:id/credential',
+    ],
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    middleware:
+      'requireCliGatewayAuthForActorCommand + host-local gate in createAgentProfileRouter (all three verbs, reads included)',
+    notes:
+      "#1455 slice 3: mint/revoke/status for the durable per-profile actor credential. Unlike the profile list/get verbs, the STATUS read is also host-local-only — credential lifecycle is operator authority, and status is the reconnaissance half of it, so a delegated scoped actor is refused on all three. The minted token is returned exactly once, on the mint response; nothing else in Relay can produce it, and only its sha256 is persisted. The credential's own channel reach is decided by hub-owned channel membership, not by its scope.",
+  },
+  {
     surface: 'CLI gateway channel APIs',
     routes: ['/channels/*'],
     acceptedLanes: [

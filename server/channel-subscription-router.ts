@@ -14,6 +14,7 @@ import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
 import {
   authenticatedCliGatewayActorCredential,
   isLocalHubCliActorCredential,
+  credentialDefersChannelScopeToMembership,
 } from './cli-gateway-actor-auth.js';
 import { actorMemberRef } from './channel-chat-router.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
@@ -217,6 +218,10 @@ function actorMayReadChannel(req: Request, channelId: string): boolean {
     // it keeps browser/operator authority here exactly as it does in the chat
     // router's scope guards and in the shared actor-credential validator.
     if (isLocalHubCliActorCredential(actor)) return true;
+    // #1455 slice 3: the profile-bound credential's channel reach is
+    // membership, which `isStillAuthorized` rechecks before every frame — so
+    // passing the scope gate here admits nothing a non-member could keep.
+    if (credentialDefersChannelScopeToMembership(actor)) return true;
     return actor.scope?.channelIds?.includes(channelId) === true;
   }
   const operatorClient = authenticatedOperatorClientCredential(req);

@@ -99,6 +99,37 @@ workflow.
 - A channel accepts up to 128 members, so a looping agent cannot grow the list
   without bound. Removing someone frees a slot (#1455)
 
+### Agent credentials that survive a restart
+
+#### Added
+
+- Every agent profile can now hold its own long-lived Relay credential, so an
+  agent running somewhere else — a Hermes profile on another host, say — can
+  talk back to Relay as itself. Mint it from Settings → Agents, or with
+  `relay-ide v1 agent-profiles credential mint --id <profile> --json`. The token
+  is shown once, when you create it, and is never retrievable afterwards; Relay
+  keeps only a hash of it (#1455)
+- Settings → Agents shows each profile's credential state, when it was issued
+  and expires, and roughly when it was last used, with buttons to mint, rotate,
+  and revoke. `relay-ide v1 agent-profiles credential status|revoke --json`
+  answer the same questions from the terminal (#1455)
+
+#### Changed
+
+- A credential you mint for an agent profile now survives restarting Relay.
+  Previously every credential Relay issued lived only in memory, so restarting
+  the hub silently invalidated any token you had planted on another machine.
+  Revocations survive a restart too — a revoked token stays revoked (#1455)
+- What an agent profile's credential can reach is decided by which channels the
+  profile belongs to, not by a channel list fixed when the credential was
+  minted. So a channel created after the fact is reachable as soon as the
+  profile is invited or mentioned there, with no re-minting. The profile is
+  still refused any channel it is not a member of, and credentials issued to
+  other agents are unchanged (#1455)
+- Rotating a profile's credential revokes the previous one as it issues the new
+  one, and deleting a profile revokes its credential. Neither leaves a working
+  token behind (#1455)
+
 ### CLI-only agent-profile setup
 
 #### Added

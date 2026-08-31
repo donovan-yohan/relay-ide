@@ -146,6 +146,43 @@ export interface IssuedScopedActorCredential {
   credential: ScopedActorCredentialRecord;
 }
 
+/**
+ * A credential restored from durable storage (#1455 slice 3). It is the public
+ * record plus the ONE field `ScopedActorCredentialRecord` deliberately omits —
+ * the secret's sha256 digest, which is all the hub ever persists.
+ */
+export interface ImportScopedActorCredentialInput {
+  id: string;
+  actor: ScopedActorCredentialActor;
+  issuer: ScopedActorCredentialIssuer;
+  grantId?: string;
+  audience: string;
+  capabilities: string[];
+  scope: ScopedActorCredentialScope;
+  metadata?: ScopedActorCredentialMetadata;
+  issuedAt: string;
+  expiresAt: string;
+  revokedAt?: string | undefined;
+  revokedBy?: string | undefined;
+  revocationReason?: string | undefined;
+  correlationId?: string;
+  /** `sha256Hex` of the token's secret segment — never the secret itself. */
+  secretHash: string;
+}
+
+/**
+ * The digest the registry stores for `token`, or `null` when `token` is not a
+ * well-formed scoped actor token.
+ *
+ * The single place outside this module that may compute a comparable digest, so
+ * a durable store persists exactly what `validate` will compare against and the
+ * two can never drift into "the stored hash never matches".
+ */
+export function scopedActorCredentialSecretHash(token: unknown): string | null {
+  const parsed = parseScopedActorToken(token);
+  return parsed ? sha256Hex(parsed.secret) : null;
+}
+
 export interface ValidateScopedActorCredentialInput {
   audience: string;
   requiredCapabilities: string[];
@@ -219,6 +256,7 @@ export class ScopedActorCredentialRegistryError extends Error {
       | 'EXPIRY_REQUIRED'
       | 'EXPIRY_EXCEEDS_MAX_TTL'
       | 'SCOPE_REQUIRED'
+      | 'INVALID_SECRET_HASH'
       | 'DUPLICATE_CREDENTIAL_ID',
     message: string
   ) {
@@ -317,6 +355,112 @@ export class ScopedActorCredentialRegistry {
     const issued = this.issueAt(issuance.input, issuance.issuedAt);
     this.preparedIssuances.delete(prepared);
     return issued;
+  }
+
+  /**
+   * Restore a credential the hub persisted in an earlier process (#1455 slice 3).
+   *
+   * The registry is otherwise memory-only: a restart rotates every token it
+   * ever handed out. That is correct for short-lived leases and for the #1467
+   * host-local token (whose file the hub rewrites at boot), but it is exactly
+   * wrong for a credential an operator planted on ANOTHER host — a Hermes
+   * profile's `.env` cannot be rewritten by a Relay restart, so the token in it
+   * must keep working. Rehydration is how a durable credential stays durable.
+   *
+   * Only the HASH crosses the boundary, never the secret: the caller supplies
+   * the same `sha256(secret)` this registry computed at issue time, so the
+   * store it came from never held replayable material.
+   *
+   * Deliberately NOT re-checked here:
+   * - **`maxTtlMs`.** The stored expiry is a historical fact about an issuance
+   *   that already passed the ceiling in force at the time. Re-applying today's
+   *   ceiling would silently drop live credentials whenever an operator lowered
+   *   the config, without revoking anything. The expiry itself is still fully
+   *   enforced on every `validate` call, which is where it is load-bearing.
+   * - **Revocation.** A revoked row is restorable on purpose, so a replayed
+   *   token is denied as `revoked` (a typed 403) rather than as an unknown id.
+   *   The caller decides what to retain; this registry only refuses to forget
+   *   that the row was revoked.
+   */
+  importCredential(
+    input: ImportScopedActorCredentialInput
+  ): ScopedActorCredentialRecord {
+    const actorType = normalizeActorType(input.actor.type);
+    const audience = normalizeAudience(input.audience);
+    const capabilities = normalizeCredentialCapabilities(input.capabilities);
+    const scope = normalizeCredentialScope(input.scope);
+    const metadata = normalizeCredentialMetadata(input.metadata);
+    if (!/^[0-9a-f]{64}$/.test(input.secretHash)) {
+      throw new ScopedActorCredentialRegistryError(
+        'INVALID_SECRET_HASH',
+        'scoped actor credential secret hash must be a sha256 hex digest'
+      );
+    }
+    if (
+      !Number.isFinite(new Date(input.issuedAt).getTime()) ||
+      !Number.isFinite(new Date(input.expiresAt).getTime())
+    ) {
+      throw new ScopedActorCredentialRegistryError(
+        'EXPIRY_REQUIRED',
+        'scoped actor credential issuedAt/expiresAt must be valid dates'
+      );
+    }
+    if (this.credentials.has(input.id)) {
+      throw new ScopedActorCredentialRegistryError(
+        'DUPLICATE_CREDENTIAL_ID',
+        `scoped actor credential ${input.id} already exists`
+      );
+    }
+    const credential: InternalScopedActorCredentialRecord = {
+      id: input.id,
+      actor: {
+        type: actorType,
+        id: input.actor.id,
+        ...(input.actor.displayName
+          ? { displayName: input.actor.displayName }
+          : {}),
+      },
+      issuer: {
+        id: input.issuer.id,
+        ...(input.issuer.displayName
+          ? { displayName: input.issuer.displayName }
+          : {}),
+      },
+      ...(input.grantId ? { grantId: input.grantId } : {}),
+      audience,
+      capabilities,
+      scope,
+      ...(metadata ? { metadata } : {}),
+      issuedAt: new Date(input.issuedAt).toISOString(),
+      expiresAt: new Date(input.expiresAt).toISOString(),
+      ...(input.revokedAt
+        ? { revokedAt: new Date(input.revokedAt).toISOString() }
+        : {}),
+      ...(input.revokedBy ? { revokedBy: input.revokedBy } : {}),
+      ...(input.revocationReason
+        ? { revocationReason: input.revocationReason }
+        : {}),
+      secretHash: input.secretHash,
+      correlationId: input.correlationId ?? crypto.randomUUID(),
+    };
+    this.credentials.set(credential.id, credential);
+    this.recordAudit({
+      action: 'issue',
+      decision: 'allow',
+      reasonCode: 'ACTOR_CREDENTIAL_RESTORED',
+      credential,
+      grantedCapabilities: capabilities,
+      material: {
+        scope,
+        params: {
+          credentialId: credential.id,
+          actor: credential.actor,
+          restored: true,
+          revoked: Boolean(credential.revokedAt),
+        },
+      },
+    });
+    return publicCredential(credential);
   }
 
   private issueAt(

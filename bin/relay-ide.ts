@@ -232,7 +232,18 @@ const GATEWAY_USAGE_GROUPS: ReadonlyArray<
     ],
   ],
   ['cockpit', ['list', 'get']],
-  ['agent-profiles', ['list', 'get', 'create', 'update']],
+  [
+    'agent-profiles',
+    [
+      'list',
+      'get',
+      'create',
+      'update',
+      'credential mint',
+      'credential revoke',
+      'credential status',
+    ],
+  ],
   ['inbox', ['send', 'list', 'get', 'ack', 'resolve', 'ignore']],
   ['workflow-runs', ['publish', 'update', 'list', 'get']],
   ['automation-runs', ['register', 'observe', 'retire', 'list', 'get']],
@@ -1854,6 +1865,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'agent-profiles.get',
   'agent-profiles.create',
   'agent-profiles.update',
+  // #1455 slice 3: minting a profile's durable credential is exactly the
+  // web-UI-free setup step, so it must run on the host-local trust token too.
+  'agent-profiles.credential.mint',
+  'agent-profiles.credential.revoke',
+  'agent-profiles.credential.status',
 ]);
 
 /**
@@ -6455,6 +6471,128 @@ async function runGatewayAgentProfilesUpdate(
   printGatewayEnvelope(gatewayOk('agent-profiles.update', result), 0);
 }
 
+/**
+ * #1455 slice 3: `relay-ide v1 agent-profiles credential mint|revoke|status`.
+ *
+ * The minted token is printed exactly ONCE, inside the mint envelope, and is
+ * never retrievable again from any verb — `status` returns metadata only. It is
+ * deliberately not offered a `--out-file` or an env-var sink: the caller
+ * already has the JSON envelope on stdout and choosing where a secret lands is
+ * the operator's decision, not this CLI's.
+ */
+async function runGatewayAgentProfilesCredentialMint(
+  args: string[]
+): Promise<never> {
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.credential.mint',
+    args,
+    ['--id', '--ttl-ms'],
+    []
+  );
+  const id = (parsed.values.get('--id') ?? '').trim();
+  if (!id) {
+    gatewayInvalid('agent-profiles.credential.mint', '--id is required', {
+      field: 'id',
+    });
+  }
+  const body: Record<string, unknown> = {};
+  const rawTtl = parsed.values.get('--ttl-ms');
+  if (rawTtl !== undefined) {
+    const ttlMs = Number(rawTtl);
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+      gatewayInvalid(
+        'agent-profiles.credential.mint',
+        '--ttl-ms must be a positive number of milliseconds',
+        { field: 'ttlMs' }
+      );
+    }
+    body['ttlMs'] = ttlMs;
+  }
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.credential.mint',
+    pathName: `/agent-profiles/${encodeURIComponent(id)}/credential`,
+    method: 'POST',
+    body,
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('agent-profiles.credential.mint', result), 0);
+}
+
+async function runGatewayAgentProfilesCredentialRevoke(
+  args: string[]
+): Promise<never> {
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.credential.revoke',
+    args,
+    ['--id', '--reason'],
+    []
+  );
+  const id = (parsed.values.get('--id') ?? '').trim();
+  if (!id) {
+    gatewayInvalid('agent-profiles.credential.revoke', '--id is required', {
+      field: 'id',
+    });
+  }
+  const reason = (parsed.values.get('--reason') ?? '').trim();
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.credential.revoke',
+    pathName: `/agent-profiles/${encodeURIComponent(id)}/credential/revoke`,
+    method: 'POST',
+    body: reason ? { reason } : {},
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(
+    gatewayOk('agent-profiles.credential.revoke', result),
+    0
+  );
+}
+
+async function runGatewayAgentProfilesCredentialStatus(
+  args: string[]
+): Promise<never> {
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.credential.status',
+    args,
+    ['--id'],
+    []
+  );
+  const id = (parsed.values.get('--id') ?? '').trim();
+  if (!id) {
+    gatewayInvalid('agent-profiles.credential.status', '--id is required', {
+      field: 'id',
+    });
+  }
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.credential.status',
+    pathName: `/agent-profiles/${encodeURIComponent(id)}/credential`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(
+    gatewayOk('agent-profiles.credential.status', result),
+    0
+  );
+}
+
+async function runGatewayAgentProfilesCredential(
+  credentialArgs: string[]
+): Promise<never> {
+  const rest = credentialArgs.slice(1);
+  switch (credentialArgs[0]) {
+    case 'mint':
+      return runGatewayAgentProfilesCredentialMint(rest);
+    case 'revoke':
+      return runGatewayAgentProfilesCredentialRevoke(rest);
+    case 'status':
+      return runGatewayAgentProfilesCredentialStatus(rest);
+    default:
+      gatewayInvalid(
+        'agent-profiles.credential.status',
+        'unknown agent-profiles credential command',
+        { args: credentialArgs, allowed: ['mint', 'revoke', 'status'] }
+      );
+  }
+}
+
 async function runGatewayAgentProfiles(gatewayArgs: string[]): Promise<never> {
   const profileArgs = gatewayArgs.slice(2);
   switch (gatewayArgs[1]) {
@@ -6466,6 +6604,8 @@ async function runGatewayAgentProfiles(gatewayArgs: string[]): Promise<never> {
       return runGatewayAgentProfilesCreate(profileArgs);
     case 'update':
       return runGatewayAgentProfilesUpdate(profileArgs);
+    case 'credential':
+      return runGatewayAgentProfilesCredential(profileArgs);
     default:
       gatewayInvalid('agent-profiles.list', 'unknown agent-profiles command', {
         args: gatewayArgs,

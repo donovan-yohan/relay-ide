@@ -222,6 +222,27 @@ beside the config database. It validates decoded type and dimensions, strips
 metadata through re-encoding, caps payload and pixel size, and serves
 attachments through authenticated channel routes.
 
+### Profile-bound credentials and membership (#1455 slice 3)
+
+An agent profile can hold one durable Relay actor credential (see
+`docs/SECURITY_POLICY.md` § Agent-profile actor credentials). It is minted with
+**no `channelIds`**, so its channel reach is a pure membership question:
+
+- Any channel id may be requested. A non-member is refused `CHANNEL_NOT_MEMBER`
+  on every gated verb, including per-frame on the subscribe stream.
+- `channels.list` and an unscoped `channels.search` narrow to the profile's
+  memberships rather than being refused for having no channel scope.
+- Posts are attributed to the profile's Actor id, derived from the credential.
+  The membership fold treats `agent:<profileActorId>` and the bare
+  `<profileActorId>` the bridge writes as the same participant.
+- Joining is unchanged: an invite, a mention by a member, or creating the
+  channel. Minting a credential admits the profile to nothing.
+
+This is the only credential shape whose channel-scope dimension defers to
+membership. A delegated credential that names no channels stays refused
+(`CHANNEL_OUT_OF_SCOPE` / `CHANNEL_SCOPE_REQUIRED`), and a profile credential
+that _does_ name channels is narrowed normally.
+
 ## Live delivery
 
 `server/channel-hub.ts` owns per-channel subscribers and in-flight streaming
