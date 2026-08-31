@@ -8,6 +8,7 @@ import {
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
 import {
+  CHANNEL_MEMBER_ID_MAX_CHARS,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
 } from './channel-chat-protocol.js';
@@ -111,6 +112,9 @@ export type RelayCliGatewayCommand =
   | 'channels.subscribe'
   | 'channels.threads.history'
   | 'channels.roster'
+  | 'channels.members'
+  | 'channels.invite'
+  | 'channels.remove-member'
   | 'channels.search'
   | 'channels.post'
   | 'cockpit.list'
@@ -4031,6 +4035,110 @@ const channelRosterOutputDataSchema: RelayJsonSchema = {
 };
 
 /**
+ * Membership verbs (#1455 slice 2). The roster answers "which agent frameworks
+ * COULD run here"; membership answers "who is authorized to be here, and who
+ * put them here" — a durable authorization record, not a runtime projection.
+ */
+const channelMembersInputSchema: RelayJsonSchema = {
+  title: 'ChannelsMembersInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+  },
+  required: ['channelId'],
+};
+
+const channelMemberSchema: RelayJsonSchema = {
+  title: 'ChannelMember',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: ['human', 'agent'] },
+    id: stringSchema,
+    joinedAt: stringSchema,
+    /**
+     * Audit of HOW this member joined: a member id, or one of the reserved
+     * markers `creator`/`self`/`binding`/`credential-mint`/`backfill`. Absent
+     * only on a row written before the column existed.
+     */
+    invitedBy: stringSchema,
+  },
+  required: ['kind', 'id', 'joinedAt'],
+};
+
+const channelMembersOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsMembersData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    members: { type: 'array', items: channelMemberSchema },
+  },
+  required: ['channelId', 'members'],
+};
+
+/**
+ * `invitedBy` is deliberately NOT an input property: attribution is derived
+ * from the authenticated lane, exactly like `channels.post` sender attribution.
+ * A body-supplied inviter would let any member forge the audit row.
+ */
+const channelInviteInputSchema: RelayJsonSchema = {
+  title: 'ChannelsInviteInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    kind: { type: 'string', enum: ['human', 'agent'] },
+    id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: CHANNEL_MEMBER_ID_MAX_CHARS,
+    },
+  },
+  required: ['channelId', 'id'],
+};
+
+const channelInviteOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsInviteData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    member: channelMemberSchema,
+  },
+  required: ['channelId', 'member'],
+};
+
+const channelRemoveMemberInputSchema: RelayJsonSchema = {
+  title: 'ChannelsRemoveMemberInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    kind: { type: 'string', enum: ['human', 'agent'] },
+    id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: CHANNEL_MEMBER_ID_MAX_CHARS,
+    },
+  },
+  required: ['channelId', 'id'],
+};
+
+const channelRemoveMemberOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsRemoveMemberData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    /** The membership as it stood immediately before removal. */
+    removed: channelMemberSchema,
+  },
+  required: ['channelId', 'removed'],
+};
+
+/**
  * `unavailableReason` is load-bearing: a refused query and a consulted-but-empty
  * index must never look alike, or a caller reports "no matches" for text the
  * server declined to look up.
@@ -7530,6 +7638,100 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput(
       'ChannelsRosterOutput',
       channelRosterOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.members',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'members',
+      '--channel-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Durable channel membership with join time and invite attribution; only a member of the channel may read it.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelMembersInputSchema,
+    outputSchema: okOutput(
+      'ChannelsMembersOutput',
+      channelMembersOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.invite',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'invite',
+      '--channel-id',
+      '<id>',
+      '--member-id',
+      '<actor-or-profile-id>',
+      '--json',
+    ],
+    summary:
+      'Admit an actor or agent profile to a channel. Only a member may invite, and the recorded inviter is always server-derived from the caller’s credential.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: channelInviteInputSchema,
+    outputSchema: okOutput(
+      'ChannelsInviteOutput',
+      channelInviteOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.remove-member',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'remove-member',
+      '--channel-id',
+      '<id>',
+      '--member-id',
+      '<actor-or-profile-id>',
+      '--json',
+    ],
+    summary:
+      'Revoke a channel membership. A human operator may remove anyone; an agent may remove only itself or an agent it invited.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: channelRemoveMemberInputSchema,
+    outputSchema: okOutput(
+      'ChannelsRemoveMemberOutput',
+      channelRemoveMemberOutputDataSchema
     ),
     errorCodes: [
       'UNAUTHORIZED',

@@ -3697,15 +3697,25 @@ export function createChannelAgentBinder(
           emitUnavailableReceipt(trigger, profile.id, 'runtime_unavailable');
           return;
         }
-        // #1455 slice 1: a routable mention IS the invite until slice 2 gives
-        // `channels.invite` its own verb. Enrolling HERE — before
-        // `ensureProfileBinding`, whose own enrollment would otherwise stamp
-        // the generic `binding` attribution first (membership is first-writer)
-        // — is what records WHO pulled this profile into the channel. It also
+        // #1455: a routable mention IS an invite. Slice 2 routes it through the
+        // SAME `inviteMember` code path `channels.invite` uses, so the two
+        // produce identical audit rows — a mention-admitted member and an
+        // explicitly invited one are indistinguishable in the table, which is
+        // the point: both name the member that pulled this profile in.
+        //
+        // Enrolling HERE — before `ensureProfileBinding`, whose own enrollment
+        // would otherwise stamp the generic `binding` attribution first
+        // (membership is first-writer) — is what records WHO did it. It also
         // preserves today's behaviour: a mentioned agent could always answer,
         // and now the durable table says why it may.
+        //
+        // Because this is the invite path and not a passive upsert, it also
+        // re-admits a profile that was previously removed. That is the intended
+        // reading of `channels.remove-member`: removal revokes the standing
+        // membership, and a member re-inviting the profile by name grants it
+        // again, under the new inviter's name.
         try {
-          store.upsertMember({
+          store.inviteMember({
             channelId: trigger.channelId,
             kind: 'agent',
             id: profile.id,

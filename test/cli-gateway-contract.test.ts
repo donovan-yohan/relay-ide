@@ -272,6 +272,9 @@ describe('CLI gateway contract', () => {
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
+      'channels.members',
+      'channels.invite',
+      'channels.remove-member',
       'channels.search',
       'channels.post',
       'cockpit.list',
@@ -306,6 +309,7 @@ describe('CLI gateway contract', () => {
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
+      'channels.members',
       'channels.search',
     ] as const;
     const names = new Set(stableCommandNames());
@@ -1653,6 +1657,37 @@ describe('CLI gateway contract', () => {
         },
       })
     ).toEqual({ status: 500, upstreamCode: 'INTERNAL', field: 'repoPath' });
+    // #1455 slice 2: the channel routers carry `reasonCode` inside
+    // `error.details`, which is where every typed channel refusal lives. It
+    // must survive into the CLI envelope, or a scripted agent sees only a bare
+    // FORBIDDEN and cannot tell "not a member" from "out of scope".
+    expect(
+      sanitizedGatewayErrorDetails(403, {
+        error: {
+          code: 'FORBIDDEN',
+          message: 'actor is not a member of this channel',
+          details: {
+            channelId: 'topic:x',
+            memberId: 'agent:codex',
+            reasonCode: 'CHANNEL_NOT_MEMBER',
+          },
+        },
+      })
+    ).toEqual({
+      status: 403,
+      upstreamCode: 'FORBIDDEN',
+      reasonCode: 'CHANNEL_NOT_MEMBER',
+    });
+    // A top-level `reasonCode` still wins where a route puts it there.
+    expect(
+      sanitizedGatewayErrorDetails(404, {
+        error: {
+          code: 'NODE_OFFLINE',
+          reasonCode: 'FAILED_STALE_SOURCE',
+          details: { reasonCode: 'IGNORED' },
+        },
+      })
+    ).toMatchObject({ reasonCode: 'FAILED_STALE_SOURCE' });
   });
 
   it('advertises descriptor-only attach/detach, session renewal, session I/O, and read-only file RPC commands', () => {

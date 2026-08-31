@@ -81,6 +81,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'channels.subscribe',
   'channels.threads.history',
   'channels.roster',
+  'channels.members',
   'channels.search',
   'context.get',
   'context.list',
@@ -120,6 +121,11 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
+  // #1455 slice 2: explicit membership verbs. Both are member-gated by the
+  // channel router, and the recorded inviter/remover is server-derived from the
+  // credential, so an actor on this lane can never forge an audit row.
+  'channels.invite',
+  'channels.remove-member',
   // #1473: hub-local agent-profile configuration. Present on the actor lane so
   // the #1467 host-local trust token can run them without a browser session —
   // the router additionally refuses any DELEGATED actor credential, so a remote
@@ -487,10 +493,20 @@ export function cliGatewayActorCommandCapabilities(
     command === 'channels.subscribe' ||
     command === 'channels.threads.history' ||
     command === 'channels.roster' ||
+    command === 'channels.members' ||
     command === 'channels.search'
   )
     return ['context:read'];
-  if (command === 'channels.post') return ['context:write'];
+  // #1455 slice 2: membership WRITES gate on the same bit as a post. Membership
+  // is channel authorization, not hub configuration, and it is bounded by the
+  // same two gates a post is (credential `channelIds` scope, then hub-owned
+  // membership of the caller), so it needs no capability of its own.
+  if (
+    command === 'channels.post' ||
+    command === 'channels.invite' ||
+    command === 'channels.remove-member'
+  )
+    return ['context:write'];
   // #1473: agent-profile reads are a roster read; writes are hub-local config
   // mutations. Both resolve explicitly so neither falls into the generic
   // `session:read` read fallback or the `artifact:write` write fallback below.

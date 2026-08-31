@@ -188,11 +188,66 @@ export interface ChannelMemberRef {
    * rewrites the original attribution.
    */
   invitedBy?: string;
+  /**
+   * Set only on a ref returned by a membership WRITE whose row is a removal
+   * tombstone (#1455 slice 2). Every list read filters tombstones, so this
+   * never appears in `channels.members` or a channel snapshot — it exists so a
+   * write cannot hand back a live-looking member that `isMember` denies.
+   */
+  removedAt?: string;
 }
 
 /** Reason code for the hub-authoritative channel membership deny (#1455). */
 export const CHANNEL_NOT_MEMBER_REASON = 'CHANNEL_NOT_MEMBER' as const;
 export type ChannelNotMemberReason = typeof CHANNEL_NOT_MEMBER_REASON;
+
+/**
+ * `channels.remove-member` refused by the removal privilege matrix (#1455
+ * slice 2) — distinct from `CHANNEL_NOT_MEMBER`, which says the CALLER does not
+ * belong in the channel at all. This one says the caller is a member and still
+ * may not evict this particular participant.
+ */
+export const CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON =
+  'CHANNEL_MEMBER_REMOVE_FORBIDDEN' as const;
+
+/** `channels.remove-member` naming an id that is not a live member (#1455). */
+export const CHANNEL_MEMBER_NOT_FOUND_REASON =
+  'CHANNEL_MEMBER_NOT_FOUND' as const;
+
+/** `channels.invite` given a malformed or disallowed target (#1455 slice 2). */
+export const CHANNEL_INVITE_TARGET_INVALID_REASON =
+  'CHANNEL_INVITE_TARGET_INVALID' as const;
+
+/** Longest member id the invite verb will durably record. */
+export const CHANNEL_MEMBER_ID_MAX_CHARS = 200;
+
+/**
+ * Ceiling on live members per channel, enforced by `channels.invite` (#1455
+ * slice 2).
+ *
+ * The member list ships whole inside every channel snapshot, so an unbounded
+ * invite verb lets one looping or compromised member agent bloat the durable
+ * table AND amplify every broadcast. The credential-mint path bounds its own
+ * enrollment for exactly this reason; the explicit verb needs the same bound.
+ * Relay's own writers are bounded by real participation and are not capped.
+ */
+export const CHANNEL_MEMBER_LIMIT = 128;
+
+/** `channels.invite` refused because the channel is already at capacity. */
+export const CHANNEL_MEMBER_LIMIT_REACHED_REASON =
+  'CHANNEL_MEMBER_LIMIT_REACHED' as const;
+
+/**
+ * `channels.remove-member` naming a participant that membership does not
+ * govern (#1455 slice 2).
+ *
+ * Human members and the host-local `local-cli` credential reach channels on the
+ * operator lanes, which are never membership-gated — so evicting them would
+ * remove a roster row while revoking exactly nothing. A control that reports
+ * success and changes no access is worse than one that refuses, so it refuses.
+ */
+export const CHANNEL_MEMBER_NOT_GOVERNED_REASON =
+  'CHANNEL_MEMBER_NOT_GOVERNED' as const;
 
 /** `invited_by` value stamped on rows derived from pre-membership history. */
 export const CHANNEL_MEMBERSHIP_BACKFILL_INVITER = 'backfill' as const;
@@ -225,6 +280,45 @@ export const CHANNEL_MEMBERSHIP_SELF_INVITER = 'self' as const;
  * and a channel created AFTER the mint is still gated.
  */
 export const CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER = 'credential-mint' as const;
+
+/**
+ * `invited_by` for the actor that CREATED the channel (#1455 slice 2). The
+ * creator is admitted by the act of creation, and that is worth telling apart
+ * from `self`: a creator was never invited by anyone, whereas a `self` row
+ * means a participant that already had reach wrote its own way in.
+ */
+export const CHANNEL_MEMBERSHIP_CREATOR_INVITER = 'creator' as const;
+
+/**
+ * The reserved `invited_by` markers, which name a REASON rather than a member.
+ *
+ * Load-bearing for the removal privilege matrix (#1455 slice 2). "May I remove
+ * this member" is answered by resolving the target's `invited_by` back to a
+ * live member and comparing it to the caller — so a marker must never be
+ * resolved as an id, or an actor whose own id folds onto one (`self`,
+ * `agent:self`, `agent-profile:self:default`) would inherit removal rights over
+ * every row that marker attributed. A marker names no member, full stop.
+ */
+export const CHANNEL_MEMBERSHIP_RESERVED_INVITERS: readonly string[] = [
+  CHANNEL_MEMBERSHIP_BACKFILL_INVITER,
+  CHANNEL_MEMBERSHIP_BINDING_INVITER,
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
+  CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER,
+  CHANNEL_MEMBERSHIP_CREATOR_INVITER,
+];
+
+/**
+ * True when `id` would collide with a reserved `invited_by` marker under the
+ * membership fold — `self`, `agent:self`, and `agent-profile:self:default` all
+ * canonicalize toward the same value, so all three are refused as member ids.
+ */
+export function collidesWithReservedInviter(id: string): boolean {
+  const canonical = canonicalChannelMemberId(id.trim());
+  return CHANNEL_MEMBERSHIP_RESERVED_INVITERS.some(
+    (marker) =>
+      canonical === marker || canonical === `agent-profile:${marker}:default`
+  );
+}
 
 /**
  * Canonical comparison form for a channel member id.
@@ -1481,7 +1575,8 @@ function isMemberRef(value: unknown): value is ChannelMemberRef {
     (value.kind === 'human' || value.kind === 'agent') &&
     typeof value.id === 'string' &&
     typeof value.joinedAt === 'string' &&
-    (value.invitedBy === undefined || typeof value.invitedBy === 'string')
+    (value.invitedBy === undefined || typeof value.invitedBy === 'string') &&
+    (value.removedAt === undefined || typeof value.removedAt === 'string')
   );
 }
 

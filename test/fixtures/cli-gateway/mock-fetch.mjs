@@ -28,7 +28,15 @@ globalThis.fetch = async (url, init = {}) => {
     isDefault: false,
     isBuiltIn: false,
   };
-  const data = String(url).includes('/agent-profiles')
+  const member = {
+    kind: 'agent',
+    id: 'agent-profile:codex:default',
+    joinedAt: '2026-08-31T00:00:00.000Z',
+    invitedBy: 'agent:claude',
+  };
+  const data = String(url).includes('/members')
+    ? { channelId: 'topic:general', members: [member], member, removed: member }
+    : String(url).includes('/agent-profiles')
     ? { profile: agentProfile, profiles: [agentProfile] }
     : String(url).includes('/channels/')
       ? {

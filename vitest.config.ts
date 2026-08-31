@@ -28,6 +28,7 @@ const SERIAL_SUBPROCESS_FILES = [
   'test/cli-gateway-workflow.test.ts',
   'test/operator-client-cli.test.ts',
   'test/cli-gateway/agent-profiles.test.ts',
+  'test/cli-gateway/channels-membership.test.ts',
   'test/cli-gateway/channels-post.test.ts',
   'test/cli-gateway/channels-read.test.ts',
   'test/cli-gateway/channels-subscribe.test.ts',

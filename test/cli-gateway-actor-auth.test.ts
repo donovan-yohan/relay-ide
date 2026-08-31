@@ -681,6 +681,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.subscribe',
     'channels.threads.history',
     'channels.roster',
+    'channels.members',
     'channels.search',
     'context.get',
     'context.list',
@@ -935,6 +936,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
+    'channels.invite',
+    'channels.remove-member',
     'agent-profiles.create',
     'agent-profiles.update',
   ]);

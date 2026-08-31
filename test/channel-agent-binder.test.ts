@@ -6553,6 +6553,43 @@ describe('channel-agent-binder — DM implicit routing', () => {
     expect(store.isMember(DM_CH, 'agent', 'agent:hermes')).toBe(true);
   });
 
+  // #1455 slice 2: the mention auto-add and `channels.invite` are the SAME
+  // store verb, so a mention re-admits a profile a member had removed. That is
+  // the intended reading of `channels.remove-member`: it revokes the standing
+  // membership, and naming the profile again grants it back under the new
+  // inviter — it does not blacklist the profile from the channel forever.
+  it('re-admits a removed profile when a member mentions it again', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const { binder, store } = makeBinder({
+      build: () =>
+        new ScriptedAdapter('hermes', { mode: 'reply', text: 'on it' }),
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'first pass');
+    await waitFor(() => repliesIn(store, DM_CH).length === 1);
+    const removed = store.removeMember({
+      channelId: DM_CH,
+      kind: 'agent',
+      id: builtInAgentProfileId('hermes'),
+      removedBy: 'human:operator',
+    });
+    expect(removed).not.toBeNull();
+    expect(store.isMember(DM_CH, 'agent', 'agent:hermes')).toBe(false);
+
+    postTo(store, binder, DM_CH, 'second pass');
+    await waitFor(() => repliesIn(store, DM_CH).length === 2);
+    expect(store.isMember(DM_CH, 'agent', 'agent:hermes')).toBe(true);
+    expect(
+      store
+        .listMembers(DM_CH)
+        .find((m) => m.id === builtInAgentProfileId('hermes'))
+    ).toMatchObject({ invitedBy: 'human:operator' });
+  });
+
   // #1408: a DM has exactly one agent profile, so the multi-party framing was
   // both false and paid for on every single turn.
   it('addresses the DM agent directly instead of as one of many participants', async () => {

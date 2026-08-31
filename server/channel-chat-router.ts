@@ -15,9 +15,11 @@ import {
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
+import { LOCAL_HUB_ACTOR_ID } from './local-hub-actor-token.js';
 import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
+  memberFoldKey,
   ChannelMessageStoreError,
   ChannelSearchRefusedError,
   channelSearchUnavailableReason,
@@ -51,6 +53,16 @@ import {
 } from '../shared/channel-search-query.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_INVITE_TARGET_INVALID_REASON,
+  collidesWithReservedInviter,
+  CHANNEL_MEMBER_ID_MAX_CHARS,
+  CHANNEL_MEMBER_LIMIT,
+  CHANNEL_MEMBER_LIMIT_REACHED_REASON,
+  CHANNEL_MEMBER_NOT_GOVERNED_REASON,
+  CHANNEL_MEMBER_NOT_FOUND_REASON,
+  CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON,
+  canonicalChannelMemberId,
+  CHANNEL_MEMBERSHIP_RESERVED_INVITERS,
   CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_NOT_MEMBER_REASON,
   CHANNEL_POST_STEERING_VALUES,
@@ -65,6 +77,7 @@ import {
   type ChannelMessageSearchResponse,
   type ChannelMessageSearchResult,
   type ChannelReadStateResponse,
+  type ChannelMemberRef,
   type ChannelReadStateUpdateResponse,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
@@ -432,6 +445,150 @@ function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
   return true;
 }
 
+/**
+ * Target of a membership verb (#1455 slice 2), or `null` once the malformed
+ * input has been answered.
+ *
+ * `kind` defaults to `agent`: every membership decision Relay actually makes
+ * today is about an agent profile, and humans reach channels through the
+ * browser lane, which membership never gates.
+ */
+function membershipTargetFromBody(
+  res: Response,
+  body: Record<string, unknown>
+): { kind: 'human' | 'agent'; id: string } | null {
+  const rawKind = body['kind'];
+  if (rawKind !== undefined && rawKind !== 'human' && rawKind !== 'agent') {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'kind must be human or agent',
+      false,
+      { field: 'kind', reasonCode: CHANNEL_INVITE_TARGET_INVALID_REASON }
+    );
+    return null;
+  }
+  const kind: 'human' | 'agent' = rawKind === 'human' ? 'human' : 'agent';
+  const rawId = body['id'];
+  const id = typeof rawId === 'string' ? rawId.trim() : '';
+  // A member id is a durable primary-key component and an audit value. Bounding
+  // it and refusing whitespace/control characters keeps a forged id from
+  // spoofing a DIFFERENT id in any log line or member list that renders it.
+  if (
+    !id ||
+    id.length > CHANNEL_MEMBER_ID_MAX_CHARS ||
+    // eslint-disable-next-line no-control-regex
+    /[\s\u0000-\u001f\u007f]/.test(id) ||
+    // A `human:`-namespaced id is never an agent. Allowing one would put a
+    // human principal into the agent namespace, where the removal check
+    // resolves `invited_by` — the same collision class as the reserved markers.
+    (kind === 'agent' && canonicalChannelMemberId(id).startsWith('human:')) ||
+    // Defence in depth against the reserved-marker namespace: a member id that
+    // folds onto `self`/`creator`/`binding`/`backfill`/`credential-mint` would
+    // sit in the same value space as the `invited_by` markers. The removal
+    // check refuses to resolve a marker at all, so this is belt-and-braces —
+    // but a durable row that LOOKS like an audit reason is worth refusing on
+    // its own merits.
+    collidesWithReservedInviter(id)
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'id must be a non-empty member id with no whitespace or control characters',
+      false,
+      {
+        field: 'id',
+        maxLength: CHANNEL_MEMBER_ID_MAX_CHARS,
+        reasonCode: CHANNEL_INVITE_TARGET_INVALID_REASON,
+      }
+    );
+    return null;
+  }
+  return { kind, id };
+}
+
+/**
+ * Removal privilege matrix (#1455 slice 2). Returns a refusal reason, or
+ * `undefined` when the caller may evict this member.
+ *
+ * | caller | may remove |
+ * | --- | --- |
+ * | browser / host-local CLI / operator-client (operator authority) | anyone |
+ * | a member agent actor | itself, and any AGENT member it invited |
+ * | anything else | nothing |
+ *
+ * "It invited" is resolved through the SAME membership fold that authorized the
+ * request, so an inviter recorded as `agent:claude` still matches a remover
+ * arriving as `agent-profile:claude:default`. Reserved markers (`self`,
+ * `creator`, `binding`, `backfill`, `credential-mint`) resolve to no member and
+ * therefore name no inviter — a row nobody invited can only be removed by the
+ * operator or by its owner leaving.
+ */
+function removalRefusalReason(input: {
+  store: ChannelMessageStore;
+  channelId: string;
+  /**
+   * `undefined` for the operator lanes, which are not membership-gated. The
+   * operator-CLIENT lane reaches that branch only in principle: the membership
+   * verbs are not in `OPERATOR_CLIENT_CHANNEL_COMMANDS`, so a paired client is
+   * refused `unsupported_command` at the auth middleware first. Kept coherent
+   * with the browser lane so adding the verbs to that list stays a one-line
+   * change rather than a policy decision hidden here.
+   */
+  actor: { kind: 'human' | 'agent'; id: string } | undefined;
+  target: ChannelMemberRef;
+}): string | undefined {
+  const { store, channelId, actor, target } = input;
+  // Membership governs AGENTS on the delegated lane. A human member and the
+  // host-local `local-cli` credential reach channels on operator lanes that are
+  // never membership-gated, so evicting either would drop a roster row and
+  // revoke nothing at all — a control reporting success while doing nothing.
+  // Refused for every caller, operator included.
+  if (!membershipGovernsTarget(target)) return 'target-not-governed';
+  if (!actor) return undefined;
+  const self = store.getMember(channelId, actor.kind, actor.id);
+  if (self && self.id === target.id && self.kind === target.kind) {
+    return undefined; // leaving is always allowed
+  }
+  if (!self) return 'not-a-member';
+  // Resolving `invited_by` back to a member is only meaningful inside the AGENT
+  // namespace, which is the only namespace this check runs in. Two id classes
+  // must never be resolved:
+  //   - a reserved marker, which names a REASON rather than a member (an actor
+  //     id of `self` canonicalizes onto the `self` marker), and
+  //   - a `human:` principal, which is looked up here in the agent namespace
+  //     and would otherwise hand an actor folding onto `human:operator` removal
+  //     rights over every row the operator invited.
+  const inviter = resolvableAgentInviter(target.invitedBy)
+    ? store.getMember(channelId, 'agent', target.invitedBy as string)
+    : null;
+  if (inviter && inviter.id === self.id) return undefined;
+  return 'not-the-inviter';
+}
+
+/**
+ * True when removing this member would actually revoke something (#1455
+ * slice 2). See `removalRefusalReason`.
+ */
+function membershipGovernsTarget(target: ChannelMemberRef): boolean {
+  if (target.kind !== 'agent') return false;
+  // Compare on the fold CLASS, using the store's own fold rather than a
+  // hand-rolled prefix strip: `agent:local-cli` and
+  // `agent-profile:local-cli:default` are one participant, and a partial fold
+  // would govern one spelling of it while exempting the other.
+  return memberFoldKey('agent', target.id) !== LOCAL_HUB_ACTOR_ID;
+}
+
+/** Only an agent-namespaced, non-marker `invited_by` names a resolvable member. */
+function resolvableAgentInviter(invitedBy: string | undefined): boolean {
+  return (
+    typeof invitedBy === 'string' &&
+    invitedBy.length > 0 &&
+    !CHANNEL_MEMBERSHIP_RESERVED_INVITERS.includes(invitedBy) &&
+    !canonicalChannelMemberId(invitedBy).startsWith('human:')
+  );
+}
+
 /** Private browser/operator REST surfaces are never part of the actor lane. */
 function denyScopedActorPrivateRoute(req: Request, res: Response): boolean {
   if (
@@ -642,6 +799,24 @@ function deriveSender(
     };
   }
   return { kind: 'human', id: 'human:operator', displayName: 'Operator' };
+}
+
+/**
+ * The channel participant this request acts as, on ANY lane (#1455 slice 2).
+ *
+ * `actorMemberRef` answers "which member does the membership gate apply to",
+ * and is deliberately `undefined` for the operator lanes. Enrolling a channel's
+ * creator needs the complement: the id the hub would stamp on that caller's
+ * durable rows, operator lanes included. Both read the same `deriveSender`, so
+ * the member a request creates and the member it is authorized as can never be
+ * two different identities.
+ */
+export function channelParticipantRef(req: Request): {
+  kind: 'human' | 'agent';
+  id: string;
+} | null {
+  const sender = deriveSender(req, undefined);
+  return sender.kind === 'system' ? null : { kind: sender.kind, id: sender.id };
 }
 
 /**
@@ -1270,6 +1445,14 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
   const rosterAuth = deps.requireReadActorAuth?.('channels.roster') ?? auth;
+  // #1455 slice 2: membership is a durable AUTHORIZATION record, not a runtime
+  // projection like the roster, so it gets its own verbs. Reading it names a
+  // channel and is member-gated; writing it is the invite/remove privilege
+  // matrix documented on `removalRefusalReason`.
+  const membersAuth = deps.requireReadActorAuth?.('channels.members') ?? auth;
+  const inviteAuth = deps.requireWriteActorAuth?.('channels.invite') ?? auth;
+  const removeMemberAuth =
+    deps.requireWriteActorAuth?.('channels.remove-member') ?? auth;
   const interruptAuth = auth;
   // This is an operator lifecycle control, authenticated through the existing
   // channel router lane. It is not a provider command or a message write.
@@ -2405,6 +2588,170 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       .rosterForChannel(topic.id)
       .then((roster) => res.json({ roster }))
       .catch((error) => mapStoreError(res, error));
+  });
+
+  // #1455 slice 2: who is authorized to be in this conversation, and who put
+  // them there. Distinct from `/roster`, which answers which agent frameworks
+  // COULD run here. Member-gated like every other channel read: an actor that
+  // does not belong in the channel cannot enumerate who does.
+  router.get('/channels/:id/members', membersAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, store, id)) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    res.json({ channelId: topic.id, members: store.listMembers(topic.id) });
+  });
+
+  // Explicit invite. A member (human or agent) may admit an agent; only the
+  // operator lanes may admit a human. The recorded inviter is ALWAYS derived
+  // from the authenticated lane — `invitedBy` is not an input property — so a
+  // member cannot forge an audit row naming somebody else.
+  router.post('/channels/:id/members', inviteAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, store, id)) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    const target = membershipTargetFromBody(res, bodyRecord(req));
+    if (!target) return;
+    const actor = actorMemberRef(req);
+    if (actor && target.kind === 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'a delegated actor may invite only agent members',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: CHANNEL_INVITE_TARGET_INVALID_REASON,
+        }
+      );
+      return;
+    }
+    // Bound the durable table and, with it, every channel snapshot: the member
+    // list ships whole to each subscriber on connect and catch-up, so an
+    // uncapped invite verb is a broadcast amplifier as well as a growth
+    // problem. Counted on LIVE members, so removals free capacity, and skipped
+    // for a target that is already a member (idempotent re-invite).
+    if (
+      !store.getMember(topic.id, target.kind, target.id) &&
+      store.listMembers(topic.id).length >= CHANNEL_MEMBER_LIMIT
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'channel has reached its member limit',
+        false,
+        {
+          channelId: topic.id,
+          limit: CHANNEL_MEMBER_LIMIT,
+          reasonCode: CHANNEL_MEMBER_LIMIT_REACHED_REASON,
+        }
+      );
+      return;
+    }
+    const inviter = deriveSender(req, undefined);
+    try {
+      const member = store.inviteMember({
+        channelId: topic.id,
+        kind: target.kind,
+        id: target.id,
+        invitedBy: inviter.id,
+      });
+      res.status(201).json({ channelId: topic.id, member });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  // Removal closes slice 1's "admission is irreversible" gap. It is a POST, not
+  // a DELETE, because the scoped-actor write lane accepts only POST/PATCH — a
+  // DELETE would have to widen that method gate for every write verb at once.
+  router.post('/channels/:id/members/remove', removeMemberAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, store, id)) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    const target = membershipTargetFromBody(res, bodyRecord(req));
+    if (!target) return;
+    const existing = store.getMember(topic.id, target.kind, target.id);
+    if (!existing) {
+      sendGatewayError(
+        res,
+        'NOT_FOUND',
+        'no such member in this channel',
+        false,
+        {
+          channelId: topic.id,
+          memberId: target.id,
+          reasonCode: CHANNEL_MEMBER_NOT_FOUND_REASON,
+        }
+      );
+      return;
+    }
+    const refusal = removalRefusalReason({
+      store,
+      channelId: topic.id,
+      actor: actorMemberRef(req),
+      target: existing,
+    });
+    if (refusal) {
+      const notGoverned = refusal === 'target-not-governed';
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        notGoverned
+          ? 'membership does not govern this participant, so removing it would revoke nothing'
+          : 'caller may not remove this member',
+        false,
+        {
+          channelId: topic.id,
+          memberId: existing.id,
+          reason: refusal,
+          reasonCode: notGoverned
+            ? CHANNEL_MEMBER_NOT_GOVERNED_REASON
+            : CHANNEL_MEMBER_REMOVE_FORBIDDEN_REASON,
+        }
+      );
+      return;
+    }
+    const remover = deriveSender(req, undefined);
+    try {
+      const removed = store.removeMember({
+        channelId: topic.id,
+        kind: existing.kind,
+        id: existing.id,
+        removedBy: remover.id,
+      });
+      if (!removed) {
+        sendGatewayError(
+          res,
+          'NOT_FOUND',
+          'no such member in this channel',
+          false,
+          {
+            channelId: topic.id,
+            memberId: existing.id,
+            reasonCode: CHANNEL_MEMBER_NOT_FOUND_REASON,
+          }
+        );
+        return;
+      }
+      res.json({ channelId: topic.id, removed });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
   });
 
   router.post(

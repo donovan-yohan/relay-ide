@@ -707,13 +707,25 @@ export function sanitizedGatewayErrorDetails(
   const body = upstreamErrorRecord(upstream);
   const details: Record<string, unknown> = { status };
   const code = body?.['code'];
-  const reasonCode = body?.['reasonCode'];
   if (typeof code === 'string') details['upstreamCode'] = code;
-  if (typeof reasonCode === 'string') details['reasonCode'] = reasonCode;
 
   const upstreamDetails = isRecord(body?.['details'])
     ? body['details']
     : undefined;
+  // #1455 slice 2: the channel routers put `reasonCode` INSIDE `error.details`
+  // (`sendGatewayError(..., { reasonCode })`), which is where every typed
+  // channel refusal lives — `CHANNEL_NOT_MEMBER`, `CHANNEL_OUT_OF_SCOPE`,
+  // `CHANNEL_MEMBER_REMOVE_FORBIDDEN`. Reading only the top level dropped the
+  // one field a scripted agent branches on and left it with a bare FORBIDDEN.
+  // Top level still wins where a route puts it there.
+  // First value that is actually a STRING wins. `??` would let a malformed
+  // top-level `reasonCode` (a number, an object) mask a valid nested one and
+  // then be dropped by the type check below, reporting no reason code at all.
+  const reasonCode = [
+    body?.['reasonCode'],
+    isRecord(upstreamDetails) ? upstreamDetails['reasonCode'] : undefined,
+  ].find((value): value is string => typeof value === 'string');
+  if (reasonCode !== undefined) details['reasonCode'] = reasonCode;
   const field = isRecord(upstreamDetails)
     ? upstreamDetails['field']
     : body?.['field'];

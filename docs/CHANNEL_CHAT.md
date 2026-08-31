@@ -74,6 +74,8 @@ Membership is written by these paths, and only these:
 | an operator or host-local post enrolling its own sender       | `self`                          |
 | an agent's durable reply arriving through the channel bridge  | `self`                          |
 | a routable `@mention`, enrolling the mentioned profile        | the mentioning message's sender |
+| `channels.invite`, enrolling the named actor or profile       | the inviting member             |
+| creating the channel, enrolling its creator                   | `creator`                       |
 | a durable `channel_agent_bindings` row, enrolling its profile | `binding`                       |
 | minting an actor credential scoped to the channel             | `credential-mint`               |
 | the v17 migration, from durable senders and bindings          | `backfill`                      |
@@ -95,11 +97,8 @@ time: the member row is durable and outlives the credential, revoking the token
 does not evict the member, and a channel created _after_ the mint is still
 refused.
 
-Three limits follow from that, and slice 1 owns none of them:
+Two limits follow from that:
 
-- **Admission is currently irreversible.** Nothing removes a member row except
-  deleting the channel, so a mint naming the wrong channel id admits an actor
-  permanently. The removal verb is slice 2's, alongside `channels.invite`.
 - Membership matching folds a vendor id onto that vendor's default profile, so
   minting a credential for the bare actor id `claude` also makes the built-in
   default Claude profile a member of those channels.
@@ -110,8 +109,85 @@ Three limits follow from that, and slice 1 owns none of them:
 **A member can pull in another agent by mentioning it.** Only members can post,
 so only members can mention — but any member, human or agent, can therefore
 move a profile into the channel. Per-channel invite policy (`members` vs
-`humans-only`) is a follow-up; until it exists, an agent's `@mention` admits
-the mentioned profile on the mentioning agent's authority.
+`humans-only`) is still a follow-up; until it exists, an agent's `@mention`
+admits the mentioned profile on the mentioning agent's authority, exactly as an
+explicit `channels.invite` from that agent would.
+
+### Explicit membership verbs (#1455 slice 2)
+
+`channels.members` reads the durable list; `channels.invite` admits; and
+`channels.remove-member` revokes — closing slice 1's irreversible admission.
+The mention auto-add and `channels.invite` call the **same** store verb, so a
+mention-admitted member and an explicitly invited one are indistinguishable
+rows: both name the member that pulled the profile in.
+
+Attribution is always server-derived from the authenticated lane. `invitedBy`
+is not an input property on either verb and the CLI exposes no flag for it, so
+a member cannot forge an audit row naming somebody else.
+
+| caller                                         | may invite         | may remove                                  |
+| ---------------------------------------------- | ------------------ | ------------------------------------------- |
+| browser cookie, host-local `local-cli` (#1467) | anyone             | any **governed** member                     |
+| a scoped actor that is a member of the channel | agent members only | itself, and any **agent** member it invited |
+| a scoped actor that is not a member            | nothing            | nothing (`CHANNEL_NOT_MEMBER`)              |
+
+The operator-client lane is deliberately absent: membership verbs are not in
+`OPERATOR_CLIENT_CHANNEL_COMMANDS`, so a paired operator client is refused with
+`unsupported_command` before any membership question is asked. Adding them
+later is a one-line list change and the route already treats that lane as
+operator authority.
+
+"It invited" resolves through the same canonical/vendor fold that authorized
+the request, so an inviter recorded as `agent:claude` still matches a remover
+arriving as `agent-profile:claude:default`. The reserved markers (`self`,
+`creator`, `binding`, `backfill`, `credential-mint`) name no member, so a row
+nobody invited can only be removed by an operator or by its owner leaving.
+Refusals carry `CHANNEL_MEMBER_REMOVE_FORBIDDEN`; naming an id that is not a
+live member is `CHANNEL_MEMBER_NOT_FOUND`. A `human:`-namespaced id is refused
+as an agent target, so a human principal can never be smuggled into the
+namespace this check resolves in.
+
+Membership **governs agents, and only agents**. A human member and the
+host-local `local-cli` credential reach channels on operator lanes that are
+never membership-gated, so evicting either would drop a roster row and revoke
+nothing at all. Both are refused with `CHANNEL_MEMBER_NOT_GOVERNED`, for the
+operator too: a control that reports success while changing no access is worse
+than one that refuses.
+
+`channels.invite` caps a channel at `CHANNEL_MEMBER_LIMIT` live members. The
+member list ships whole inside every channel snapshot, so an uncapped invite
+verb is a broadcast amplifier as well as a growth problem — the credential-mint
+path bounds its own enrollment for exactly this reason. Re-inviting an existing
+member is idempotent and never counts; a removal frees capacity. Relay's own
+writers are bounded by real participation and are not capped.
+
+**Removal is a tombstone, not a delete.** `backfillMembership` is additive and
+idempotent and the bridge re-upserts a member on every durable reply, so a
+deleted row would be resurrected by the next boot sweep or the next agent turn.
+The row is retained with `removed_at` set (schema v18): every read filters it
+out, and only an explicit invite — verb or mention — re-admits, restating
+`invited_by` with the new inviter.
+
+**Removal is a property of the fold class, not of a row.** Membership is
+decided across every spelling of a participant, but rows are stored verbatim
+and each write collides only on an exact primary key. A tombstone keyed on the
+rows that happened to exist would let the participant's _other_ spelling insert
+a fresh live row and walk straight back in — and that is ordinary traffic, not
+an attack: `deriveSender` stamps `agent:<actor>` while the bridge and binder use
+the bare profile Actor id, and binding bookkeeping alone re-enrolls on cursor
+advance, provider-session persist, unbind, and restart. So every implicit writer
+inherits the class's removal stamp and creates its row _already tombstoned_, and
+the SQL backfill runs a repair pass to restore that invariant. Only
+`inviteMember` clears a class. A **human** member is the one exception: humans
+are never membership-gated, so a stale human tombstone could only make the
+member list lie, and that member's own write clears it.
+
+Three things removal deliberately does **not** do, and all are follow-ups: it
+does not tear down a live runtime binding, it does not blacklist the profile (a
+member naming it again re-admits it), and the tombstone's own audit
+(`removed_at`/`removed_by`) is not exposed on any read — `channels.members`
+returns live members only. The tombstone is a durability mechanism, not a
+readable removal log.
 
 Membership is repaired, never rewritten: the boot sweep re-runs the additive
 backfill, so a binding whose membership mirror was lost (that enrollment is
@@ -122,7 +198,8 @@ Membership is the **authorization** record for the scoped-actor lane. A
 `relay-ide v1 ...` credential may _request_ any channel id; the hub answers on
 membership, not on token scope. `channels.get`, `channels.history`,
 `channels.roster`, `channels.receipts`, `channels.run.get`,
-`channels.threads.history`, `channels.search`, `channels.post`, thread
+`channels.threads.history`, `channels.search`, `channels.post`,
+`channels.members`, `channels.invite`, `channels.remove-member`, thread
 create/rename, and `channels.subscribe` all refuse a non-member with a
 `CHANNEL_NOT_MEMBER` reason code; `channels.list` and an unscoped search narrow
 to the actor's own channels. Credential `channelIds` scope is still enforced —
