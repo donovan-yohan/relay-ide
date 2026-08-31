@@ -184,11 +184,13 @@ export interface SessionsState {
     sessionId: string
   ) => void;
   recallSessionForWorkspace: (workspacePath: string) => string | null;
-  enrichSidebarBranches: () => Promise<void>;
-  ensureFresh: (repoPath: string, maxAgeMs?: number) => Promise<void>;
   ensureFreshAll: (maxAgeMs?: number) => Promise<void>;
   forceRefresh: (
     repoPath: string,
+    source?: RepoEnrichmentSource
+  ) => Promise<void>;
+  forceRefreshRepos: (
+    repoPaths: string[],
     source?: RepoEnrichmentSource
   ) => Promise<void>;
   getEnrichment: (
@@ -286,9 +288,9 @@ type SessionsGet = StoreApi<SessionsState>['getState'];
  * stamped freshness metadata — so without this the entire batch is requested
  * twice. Freshness-gated callers (`maxAgeMs > 0`) join the pending promise
  * instead of issuing a duplicate. Callers that explicitly bypass the TTL
- * (`forceRefresh`, `ensureFreshAll(0)`) always issue their own request: a
- * webhook must not be answered by a response that was already in flight when
- * the event arrived.
+ * (`forceRefresh`/`forceRefreshRepos`, `ensureFreshAll(0)`) always issue their
+ * own request: a webhook must not be answered by a response that was already
+ * in flight when the event arrived.
  */
 const inFlightRepoEnrichments = new Map<string, Promise<void>>();
 
@@ -586,22 +588,6 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     return resolveSessionKey(sessions, id);
   },
 
-  enrichSidebarBranches: async () => {
-    await get().ensureFreshAll(0);
-  },
-
-  ensureFresh: async (repoPath, maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
-    if (isRepoEnrichmentFresh(get(), repoPath, maxAgeMs)) return;
-    if (maxAgeMs > 0) {
-      const inFlight = inFlightRepoEnrichments.get(repoPath);
-      if (inFlight) {
-        await inFlight;
-        return;
-      }
-    }
-    await get().forceRefresh(repoPath, 'manual');
-  },
-
   ensureFreshAll: async (maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
     const state = get();
     const joins: Array<Promise<void>> = [];
@@ -622,7 +608,21 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   forceRefresh: async (repoPath, source = 'manual') => {
-    await enrichRepos(set, get, [repoPath], source);
+    await get().forceRefreshRepos([repoPath], source);
+  },
+
+  /**
+   * #1457: force-refresh several repos in ONE request. A webhook burst names
+   * every repo it touched, so enriching them together is one `POST
+   * /gh/enrich-branches` instead of one per repo.
+   *
+   * Force semantics are identical to `forceRefresh`: no TTL check, and never a
+   * join onto a pending batch, so a webhook is never answered by a response
+   * that was already in flight when the event arrived. The per-repo generation
+   * guard keeps a slower batch from clobbering what this run wrote.
+   */
+  forceRefreshRepos: async (repoPaths, source = 'manual') => {
+    await enrichRepos(set, get, repoPaths, source);
   },
 
   getEnrichment: (repoPath, branchName) =>
