@@ -26,6 +26,13 @@
     "scripts/channel-memory-load.ts",
     "scripts/orchestrator-peer.ts",
 
+    // #1455 slice 4. Not run by an npm script: the operator runs it on the
+    // AGENT's host (`node dist/scripts/install-profile-credential.js`) from the
+    // recipe in docs/references/hermes-multiplex-setup.md, which is a machine
+    // that may have no Relay hub on it at all. Listed here so it stays visible
+    // as a deliverable rather than being alive only because its test imports it.
+    "scripts/install-profile-credential.ts",
+
     // E2E component fixtures. Only Rollup inputs when RELAY_IDE_E2E_FIXTURES=1
     // (frontend/vite.config.ts), so knip cannot infer them. Deleting one also
     // means deleting its .html and its buildInputs line — test/e2e/fixture-targets.ts

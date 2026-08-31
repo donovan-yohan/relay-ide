@@ -243,6 +243,16 @@ membership. A delegated credential that names no channels stays refused
 (`CHANNEL_OUT_OF_SCOPE` / `CHANNEL_SCOPE_REQUIRED`), and a profile credential
 that _does_ name channels is narrowed normally.
 
+Planting one on the agent's own host is
+`scripts/install-profile-credential.ts`: pipe `credential mint --json` into it
+and it upserts `RELAY_IDE_ACTOR_TOKEN` into that agent's per-profile environment
+file, so the token never becomes a command-line argument. It is a script rather
+than a `relay-ide` subcommand because it runs where the agent lives, which need
+not be a machine with a hub on it. The Hermes end-to-end recipe — including the
+fact that a variable in a Hermes profile's `.env` is _not_ in the environment of
+a command its `terminal` tool runs, and the one line that works around it — is
+in `docs/references/hermes-multiplex-setup.md`.
+
 ## Live delivery
 
 `server/channel-hub.ts` owns per-channel subscribers and in-flight streaming
