@@ -335,6 +335,7 @@ import {
   NativeSessionAdapterRegistry,
   NativeSessionLiveTailManager,
   LiveTailCursorStore,
+  initNativeSummaryCacheStore,
   type NativeSessionRegistryReport,
 } from './provider-state/index.js';
 import type {
@@ -4870,8 +4871,19 @@ async function main(): Promise<void> {
   // and Pi state adapters with graceful per-provider install status. Adapters
   // are read-only and never mutate provider stores.
   const nativeSessionRegistry = new NativeSessionAdapterRegistry();
-  nativeSessionRegistry.register(new ClaudeJsonlStateAdapter());
-  nativeSessionRegistry.register(new CodexJsonlStateAdapter());
+  // #1459: the claude + codex transcript stores are the large ones (~730 MB on
+  // a real machine), so their derived summaries are cached in a config-dir
+  // SQLite file and rehydrated after a restart instead of re-read. It is only a
+  // cache: it opens best-effort, contains its own failures, and a miss just
+  // re-parses, so it is deliberately outside `initializeHubPersistence` — a
+  // cache must never be able to fail hub boot.
+  const nativeSummaryCacheStore = initNativeSummaryCacheStore(configDir);
+  nativeSessionRegistry.register(
+    new ClaudeJsonlStateAdapter({ summaryCacheStore: nativeSummaryCacheStore })
+  );
+  nativeSessionRegistry.register(
+    new CodexJsonlStateAdapter({ summaryCacheStore: nativeSummaryCacheStore })
+  );
   nativeSessionRegistry.register(new PiStateAdapter());
   nativeSessionRegistry.register(new PrimeAgentStateAdapter());
   nativeSessionRegistry.register(new DshStateAdapter());
