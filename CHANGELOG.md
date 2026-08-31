@@ -34,6 +34,11 @@ workflow.
   and post in any channel, matching the rest of the local-terminal trust
   boundary. Credentials issued to remote or delegated agents are unchanged and
   still reach only the channels they are scoped to (#1476)
+- An expired `relay-ide login` credential file (`actor-token.json`) no longer
+  shadows the boot-minted local hub token. When renewal of a stored login
+  credential fails, the CLI logs a warning and falls through to the host-local
+  token before failing, and automatically removes credentials expired beyond
+  their renewal window (#1484)
 
 #### Added
 
