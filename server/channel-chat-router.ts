@@ -19,6 +19,7 @@ import { LOCAL_HUB_ACTOR_ID } from './local-hub-actor-token.js';
 import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
+  memberFoldKey,
   ChannelMessageStoreError,
   ChannelSearchRefusedError,
   channelSearchUnavailableReason,
@@ -481,7 +482,7 @@ function membershipTargetFromBody(
     // A `human:`-namespaced id is never an agent. Allowing one would put a
     // human principal into the agent namespace, where the removal check
     // resolves `invited_by` — the same collision class as the reserved markers.
-    (kind === 'agent' && id.startsWith('human:')) ||
+    (kind === 'agent' && canonicalChannelMemberId(id).startsWith('human:')) ||
     // Defence in depth against the reserved-marker namespace: a member id that
     // folds onto `self`/`creator`/`binding`/`backfill`/`credential-mint` would
     // sit in the same value space as the `invited_by` markers. The removal
@@ -571,10 +572,11 @@ function removalRefusalReason(input: {
  */
 function membershipGovernsTarget(target: ChannelMemberRef): boolean {
   if (target.kind !== 'agent') return false;
-  return (
-    canonicalChannelMemberId(target.id) !== LOCAL_HUB_ACTOR_ID &&
-    target.id !== LOCAL_HUB_ACTOR_ID
-  );
+  // Compare on the fold CLASS, using the store's own fold rather than a
+  // hand-rolled prefix strip: `agent:local-cli` and
+  // `agent-profile:local-cli:default` are one participant, and a partial fold
+  // would govern one spelling of it while exempting the other.
+  return memberFoldKey('agent', target.id) !== LOCAL_HUB_ACTOR_ID;
 }
 
 /** Only an agent-namespaced, non-marker `invited_by` names a resolvable member. */
@@ -583,7 +585,7 @@ function resolvableAgentInviter(invitedBy: string | undefined): boolean {
     typeof invitedBy === 'string' &&
     invitedBy.length > 0 &&
     !CHANNEL_MEMBERSHIP_RESERVED_INVITERS.includes(invitedBy) &&
-    !invitedBy.startsWith('human:')
+    !canonicalChannelMemberId(invitedBy).startsWith('human:')
   );
 }
 

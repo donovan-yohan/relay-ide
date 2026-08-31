@@ -4818,11 +4818,13 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     // A `human:`-namespaced id is also refused as an AGENT target, so a human
     // principal can never be smuggled into the namespace the removal check
     // resolves `invited_by` in.
-    const smuggled = await invite(h, { id: 'human:operator' }, write);
-    expect(smuggled.status).toBe(400);
-    expect(smuggled.body.error.details?.['reasonCode']).toBe(
-      'CHANNEL_INVITE_TARGET_INVALID'
-    );
+    for (const smuggledId of ['human:operator', 'agent:human:operator']) {
+      const smuggled = await invite(h, { id: smuggledId }, write);
+      expect([smuggledId, smuggled.status]).toEqual([smuggledId, 400]);
+      expect(smuggled.body.error.details?.['reasonCode']).toBe(
+        'CHANNEL_INVITE_TARGET_INVALID'
+      );
+    }
   });
 
   it('refuses to remove a participant membership does not govern', async () => {
@@ -4846,6 +4848,9 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
     for (const body of [
       { kind: 'human', id: 'human:operator' },
       { id: 'agent:local-cli' },
+      // The SAME participant under its other spelling. A partial fold would
+      // govern this one while exempting `agent:local-cli`.
+      { id: 'agent-profile:local-cli:default' },
     ]) {
       const res = await removeMember(h, body);
       expect([JSON.stringify(body), res.status]).toEqual([

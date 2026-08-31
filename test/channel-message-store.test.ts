@@ -24,6 +24,7 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
+  CHANNEL_MEMBERSHIP_BINDING_INVITER,
   CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
   CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
@@ -5079,6 +5080,55 @@ describe('channel-message-store invite and removal (#1455 slice 2)', () => {
     expect(readmitted.removedAt).toBeUndefined();
     expect(reopened.isMember('topic:tomb', 'agent', GATEWAY)).toBe(true);
     expect(reopened.isMember('topic:tomb', 'agent', BOUND)).toBe(true);
+  });
+
+  it('inherits the earliest tombstone when a class carries more than one', () => {
+    const file = dbPath();
+    const s = store(file);
+    // `removeMember` always stamps a whole class at once, so divergent stamps
+    // within one class only arise from legacy or hand-repaired data. The
+    // repair pass still has to pick a deterministic winner rather than
+    // whichever row SQLite happened to return first.
+    s.upsertMember({
+      channelId: 'topic:multi',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+    });
+    s.upsertMember({
+      channelId: 'topic:multi',
+      kind: 'agent',
+      id: builtInAgentProfileId('claude'),
+      invitedBy: CHANNEL_MEMBERSHIP_BINDING_INVITER,
+    });
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    const EARLIEST = '2026-01-01T00:00:00.000Z';
+    const stamp = inspect.prepare(
+      `UPDATE channel_members SET removed_at = ?, removed_by = 'human:operator'
+        WHERE channel_id = 'topic:multi' AND member_id = ?`
+    );
+    stamp.run('2026-06-01T00:00:00.000Z', 'agent:claude');
+    stamp.run(EARLIEST, builtInAgentProfileId('claude'));
+
+    // A THIRD spelling of the same participant, with no row of its own, that
+    // the backfill re-derives from durable history as a fresh LIVE row.
+    s.appendComplete({
+      channelId: 'topic:multi',
+      sender: { kind: 'agent', id: 'claude', providerId: 'claude' },
+      text: 'history the backfill will re-derive',
+    });
+    s.backfillMembership();
+
+    expect(s.isMember('topic:multi', 'agent', 'agent:claude')).toBe(false);
+    expect(s.listMembers('topic:multi')).toEqual([]);
+    const derived = inspect
+      .prepare(
+        `SELECT removed_at FROM channel_members
+          WHERE channel_id = 'topic:multi' AND member_id = 'claude'`
+      )
+      .get() as { removed_at: string | null };
+    expect(derived.removed_at).toBe(EARLIEST);
   });
 
   it('hands a write back a tombstoned ref rather than a live-looking one', () => {

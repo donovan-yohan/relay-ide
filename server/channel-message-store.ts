@@ -812,6 +812,13 @@ CREATE TABLE IF NOT EXISTS channel_members (
   removed_by    TEXT,
   PRIMARY KEY (channel_id, member_kind, member_id)
 );
+-- Partial, so it holds only the rare removed rows and costs nothing on a
+-- channel that never evicted anyone. It is what makes the backfill's repair
+-- probe ("does this database contain ANY tombstone") an indexed lookup rather
+-- than a scan of every membership row.
+CREATE INDEX IF NOT EXISTS idx_chmem_removed
+  ON channel_members(channel_id)
+  WHERE removed_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   channel_id            TEXT NOT NULL,
@@ -2790,7 +2797,7 @@ function defaultProfileVendorId(id: string): string | undefined {
  * bookkeeping alone re-enrolls on cursor advance, session persist, unbind, and
  * restart.
  */
-function memberFoldKey(kind: 'human' | 'agent', id: string): string {
+export function memberFoldKey(kind: 'human' | 'agent', id: string): string {
   // Human ids never fold: `canonicalChannelMemberId` only strips `agent:`.
   if (kind !== 'agent') return id;
   const canonical = canonicalChannelMemberId(id);
@@ -2866,7 +2873,8 @@ export function backfillChannelMembership(
     // one fold class shares one removal state) before returning.
     //
     // Scoped to channels that actually contain a tombstone, which is normally
-    // none, so this costs a single indexed lookup on the common path.
+    // none — and `idx_chmem_removed` is a partial index over exactly those
+    // rows, so the common path is an empty indexed probe rather than a scan.
     repairRemovedMemberClasses(db);
     return fromMessages + fromBindings;
   });
@@ -2897,7 +2905,8 @@ function repairRemovedMemberClasses(db: Database.Database): void {
           AND channel_id IN (
             SELECT channel_id FROM channel_members
              WHERE member_kind = 'agent' AND removed_at IS NOT NULL
-          )`
+          )
+        ORDER BY removed_at ASC`
     )
     .all() as MemberRow[];
   if (rows.length === 0) return;
@@ -2916,6 +2925,9 @@ function repairRemovedMemberClasses(db: Database.Database): void {
         AND member_id = @memberId`
   );
   for (const bucket of classes.values()) {
+    // Rows arrive ordered by `removed_at`, so a class carrying more than one
+    // tombstone deterministically inherits the EARLIEST — the removal that
+    // actually took this participant out of the room.
     const removed = bucket.find((row) => row.removed_at !== null);
     if (!removed) continue;
     for (const row of bucket) {
@@ -2941,6 +2953,8 @@ function runMigrations(db: Database.Database): void {
       ON channel_messages(channel_id, seq);
     CREATE INDEX IF NOT EXISTS idx_chm_thread
       ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_chmem_removed
+      ON channel_members(channel_id) WHERE removed_at IS NOT NULL;
   `);
   db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
   // Order matters both ways: the heal translates `channel_read_state` (created
@@ -4016,14 +4030,23 @@ export function createChannelMessageStore(
       // participant's class was removed, the mirrored row is created ALREADY
       // tombstoned — binding churn (cursor advance, session persist, unbind,
       // restart) must never re-admit an agent an operator evicted.
-      const stamp = classRemovalStamp(channelId, 'agent', profileActorId);
-      enrollBoundMemberStmt.run({
-        channelId,
-        memberId: profileActorId,
-        joinedAt: nowIso(),
-        invitedBy: CHANNEL_MEMBERSHIP_BINDING_INVITER,
-      });
-      inheritClassRemoval(channelId, 'agent', profileActorId, stamp);
+      //
+      // ONE transaction, because the two statements are one fact. The insert
+      // would otherwise autocommit on its own and a throw between them (WAL
+      // contention across handles is a documented failure mode here) would
+      // leave a permanently LIVE row — the exact resurrection this guards.
+      // better-sqlite3 nests via SAVEPOINT, so this is safe inside the
+      // binding transactions that call it.
+      db.transaction(() => {
+        const stamp = classRemovalStamp(channelId, 'agent', profileActorId);
+        enrollBoundMemberStmt.run({
+          channelId,
+          memberId: profileActorId,
+          joinedAt: nowIso(),
+          invitedBy: CHANNEL_MEMBERSHIP_BINDING_INVITER,
+        });
+        inheritClassRemoval(channelId, 'agent', profileActorId, stamp);
+      })();
     } catch (error) {
       logger.warn(
         'channel binding member enrollment failed for %s in %s: %s',
