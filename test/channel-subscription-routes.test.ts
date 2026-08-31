@@ -5,7 +5,14 @@ import * as path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { attachAuthenticatedCliGatewayActorCredential } from '../server/cli-gateway-actor-auth.js';
+import {
+  attachAuthenticatedCliGatewayActorCredential,
+  createCliGatewayActorRegistry,
+  issueCliGatewayActorCredential,
+  issueLocalHubCliActorCredential,
+  validateCliGatewayActorCredential,
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
+} from '../server/cli-gateway-actor-auth.js';
 import { createChannelHub } from '../server/channel-hub.js';
 import { createChannelMessageStore } from '../server/channel-message-store.js';
 import { createChannelSubscriptionRouter } from '../server/channel-subscription-router.js';
@@ -28,7 +35,7 @@ afterEach(() => {
 async function listen(input: {
   channelIds: string[];
   subscribe?: (sink: ChannelEventSink, afterSeq: number | null) => void;
-  isStillAuthorized?: () => boolean;
+  isStillAuthorized?: (req: express.Request, channelId: string) => boolean;
   onUnsubscribe?: () => void;
   heartbeatMs?: number;
   drainTimeoutMs?: number;
@@ -37,15 +44,21 @@ async function listen(input: {
   /** #1455 membership oracle. Defaults to "everyone is a member" so the
    *  transport tests keep testing transport; membership has its own case. */
   isMember?: (channelId: string) => boolean;
+  /** Override the attached credential (#1476 host-local lane). */
+  credential?: ScopedActorCredentialRecord;
 }): Promise<number> {
   const app = express();
   app.use((req, _res, next) => {
-    attachAuthenticatedCliGatewayActorCredential(req, {
-      id: 'credential:test',
-      actor: { type: 'agent', id: 'actor:test', displayName: 'Test' },
-      capabilities: ['context:read'],
-      scope: { channelIds: input.channelIds },
-    } as ScopedActorCredentialRecord);
+    attachAuthenticatedCliGatewayActorCredential(
+      req,
+      input.credential ??
+        ({
+          id: 'credential:test',
+          actor: { type: 'agent', id: 'actor:test', displayName: 'Test' },
+          capabilities: ['context:read'],
+          scope: { channelIds: input.channelIds },
+        } as ScopedActorCredentialRecord)
+    );
     next();
   });
   const hub =
@@ -513,6 +526,98 @@ describe('channel subscription route', () => {
     // Scope was satisfied; membership is what refused, and it refused BEFORE
     // the hub handed out a subscriber slot.
     expect(subscribed).toBe(false);
+  });
+
+  it('streams for the host-local CLI credential that names no channel (#1476)', async () => {
+    // The host-local credential (#1467) is minted with taskRefs only — no
+    // `channelIds` — so before #1476 both the enumeration guard here and the
+    // per-frame recheck refused it while `channels.list` worked.
+    const registry = createCliGatewayActorRegistry({ maxTtlMs: 60_000 });
+    const local = issueLocalHubCliActorCredential(registry, {
+      actor: { type: 'cli', id: 'local-cli', displayName: 'relay-ide local' },
+      issuer: { id: 'hub-local-boot' },
+      capabilities: ['session:read', 'context:read', 'context:write'],
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      ttlMs: 60_000,
+    });
+    expect(local.credential.scope?.channelIds).toBeUndefined();
+
+    const port = await listen({
+      channelIds: [],
+      credential: local.credential,
+      // The REAL per-frame closure shape from `server/index.ts`: revalidate the
+      // bearer token against the channel being streamed before every frame.
+      isStillAuthorized: (_req, channelId) =>
+        !(
+          'reason' in
+          validateCliGatewayActorCredential(registry, {
+            token: local.token,
+            capabilities: ['context:read'],
+            scope: { channelIds: [channelId] },
+          })
+        ),
+      subscribe: (sink) => {
+        sink.send({
+          type: 'channel-message-created-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:00.000Z',
+          message: { seq: 1 } as ChannelMessage,
+        });
+        sink.close({ code: 'transport-closed' });
+      },
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    expect(response.status).toBe(200);
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    // Open + the event frame both survived the per-frame revalidation.
+    expect(frames.map((frame) => frame.frame)).toEqual([
+      'open',
+      'event',
+      'closed',
+    ]);
+  });
+
+  it('still refuses a delegated actor credential that names no channel (#1476)', async () => {
+    // Same absent `channelIds`, no host-local marker: the fail-closed lane is
+    // unchanged for every credential a remote/delegated caller can hold.
+    const registry = createCliGatewayActorRegistry({ maxTtlMs: 60_000 });
+    const delegated = issueCliGatewayActorCredential(registry, {
+      actor: { type: 'agent', id: 'agent:remote' },
+      issuer: { id: 'operator' },
+      capabilities: ['session:read', 'context:read'],
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      ttlMs: 60_000,
+    });
+    expect(delegated.credential.scope?.channelIds).toBeUndefined();
+
+    let subscribed = false;
+    const port = await listen({
+      channelIds: [],
+      credential: delegated.credential,
+      subscribe: () => {
+        subscribed = true;
+      },
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    expect(response.status).toBe(403);
+    expect(subscribed).toBe(false);
+    // ...and the per-frame revalidation would have refused it as well.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: delegated.token,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:a'] },
+      })
+    ).toMatchObject({ reason: 'wrong_channel_scope' });
   });
 
   it('fails closed for a scoped actor when no membership store is wired', async () => {

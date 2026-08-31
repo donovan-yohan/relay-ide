@@ -20,6 +20,7 @@ import {
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  issueLocalHubCliActorCredential,
   cliGatewayActorCommandCapabilities,
   cliGatewayActorFailure,
   createCliGatewayActorRegistry,
@@ -134,6 +135,185 @@ describe('#1467 hub-local CLI trust token — publish', () => {
     expect(validation.credential.actor.type).toBe('cli');
     expect(validation.credential.audience).toBe(CLI_GATEWAY_ACTOR_AUDIENCE);
     expect(published.credentialId).toBe(validation.credential.id);
+  });
+
+  it('authorizes every channel verb that names a channel (#1476)', () => {
+    const home = fixtureHome();
+    const { published, registry: reg } = publish(home);
+    const token = readFileJson(published.path).token;
+
+    // The credential is minted with taskRefs only. Channel scope is fail-closed
+    // (`requiredWhenRequested`), so before #1476 only `channels.list` — the one
+    // verb that names no channel — got through.
+    expect(reg.getCredential(published.credentialId)?.scope?.channelIds).toBe(
+      undefined
+    );
+    for (const command of [
+      'channels.get',
+      'channels.history',
+      'channels.roster',
+      'channels.subscribe',
+      'channels.post',
+    ] as const) {
+      const validation = validateCliGatewayActorCredential(reg, {
+        token,
+        capabilities: cliGatewayActorCommandCapabilities(command),
+        scope: { channelIds: ['topic:any'], taskRefs: [] },
+      });
+      expect(
+        'reason' in validation ? `${command}: ${validation.reason}` : command
+      ).toBe(command);
+    }
+
+    // The per-frame stream revalidation in `server/index.ts` asks the same
+    // question on every frame, so it admits the local credential too.
+    expect(
+      'reason' in
+        validateCliGatewayActorCredential(reg, {
+          token,
+          capabilities: ['context:read'],
+          scope: { channelIds: ['topic:any'] },
+        })
+    ).toBe(false);
+  });
+
+  it('narrows the exemption to the channel dimension and to this credential', () => {
+    const home = fixtureHome();
+    const { published, registry: reg } = publish(home);
+    const token = readFileJson(published.path).token;
+
+    // A delegated credential with NO channel scope stays fail-closed...
+    const unscoped = issueCliGatewayActorCredential(reg, {
+      actor: { type: 'agent', id: 'agent:remote' },
+      issuer: { id: 'operator' },
+      capabilities: ['session:read', 'context:read', 'context:write'],
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      ttlMs: 60_000,
+    });
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token: unscoped.token,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:any'] },
+      })
+    ).toMatchObject({ reason: 'wrong_channel_scope' });
+
+    // ...and one scoped to a channel still cannot reach a different one.
+    const scoped = issueCliGatewayActorCredential(reg, {
+      actor: { type: 'agent', id: 'agent:scoped' },
+      issuer: { id: 'operator' },
+      capabilities: ['session:read', 'context:read'],
+      scope: {
+        channelIds: ['topic:a'],
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+      },
+      ttlMs: 60_000,
+    });
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token: scoped.token,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:b'] },
+      })
+    ).toMatchObject({ reason: 'wrong_channel_scope' });
+
+    // The local credential is exempt from the CHANNEL dimension only: every
+    // other scope dimension it does carry still narrows it...
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token,
+        capabilities: ['context:read'],
+        scope: {
+          channelIds: ['topic:any'],
+          taskRefs: ['task:not-the-read-marker'],
+        },
+      })
+    ).toMatchObject({ reason: 'wrong_task_scope' });
+    // ...and a capability it was never granted is still denied.
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token,
+        capabilities: ['session:attach'],
+        scope: { channelIds: ['topic:any'] },
+      })
+    ).toMatchObject({ reason: 'insufficient_capability' });
+
+    // Revocation still cuts the local credential off every channel verb: the
+    // exemption only chooses which scope rules run, and revocation is checked
+    // long before scope.
+    const revocable = issueLocalHubCliActorCredential(reg, {
+      actor: { type: 'cli', id: LOCAL_HUB_ACTOR_ID },
+      issuer: { id: 'hub-local-boot' },
+      capabilities: ['session:read', 'context:read'],
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      ttlMs: 60_000,
+    });
+    reg.revoke(revocable.credential.id, { revokedBy: 'operator' });
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token: revocable.token,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:any'] },
+      })
+    ).toMatchObject({ reason: 'revoked' });
+
+    // Naming the local credential's id without its secret buys nothing: the
+    // exemption picks the scope shape, `registry.validate` still authenticates.
+    const [, credentialId] = token.split('.');
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token: `relay-sac-v1.${credentialId}.forged-secret`,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:any'] },
+      })
+    ).toMatchObject({ reason: 'malformed_credential' });
+  });
+
+  it('narrows a host-local credential that does name channels, and leaves the scope-less lane alone', () => {
+    const reg = registry();
+    // Defensive: the boot mint names no channels today. If it ever did,
+    // dropping the requested dimension would leave the credential's own values
+    // unrequested and trip the fail-closed `missing_scope` rule — a total
+    // channel outage for the local CLI. Such a credential is narrowed normally.
+    const channelScoped = issueLocalHubCliActorCredential(reg, {
+      actor: { type: 'cli', id: LOCAL_HUB_ACTOR_ID },
+      issuer: { id: 'hub-local-boot' },
+      capabilities: ['session:read', 'context:read'],
+      scope: {
+        channelIds: ['topic:a'],
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+      },
+      ttlMs: 60_000,
+    });
+    expect(isLocalHubCliActorCredential(channelScoped.credential)).toBe(true);
+    expect(
+      'reason' in
+        validateCliGatewayActorCredential(reg, {
+          token: channelScoped.token,
+          capabilities: ['context:read'],
+          scope: { channelIds: ['topic:a'] },
+        })
+    ).toBe(false);
+    expect(
+      validateCliGatewayActorCredential(reg, {
+        token: channelScoped.token,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:b'] },
+      })
+    ).toMatchObject({ reason: 'wrong_channel_scope' });
+
+    // The `channels.list` lane names no channel at all, so the exemption never
+    // engages there — it validated before #1476 and still does.
+    const home = fixtureHome();
+    const { published } = publish(home, reg);
+    expect(
+      'reason' in
+        validateCliGatewayActorCredential(reg, {
+          token: readFileJson(published.path).token,
+          capabilities: cliGatewayActorCommandCapabilities('channels.list'),
+          scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+        })
+    ).toBe(false);
   });
 
   it('rotates on restart: the previous token no longer validates', () => {

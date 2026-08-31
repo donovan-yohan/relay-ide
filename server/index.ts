@@ -3319,6 +3319,10 @@ async function main(): Promise<void> {
           ).ok;
         }
         if (!isCliGatewayActorTokenRequest(req)) return true;
+        // #1476: `validateCliGatewayActorCredential` drops the requested
+        // channel dimension for the host-local credential (#1467) and enforces
+        // it for every other actor, so this per-frame recheck keeps cutting a
+        // revoked/expired/out-of-scope delegated stream unchanged.
         const validation = validateCliGatewayActorCredential(
           cliGatewayActorRegistry,
           {
