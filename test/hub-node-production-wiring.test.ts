@@ -19,6 +19,13 @@ function manifest(): NodeManifest {
     hostname: 'production-wiring-node',
     relayVersion: '0.1.0-test',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    // helperVersion mirrors relayVersion so the hub skew classification
+    // matches the pre-#651 (relayVersion-only) fallback exactly.
+    helperVersion: '0.1.0-test',
+    protocolVersion: '1.0',
+    resolvedPaths: {},
+    fileRpc: { available: false, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',

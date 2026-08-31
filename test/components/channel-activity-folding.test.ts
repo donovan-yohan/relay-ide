@@ -39,6 +39,12 @@ function message(
   };
 }
 
+/** Drops the optional `agentDetail` key entirely (exactOptionalPropertyTypes). */
+function withoutAgentDetail(msg: ChannelMessage): ChannelMessage {
+  const { agentDetail: _agentDetail, ...rest } = msg;
+  return rest;
+}
+
 describe('responses-first agent activity projection', () => {
   it('folds only a contiguous completed durable activity run with exact counts', () => {
     const messages = [
@@ -54,10 +60,11 @@ describe('responses-first agent activity projection', () => {
           },
         },
       }),
-      message(3, {
-        agentDetail: undefined,
-        body: { text: 'agent response', format: 'markdown' },
-      }),
+      withoutAgentDetail(
+        message(3, {
+          body: { text: 'agent response', format: 'markdown' },
+        })
+      ),
       message(4, { status: 'streaming' }),
       message(5, { status: 'failed' }),
     ];
@@ -87,25 +94,33 @@ describe('responses-first agent activity projection', () => {
     );
     expect(
       isCompletedAgentActivity(
-        message(3, {
-          agentDetail: undefined,
-          body: { text: 'prose response', format: 'markdown' },
-        })
+        withoutAgentDetail(
+          message(3, {
+            body: { text: 'prose response', format: 'markdown' },
+          })
+        )
       )
     ).toBe(false);
     expect(
       isCompletedAgentActivity(
-        message(4, {
-          agentDetail: undefined,
-          parts: [
-            {
-              id: 'img:1',
-              mimeType: 'image/png',
-              fileName: 'proof.png',
-              sizeBytes: 1,
-            },
-          ],
-        })
+        // TODO(#1498): the attachment half of this case is vacuous.
+        // `isCompletedAgentActivity` never inspects `parts`; this assertion
+        // holds purely because `agentDetail` is absent.
+        withoutAgentDetail(
+          message(4, {
+            parts: [
+              {
+                type: 'image',
+                id: 'cha:img-1',
+                mime: 'image/png',
+                w: 8,
+                h: 8,
+                bytes: 1,
+                alt: 'proof.png',
+              },
+            ],
+          })
+        )
       )
     ).toBe(false);
   });

@@ -9,6 +9,7 @@ import {
   createWorkspaceSurfaceStore,
   createWorkspaceSurfacesRouter,
   type WorkspaceSurfaceStore,
+  type WorkspaceSurfacesRouterOptions,
 } from '../server/workspace-surfaces.js';
 import type { Config } from '../server/types.js';
 import {
@@ -42,22 +43,17 @@ function asConfig(
 async function listen(input: {
   store?: WorkspaceSurfaceStore | null;
   getConfig?: () => Config;
-  requireWriteActorAuth?: (
-    expectedCommand: 'workspace-surfaces.publish',
-    options?: {
-      scopeForRequest?: (req: express.Request) =>
-        | { nodeIds?: string[]; workContextIds?: string[] }
-        | undefined;
-    }
-  ) => RequestHandler;
+  requireWriteActorAuth?: WorkspaceSurfacesRouterOptions['requireWriteActorAuth'];
 }): Promise<{ port: number }> {
   const app = express();
   app.use(express.json());
   app.use(
     createWorkspaceSurfacesRouter({
       store: input.store ?? null,
-      getConfig: input.getConfig,
-      requireWriteActorAuth: input.requireWriteActorAuth,
+      ...(input.getConfig ? { getConfig: input.getConfig } : {}),
+      ...(input.requireWriteActorAuth
+        ? { requireWriteActorAuth: input.requireWriteActorAuth }
+        : {}),
     })
   );
   const server = http.createServer(app);
@@ -116,6 +112,7 @@ function scopedActorCredential(nodeIds: string[]): ScopedActorCredentialRecord {
     scope: { nodeIds },
     issuedAt: '2026-06-21T00:00:00.000Z',
     expiresAt: '2026-06-21T00:05:00.000Z',
+    correlationId: 'corr:workspace-surfaces',
   };
 }
 

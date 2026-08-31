@@ -66,6 +66,7 @@ import {
   parseMentions,
   CHANNEL_RETRY_OF_META_KEY,
   type ChannelDeliveryReceiptV1,
+  type ChannelAttachmentId,
   type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
@@ -7514,7 +7515,7 @@ function postSteerImage(
   store: ChannelMessageStore,
   binder: ChannelAgentBinder,
   text: string,
-  partId: string
+  partId: ChannelAttachmentId
 ): ChannelMessage {
   const mentions = parseMentions(text, ['steer']);
   const part: ChannelImagePart = {

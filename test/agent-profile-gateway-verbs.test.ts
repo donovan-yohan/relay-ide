@@ -105,9 +105,12 @@ async function request(
 ): Promise<{ status: number; text: string; body: any }> {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers:
-      body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(body === undefined
+      ? {}
+      : {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
   });
   const text = await response.text();
   return {

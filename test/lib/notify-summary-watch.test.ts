@@ -35,7 +35,7 @@ vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => ({
   fetchWorkspaceTopics: apiMock.fetchWorkspaceTopics,
 }));
 
-const shown: { options?: { body?: string } }[] = [];
+const shown: { options?: { body?: string } | undefined }[] = [];
 
 class FakeNotification {
   static permission: NotificationPermission = 'granted';

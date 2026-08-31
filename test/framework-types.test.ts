@@ -156,7 +156,7 @@ test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', (
   const opencode = BUILTIN_FRAMEWORKS['opencode'];
   expect(opencode.yoloEnv).toBeTruthy();
   expect('OPENCODE_CONFIG_CONTENT' in opencode.yoloEnv!).toBeTruthy();
-  const parsed = JSON.parse(opencode.yoloEnv!['OPENCODE_CONFIG_CONTENT']);
+  const parsed = JSON.parse(opencode.yoloEnv!['OPENCODE_CONFIG_CONTENT']!);
   expect(parsed.permission).toBeTruthy();
   expect(parsed.permission.read).toBe('allow');
   expect(parsed.permission.edit).toBe('allow');

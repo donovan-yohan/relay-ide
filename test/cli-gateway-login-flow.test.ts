@@ -260,7 +260,7 @@ describe('login HTTP flow (mocked browser leg)', () => {
     const validation = validateCliGatewayActorCredential(actorRegistry, {
       token: poll.token!,
       capabilities: ['session:read'],
-      scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF },
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
     });
     expect(validation.ok).toBe(true);
     if (validation.ok) {
@@ -411,7 +411,7 @@ describe('actor credential renewal semantics', () => {
       const result = validateCliGatewayActorCredential(reg, {
         token,
         capabilities: ['session:read'],
-        scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF },
+        scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
       });
       expect(result.ok).toBe(true);
     }
@@ -425,7 +425,7 @@ describe('actor credential renewal semantics', () => {
     const revokedResult = validateCliGatewayActorCredential(reg, {
       token: successor.token,
       capabilities: ['session:read'],
-      scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF },
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
     });
     expect(revokedResult.ok).toBe(false);
     if (!revokedResult.ok) expect(revokedResult.reason).toBe('revoked');
@@ -435,7 +435,7 @@ describe('actor credential renewal semantics', () => {
     const expiredResult = validateCliGatewayActorCredential(reg, {
       token: issued.token,
       capabilities: ['session:read'],
-      scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF },
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
     });
     expect(expiredResult.ok).toBe(false);
     if (!expiredResult.ok) expect(expiredResult.reason).toBe('expired');

@@ -109,7 +109,6 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: '/repo/relay-ide',
-        activeSessionMode: 'pty',
         hasActiveChannel: true,
         forceOrgCockpit: true,
       })

@@ -8,6 +8,7 @@ import {
   SessionImageIngressError,
 } from '../server/session-image-ingress.js';
 import { _resetForTesting as resetClipboardToolCache } from '../server/clipboard.js';
+import type { Session } from '../server/types.js';
 
 const OLD_DISPLAY = process.env['DISPLAY'];
 const OLD_WAYLAND_DISPLAY = process.env['WAYLAND_DISPLAY'];

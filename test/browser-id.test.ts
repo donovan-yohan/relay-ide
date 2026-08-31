@@ -3,7 +3,12 @@ import { createBrowserIdWithCrypto } from '../frontend/src/lib/browserId.js';
 
 describe('createBrowserIdWithCrypto', () => {
   it('uses crypto.randomUUID when available', () => {
-    const randomUUID = vi.fn(() => 'uuid-1');
+    // The contract under test is "randomUUID's value is returned verbatim",
+    // so the fake id is deliberately not a real UUID; it only has to satisfy
+    // the Crypto signature the product accepts.
+    const randomUUID = vi.fn(
+      () => 'uuid-1' as ReturnType<Crypto['randomUUID']>
+    );
 
     expect(createBrowserIdWithCrypto('turn', { randomUUID })).toBe('uuid-1');
     expect(randomUUID).toHaveBeenCalledTimes(1);

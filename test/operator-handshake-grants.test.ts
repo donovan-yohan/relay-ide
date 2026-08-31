@@ -9,6 +9,7 @@ import {
   operatorHandshakeGrantApprovalCopy,
   redactHandshakeGrantForAudit,
   type HandshakeGrantValidationFailureReason,
+  type ValidateHandshakeGrantInput,
 } from '../shared/operator-handshake-grants.js';
 
 const NOW = new Date('2026-05-29T00:00:00.000Z');
@@ -34,7 +35,7 @@ const AUDIT_FIXTURE_VALIDATION = {
   requiredCapabilities: ['session:read'],
   scope: { nodeId: 'node-a' },
   consume: false,
-} as const;
+} satisfies ValidateHandshakeGrantInput;
 
 function requestAuditFixture(
   store: HandshakeGrantRegistry,
@@ -200,7 +201,7 @@ describe('operator handshake grant registry', () => {
     ['wrong_repo_scope', { scope: { repoId: 'repo-b' } }],
     ['wrong_path_scope', { scope: { path: '/repo-a/src/secret.ts' } }],
     ['wrong_task_scope', { scope: { taskRef: 'issue-999' } }],
-    ['missing_scope', { scope: { nodeId: undefined } }],
+    ['missing_scope', { scope: {} }],
     ['unknown_capability', { requiredCapabilities: ['session:teleport'] }],
     ['insufficient_capability', { requiredCapabilities: ['rpc:fs:write'] }],
   ] satisfies [

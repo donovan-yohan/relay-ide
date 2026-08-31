@@ -869,10 +869,12 @@ test('v1 gateway session stream and input use routed PTY websocket', async () =>
     displayName: 'fixture terminal',
     status: 'active',
   };
+  // Node's request/header accessors legitimately yield `undefined`, so the
+  // recorded shape has to admit it under `exactOptionalPropertyTypes`.
   const upgrades: Array<{
-    url?: string;
-    cookie?: string;
-    marker?: string | string[];
+    url?: string | undefined;
+    cookie?: string | undefined;
+    marker?: string | string[] | undefined;
   }> = [];
   const inputs: string[] = [];
   const server = http.createServer((req, res) => {

@@ -108,7 +108,7 @@ function session(id: string): SessionSummary {
     idle: false,
     type: 'terminal',
     mode: 'pty',
-    useTmux: true,
+    activityState: 'waiting-for-input',
   };
 }
 

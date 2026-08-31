@@ -74,10 +74,11 @@ describe('buildMessagePaletteResults', () => {
   it('labels the sender by display name / provider, never by splitting a profile id', () => {
     // `agent-profile:claude:default` — the trailing segment is `default`, so a
     // naive split would label every built-in agent identically (#1234).
-    expect(
-      buildMessagePaletteResults([makeHit({ providerId: undefined })])[0]
-        ?.sublabel
-    ).toBe('Build UI shell · claude');
+    const noProviderHit: ChannelMessageSearchResult = makeHit();
+    delete noProviderHit.providerId;
+    expect(buildMessagePaletteResults([noProviderHit])[0]?.sublabel).toBe(
+      'Build UI shell · claude'
+    );
     expect(
       buildMessagePaletteResults([
         makeHit({ senderDisplayName: 'Reviewer', providerId: 'codex' }),

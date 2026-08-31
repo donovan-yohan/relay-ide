@@ -143,6 +143,7 @@ describe('<HandoffPlanDialog />', () => {
       createdAt: '2026-05-22T04:00:00.000Z',
       lastActivity: '2026-05-22T04:01:00.000Z',
       idle: false,
+      activityState: 'waiting-for-input',
       workContextId: 'wc:issue-692',
       ...overrides,
     };

@@ -33,7 +33,8 @@ import {
   normalizeRemoteUrl,
   type ResolvedRemoteIdentity,
 } from '../../shared/repo-identity.js';
-import type { NodeManifest } from '../../shared/node-manifest.js';
+import type { NodeCapabilityProbe, NodeManifest } from '../../shared/node-manifest.js';
+import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../../shared/relay-node-protocol.js';
 
 function resolvedRemote(name: string, url: string): ResolvedRemoteIdentity {
   const normalized = normalizeRemoteUrl(url);
@@ -287,14 +288,22 @@ describe('GET /hub/repo-groups (#624 endpoint)', () => {
     });
   }
 
+  function probe(id: string, label: string, message: string): NodeCapabilityProbe {
+    return { id, label, status: 'available', message };
+  }
+
   function manifest(): NodeManifest {
     return {
       schemaVersion: 1,
       platform: 'linux',
       arch: 'x64',
       hostname: 'repo-groups-host',
+      helperVersion: '0.1.0-test',
       relayVersion: '0.1.0-test',
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
       generatedAt: '2026-05-19T00:00:00.000Z',
+      resolvedPaths: { binary: '/usr/local/bin/relay-ide', configDir: '/home/relay/.config/relay-ide' },
+      fileRpc: { available: true, capabilities: ['fs.list', 'fs.stat', 'fs.read'] },
       wsl: { detected: false, version: null, systemd: false },
       serviceManager: {
         kind: 'systemd-user',
@@ -304,17 +313,20 @@ describe('GET /hub/repo-groups (#624 endpoint)', () => {
         installHint: 'install',
         uninstallHint: 'uninstall',
         message: 'ok',
+        caveats: [],
       },
       capabilities: {
-        tmux: { status: 'available', message: 'tmux 3.4' },
-        git: { status: 'available', message: 'git 2.45.0' },
-        clipboard: { status: 'available', message: 'pbcopy' },
-        browserAutomation: { status: 'available', message: 'playwright ok' },
-        githubCli: { status: 'available', message: 'gh 2.51' },
-        tailscale: { status: 'available', message: 'tailscale 1.62' },
-        ssh: { status: 'available', message: 'OpenSSH 9.7' },
+        terminalBackends: { 'relay-pty': probe('relay-pty', 'relay-pty', 'relay-pty ready') },
+        git: probe('git', 'Git', 'git 2.45.0'),
+        clipboard: probe('clipboard', 'Clipboard', 'pbcopy'),
+        browserAutomation: probe('browserAutomation', 'Browser automation', 'playwright ok'),
+        githubCli: probe('githubCli', 'GitHub CLI', 'gh 2.51'),
+        tailscale: probe('tailscale', 'Tailscale', 'tailscale 1.62'),
+        ssh: probe('ssh', 'SSH', 'OpenSSH 9.7'),
+        sessionResume: 'none',
         agents: {},
       },
+      degradedReasons: [],
     };
   }
 

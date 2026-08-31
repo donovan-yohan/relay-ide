@@ -9,6 +9,7 @@ import {
   parsePromptAttachmentList,
   promptAttachmentToArtifactRef,
   type PromptAttachment,
+  type PromptAttachmentFileRef,
 } from '../shared/prompt-attachment.js';
 
 function makeRef(
@@ -29,7 +30,7 @@ describe('createPromptAttachment', () => {
       kind: 'file-ref',
       ref,
       summary: 'short',
-    });
+    }) as PromptAttachmentFileRef;
     expect(att.kind).toBe('file-ref');
     expect(att.ref.nodeId).toBe('mac-studio');
     expect(att.ref.path).toBe('/Users/d/file.txt');
@@ -52,7 +53,7 @@ describe('createPromptAttachment', () => {
     const att = createPromptAttachment({
       kind: 'file-ref',
       ref: { ...ref, path: '/Users/d//file.txt' },
-    });
+    }) as PromptAttachmentFileRef;
     expect(att.ref.path).toBe('/Users/d/file.txt');
   });
 
@@ -88,7 +89,9 @@ describe('parsePromptAttachment', () => {
       ref: makeRef({ size: 42, sha256: 'a'.repeat(64) }),
       summary: 'preview',
     });
-    const parsed = parsePromptAttachment(JSON.parse(JSON.stringify(original)));
+    const parsed = parsePromptAttachment(
+      JSON.parse(JSON.stringify(original))
+    ) as PromptAttachmentFileRef | null;
     expect(parsed).not.toBeNull();
     expect(parsed?.kind).toBe('file-ref');
     expect(parsed?.ref.path).toBe('/Users/d/file.txt');

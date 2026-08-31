@@ -25,6 +25,7 @@ const nodeASession: SessionSummary = {
   createdAt: '2026-05-11T00:00:00.000Z',
   lastActivity: '2026-05-11T00:00:00.000Z',
   idle: false,
+  activityState: 'idle',
   nodeId: 'node-a',
   globalSessionId: 'node-a:same-local-id',
 };

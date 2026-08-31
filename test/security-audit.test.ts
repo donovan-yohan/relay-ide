@@ -36,8 +36,10 @@ function sampleEvent(
   overrides: Partial<SecurityAuditEntryInput> = {}
 ): SecurityAuditEntryInput {
   return {
-    eventId: overrides.eventId,
-    timestamp: overrides.timestamp,
+    ...(overrides.eventId !== undefined ? { eventId: overrides.eventId } : {}),
+    ...(overrides.timestamp !== undefined
+      ? { timestamp: overrides.timestamp }
+      : {}),
     eventType: overrides.eventType ?? 'grant',
     decision: overrides.decision ?? 'allow',
     reasonCode: overrides.reasonCode ?? 'ACL_ALLOWED',
@@ -262,7 +264,7 @@ describe('security audit primitives', () => {
       requiredBits: [],
       grantedBits: [],
     });
-    expect(entry.material.params).toMatchObject({
+    expect(entry.material!.params).toMatchObject({
       sourceEventId: 'intervention-evt-1',
       interventionKind: 'human-input',
       interventionSource: 'pty-input',
@@ -430,8 +432,8 @@ describe('security audit primitives', () => {
       const result = log.listBefore(null, 3);
       expect(result.rows).toHaveLength(3);
       // newest-first: sequences 5, 4, 3
-      expect(result.rows[0].sequence).toBe(5);
-      expect(result.rows[2].sequence).toBe(3);
+      expect(result.rows[0]!.sequence).toBe(5);
+      expect(result.rows[2]!.sequence).toBe(3);
       expect(result.nextBeforeSequence).toBe(3);
       log.close();
     });
@@ -446,8 +448,8 @@ describe('security audit primitives', () => {
       const result = log.listBefore(3, 100);
       expect(result.rows).toHaveLength(2);
       // DESC: sequences 2, 1
-      expect(result.rows[0].sequence).toBe(2);
-      expect(result.rows[1].sequence).toBe(1);
+      expect(result.rows[0]!.sequence).toBe(2);
+      expect(result.rows[1]!.sequence).toBe(1);
       expect(result.nextBeforeSequence).toBe(1);
 
       // fetching before sequence 1 returns empty + null (terminal page)

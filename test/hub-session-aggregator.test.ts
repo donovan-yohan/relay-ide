@@ -55,8 +55,6 @@ function localSession(id: string, nodeId: string): SessionSummary {
     customCommand: null,
     nodeId,
     globalSessionId: `${nodeId}:${id}`,
-    useTmux: true,
-    tmuxSessionName: `tmux-${id}`,
     status: 'active',
     needsBranchRename: false,
     activityState: 'idle',

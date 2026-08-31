@@ -610,7 +610,7 @@ describe('hub node registry', () => {
         'pty:exec:arbitrary',
         'preview:port-forward',
       ]) {
-        expect(node?.trust.policy.allowed).not.toContain(forbidden);
+        expect(node?.trust.policy!.allowed).not.toContain(forbidden);
       }
 
       const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
@@ -661,10 +661,10 @@ describe('hub node registry', () => {
       const node = registry.listNodes()[0];
 
       expect(node?.capabilities.core.git).toBe('unavailable');
-      expect(node?.trust.policy.allowed).toEqual(
+      expect(node?.trust.policy!.allowed).toEqual(
         expect.arrayContaining(['rpc:git:read'])
       );
-      expect(node?.trust.policy.allowed).not.toContain('rpc:git:write');
+      expect(node?.trust.policy!.allowed).not.toContain('rpc:git:write');
     });
   });
 

@@ -118,7 +118,7 @@ describe('session durability — failure matrix (#614 slice 5)', () => {
     // matrix here flips a fake resolver so the transition fires through
     // the same `emitDurabilityIfChanged` path the hub uses.
     const { id, session } = makeSession('node-drop');
-    session.nodeId = 'remote-test' as typeof session.nodeId;
+    session.nodeId = 'remote-test';
     expect(durabilityOf(id)).toBe('running-attached');
 
     const cap = captureTransitions();

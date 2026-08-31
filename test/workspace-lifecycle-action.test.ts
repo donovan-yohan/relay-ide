@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RelayJsonSchema } from '../shared/cli-gateway-contract.js';
+import type { WorktreeArchiveActionInput } from '../frontend/src/lib/actions/workspace-lifecycle.js';
 import {
   executeWorktreeArchiveAction,
   executeWorktreeCreateAction,
@@ -279,14 +280,16 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     });
 
     it('archive executor never requests branch deletion from the api fn', async () => {
-      const archiveExecutor = vi.fn(async () => undefined);
+      const archiveExecutor = vi.fn(
+        async (_input: WorktreeArchiveActionInput) => undefined
+      );
       await executeWorktreeArchiveAction(
         { worktreePath: '/wt', repoPath: '/repo', force: false },
         archiveExecutor
       );
       // The bridge passes the typed input through; it must NOT carry any
       // branch-deletion flag/intent.
-      const passed = archiveExecutor.mock.calls[0]?.[0];
+      const passed = archiveExecutor.mock.calls[0]![0];
       expect(passed).not.toHaveProperty('deleteBranch');
       expect(passed).toMatchObject({ worktreePath: '/wt', repoPath: '/repo' });
     });
@@ -463,7 +466,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       // Confirms the api.ts deleteWorktree path is plain fetch + typed HttpError,
       // not the challenge/registerConfirmationRetry path (per the wire investigation).
       const fetchMock = vi.fn(
-        async () =>
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
           new Response(
             JSON.stringify({
               error: 'uncommitted_changes',
@@ -487,7 +490,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         });
         // force:true was sent in the body.
         const body = JSON.parse(
-          (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
+          fetchMock.mock.calls[0]![1]!.body as string
         );
         expect(body).toMatchObject({
           worktreePath: '/wt',
@@ -506,7 +509,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       // MUST send deleteBranch:false so the wire matches the branch-preserving
       // contract. Uses the REAL default executor (no injected stub).
       const fetchMock = vi.fn(
-        async () =>
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
           new Response(JSON.stringify({ ok: true, branchDeleted: false }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -521,7 +524,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         });
         expect(result.ok).toBe(true);
         const body = JSON.parse(
-          (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
+          fetchMock.mock.calls[0]![1]!.body as string
         );
         expect(body).toMatchObject({
           worktreePath: '/repo/.worktrees/feat',
@@ -538,7 +541,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       // Delete is branch-DELETING; it must NOT send deleteBranch so the route's
       // `deleteBranch !== false` default (true) applies, matching branchDeleted:true.
       const fetchMock = vi.fn(
-        async () =>
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
           new Response(JSON.stringify({ ok: true, branchDeleted: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -553,7 +556,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         });
         expect(result.ok).toBe(true);
         const body = JSON.parse(
-          (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
+          fetchMock.mock.calls[0]![1]!.body as string
         );
         expect(body).not.toHaveProperty('deleteBranch');
       } finally {
@@ -563,7 +566,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
 
     it('createWorktree surfaces res.ok failures as a typed HttpError', async () => {
       const fetchMock = vi.fn(
-        async () =>
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
           new Response(
             JSON.stringify({ error: 'Path is not a recognized git worktree' }),
             {

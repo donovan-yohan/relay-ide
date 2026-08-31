@@ -307,7 +307,8 @@ describe('hub/node packaging decision', () => {
       );
     } finally {
       resetCliLogDir();
-      if (previous === undefined) delete process.env['RELAY_IDE_ALLOW_DEGRADED'];
+      if (previous === undefined)
+        delete process.env['RELAY_IDE_ALLOW_DEGRADED'];
       else process.env['RELAY_IDE_ALLOW_DEGRADED'] = previous;
     }
   });
@@ -568,33 +569,35 @@ describe('hub/node packaging decision', () => {
     const configPath = writeHubConfig();
     const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
     process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
-    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
-      const pathname = new URL(String(input)).pathname;
-      if (pathname === '/version') {
-        return new Response(JSON.stringify({ version: '0.1.0' }), {
+    const fetchMock = vi.fn(
+      async (input: URL | RequestInfo, _init?: RequestInit) => {
+        const pathname = new URL(String(input)).pathname;
+        if (pathname === '/version') {
+          return new Response(JSON.stringify({ version: '0.1.0' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (pathname === '/healthz') {
+          return new Response(
+            JSON.stringify({
+              status: 'degraded',
+              lagMs: 3,
+              rss: 1024,
+              disabledStores: ['channelMessages', 'workContexts'],
+            }),
+            {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            }
+          );
+        }
+        return new Response(JSON.stringify({ nodes: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (pathname === '/healthz') {
-        return new Response(
-          JSON.stringify({
-            status: 'degraded',
-            lagMs: 3,
-            rss: 1024,
-            disabledStores: ['channelMessages', 'workContexts'],
-          }),
-          {
-            status: 503,
-            headers: { 'content-type': 'application/json' },
-          }
-        );
-      }
-      return new Response(JSON.stringify({ nodes: [] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
+    );
     vi.stubGlobal('fetch', fetchMock);
     let stdout = '';
     const stdoutSpy = vi
@@ -637,9 +640,9 @@ describe('hub/node packaging decision', () => {
       expect(healthCall?.[1]).toMatchObject({
         headers: { 'x-relay-cli-gateway': 'v1' },
       });
-      expect((healthCall?.[1] as RequestInit | undefined)?.headers).not.toHaveProperty(
-        'Authorization'
-      );
+      expect(
+        (healthCall?.[1] as RequestInit | undefined)?.headers
+      ).not.toHaveProperty('Authorization');
     } finally {
       stdoutSpy.mockRestore();
       vi.unstubAllGlobals();

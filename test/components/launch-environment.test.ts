@@ -12,6 +12,7 @@ import {
   environmentToCreateSessionOptions,
   launchEnvironment,
 } from '../../frontend/src/lib/launch-environment.js';
+import type { CreateTerminalSessionOptions } from '../../frontend/src/lib/session-utils.js';
 
 const GENERATED_AT = '2026-05-19T12:00:00.000Z';
 
@@ -116,7 +117,7 @@ describe('environmentToCreateSessionOptions', () => {
 
 describe('launchEnvironment', () => {
   it('calls createSession with mapped options for a fresh environment', async () => {
-    const createSession = vi.fn(async () => ({
+    const createSession = vi.fn(async (_opts: CreateTerminalSessionOptions) => ({
       session: undefined,
       error: null,
     }));
@@ -200,7 +201,13 @@ describe('launchEnvironment', () => {
 // this guard fails and the read-only exposure can be wired then.
 describe('configured-command honesty (#863)', () => {
   it('EnvironmentAgentProvider carries no configured/default command field', () => {
-    const provider: EnvironmentAgentProvider = {
+    // `reason` is written explicitly (not omitted) because the assertion
+    // below pins the exact key set the data layer populates. The local type
+    // widens `reason` to allow the explicit `undefined` under
+    // exactOptionalPropertyTypes without changing the object.
+    const provider: Omit<EnvironmentAgentProvider, 'reason'> & {
+      reason: string | undefined;
+    } = {
       id: 'claude',
       availability: 'available',
       authStatus: 'logged-in',

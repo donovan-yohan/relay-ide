@@ -58,24 +58,10 @@ describe('shiki-gc store', () => {
   describe('setEntry', () => {
     it('adds a new entry with lastViewedAt = now', () => {
       const before = Date.now();
-      useShikiGcStore
-        .getState()
-        .setEntry(
-          'a',
-          'code',
-          'ts',
-          ['tokens'],
-          undefined as unknown as number
-        );
+      useShikiGcStore.getState().setEntry('a', 'code', 'ts', ['tokens']);
       // Use setEntry directly
       const store = useShikiGcStore.getState();
-      store.setEntry(
-        'tab1',
-        'const x = 1',
-        'typescript',
-        [['token']],
-        undefined as unknown as number
-      );
+      store.setEntry('tab1', 'const x = 1', 'typescript', [['token']]);
       const entry = useShikiGcStore.getState().entries.get('tab1');
       expect(entry).toBeDefined();
       expect(entry!.source).toBe('const x = 1');
@@ -87,15 +73,7 @@ describe('shiki-gc store', () => {
       const oldTime = Date.now() - 10_000;
       addEntry('tab1', 'old', 'ts', ['old-tokens'], oldTime);
 
-      useShikiGcStore
-        .getState()
-        .setEntry(
-          'tab1',
-          'new',
-          'ts',
-          ['new-tokens'],
-          undefined as unknown as number
-        );
+      useShikiGcStore.getState().setEntry('tab1', 'new', 'ts', ['new-tokens']);
       const entry = useShikiGcStore.getState().entries.get('tab1');
       expect(entry!.source).toBe('new');
       // lastViewedAt should be preserved from the existing entry

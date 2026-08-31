@@ -215,18 +215,26 @@ describe('Relay automation-run Dynamic Workflows finalizer adapter', () => {
     const store = makeStore();
     try {
       const run = store.register(registerInput);
+      // The parameter name must not shadow the outer `context` helper, or
+      // `ReturnType<typeof context>` resolves to the parameter itself (TS2502).
       const calls: Array<{
         action: string;
-        handler: (context: ReturnType<typeof context>) => unknown;
+        handler: (ctx: ReturnType<typeof context>) => unknown;
         replace?: boolean;
       }> = [];
       const registry = {
         register(
           action: string,
-          handler: (context: ReturnType<typeof context>) => unknown,
+          handler: (ctx: ReturnType<typeof context>) => unknown,
           options?: { replace?: boolean }
         ) {
-          calls.push({ action, handler, replace: options?.replace });
+          calls.push({
+            action,
+            handler,
+            ...(options?.replace !== undefined
+              ? { replace: options.replace }
+              : {}),
+          });
           return this;
         },
       };

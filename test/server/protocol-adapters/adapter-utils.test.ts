@@ -575,12 +575,12 @@ describe('patch emission conventions', () => {
   describe('emitLiveStatePatch', () => {
     it('publishes the live delta untouched', () => {
       const { sink, patches } = harness();
-      emitLiveStatePatch(sink, { status: 'busy', queueLength: 2 });
+      emitLiveStatePatch(sink, { status: 'working', queueLength: 2 });
       expect(patches).toHaveLength(1);
       expect(patches[0]).toMatchObject({
         type: 'agent-live-state-updated-v2',
         sessionId: 'session-1',
-        live: { status: 'busy', queueLength: 2 },
+        live: { status: 'working', queueLength: 2 },
       });
       expect(patches[0]?.timestamp).toBeTypeOf('string');
     });
@@ -592,7 +592,7 @@ describe('patch emission conventions', () => {
       // cleared", so an `undefined` key is not the same as no key.
       const { sink, patches } = harness();
       emitSessionUpdatePatch(sink, { providerSession: { id: 'abc' } });
-      const patch = patches[0] as Record<string, unknown>;
+      const patch = patches[0] as unknown as Record<string, unknown>;
       expect(patch.providerSession).toEqual({ id: 'abc' });
       expect(patch).not.toHaveProperty('capabilities');
       expect(patch).not.toHaveProperty('config');
@@ -652,7 +652,7 @@ describe('patch emission conventions', () => {
         seq: 1,
         payload: {},
       });
-      const patch = patches[0] as { item: Record<string, unknown> };
+      const patch = patches[0] as unknown as { item: Record<string, unknown> };
       expect(patch.item).not.toHaveProperty('metadata');
     });
 
@@ -672,10 +672,14 @@ describe('patch emission conventions', () => {
         payload: {},
         visibility: 'trace',
       });
-      expect((patches[0] as { item: Record<string, unknown> }).item).toMatchObject(
+      expect(
+        (patches[0] as unknown as { item: Record<string, unknown> }).item
+      ).toMatchObject(
         { metadata: { eventVisibility: 'debug' } }
       );
-      expect((patches[1] as { item: Record<string, unknown> }).item).toMatchObject(
+      expect(
+        (patches[1] as unknown as { item: Record<string, unknown> }).item
+      ).toMatchObject(
         { metadata: { eventVisibility: 'trace' } }
       );
     });

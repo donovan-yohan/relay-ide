@@ -14,8 +14,18 @@ import {
   activeWorkStateLabel,
 } from '../frontend/src/lib/active-work-control.js';
 
+/**
+ * Fixture overrides intentionally allow explicit `undefined` so a case can say
+ * "this session has no repo binding" and beat the defaults below.
+ */
+type SessionOverrides = {
+  [K in keyof WorkContextSessionSummary]?:
+    | WorkContextSessionSummary[K]
+    | undefined;
+};
+
 const session = (
-  overrides: Partial<WorkContextSessionSummary> = {}
+  overrides: SessionOverrides = {}
 ): WorkContextSessionSummary => ({
   id: 's1',
   nodeId: DEFAULT_LOCAL_NODE_ID,
@@ -29,7 +39,7 @@ const session = (
   associatedAt: '2026-05-17T00:00:00.000Z',
   live: true,
   ...overrides,
-});
+}) as WorkContextSessionSummary;
 
 const group = (
   overrides: Partial<WorkContextActiveGroup> = {}

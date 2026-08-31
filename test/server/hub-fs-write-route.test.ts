@@ -29,8 +29,13 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'fs-write-test-node',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -43,7 +48,14 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'relay-pty',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
       browserAutomation: { id: 'browserAutomation', label: 'Browser automation', status: 'degraded', message: 'missing deps' },

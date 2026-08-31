@@ -106,7 +106,7 @@ describe('ChannelMessageRow retry affordance', () => {
   });
 
   it('fires the retry lane exactly once per click, with the failed row', async () => {
-    const onRetry = vi.fn(async () => {});
+    const onRetry = vi.fn(async (_message: ChannelMessage) => {});
     const row = await renderRow({ onRetry });
 
     const inline = row.querySelector<HTMLButtonElement>('.ch-msg__retry');

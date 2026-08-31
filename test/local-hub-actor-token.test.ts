@@ -410,7 +410,7 @@ describe('#1467 hub-local CLI trust token — publish', () => {
     const home = fixtureHome();
     const { registry: reg, published } = publish(home);
     const boot = reg.getCredential(published.credentialId);
-    expect(isLocalHubCliActorCredential(boot)).toBe(true);
+    expect(isLocalHubCliActorCredential(boot!)).toBe(true);
 
     // `POST /cli-gateway/actor-credentials` funnels through this issuer; a
     // caller asking for the marker must not get the channel-scope exemption.

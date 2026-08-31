@@ -73,7 +73,7 @@ describe('high-risk approval classifier', () => {
       {
         action: 'pty.exec.arbitrary',
         targetNodeId: 'node_prod',
-        trustTier: 'prod',
+        trustTier: 'prod' as const,
         requiredCapabilities: ['pty:exec:arbitrary'],
       },
     ],

@@ -28,6 +28,13 @@ const GENERATED_AT = '2026-06-10T12:00:00.000Z';
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'local',
+    identity: {
+      nodeId: 'local',
+      displayName: 'local mac',
+      hostname: 'local.local',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      pairedAt: '2026-05-12T00:00:00.000Z',
+    },
     displayName: 'local mac',
     hostname: 'local.local',
     platform: 'darwin',
@@ -36,11 +43,23 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: { state: 'active', level: 'standard' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-local',
+      issuedAt: '2026-05-12T00:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -49,7 +68,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       },
       terminalBackends: {
         'relay-pty': 'available',
-        'tmux-compat': 'available',
       },
       agents: { claude: 'available', codex: 'available' },
       serviceManager: 'launchd',
@@ -134,7 +152,6 @@ describe('#861 node launch targets — acceptance', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node()],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -148,7 +165,6 @@ describe('#861 node launch targets — acceptance', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node(), remote()],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -162,7 +178,6 @@ describe('#861 node launch targets — acceptance', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node(), remote({ status: 'updating' })],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -185,7 +200,6 @@ describe('#861 node launch targets — acceptance', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node()],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -207,15 +221,12 @@ describe('#861 node launch targets — acceptance', () => {
         remote({
           capabilities: {
             ...remote().capabilities,
-            core: { ...remote().capabilities.core, tmux: 'unavailable' },
             terminalBackends: {
               'relay-pty': 'unavailable',
-              'tmux-compat': 'unavailable',
             },
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -230,7 +241,6 @@ describe('#861 node launch targets — acceptance', () => {
     const options = buildEnvironmentOptions({
       inventory: null,
       nodes: [node(), remote()],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -253,7 +263,6 @@ describe('#861 node launch targets — acceptance', () => {
           lastSeenAt: '2026-06-09T00:00:00.000Z',
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -277,7 +286,6 @@ describe('#861 node launch targets — acceptance', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -302,7 +310,6 @@ describe('#861 node launch targets — acceptance', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -331,7 +338,6 @@ describe('#861 node launch targets — acceptance', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });

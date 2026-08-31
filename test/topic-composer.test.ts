@@ -289,7 +289,7 @@ describe('topic provider launch helpers', () => {
       draft: { ...TOPIC_ROOM_DRAFT_EMPTY, prompt: 'run it' },
       workspaceId: null,
       defaultProviderId: 'hermes',
-      taskRef: null,
+      taskRef: undefined,
     });
 
     expect(
@@ -312,7 +312,7 @@ describe('topic provider launch helpers', () => {
       workspaceId: null,
       defaultProviderId: 'claude',
       defaultCwd: '/configured/project',
-      taskRef: null,
+      taskRef: undefined,
     });
     const body = buildTopicRoomLaunchBody(create, 'terminal-task', [
       framework('claude'),
@@ -341,7 +341,7 @@ describe('topic provider launch helpers', () => {
       draft: { ...TOPIC_ROOM_DRAFT_EMPTY, prompt: 'run it' },
       workspaceId: null,
       defaultProviderId: 'opencode',
-      taskRef: null,
+      taskRef: undefined,
     });
 
     expect(
@@ -778,7 +778,7 @@ describe('TopicComposer', () => {
       '.topic-composer__bar button[type="submit"]'
     );
     expect(name).not.toBeNull();
-    expect(create.disabled).toBe(true);
+    expect(create!.disabled).toBe(true);
     expect(container.querySelector('.topic-composer__provider-row')).toBeNull();
 
     const opening = container.querySelector(
@@ -788,7 +788,7 @@ describe('TopicComposer', () => {
       setNativeInputValue(name!, 'release coordination');
       setNativeValue(opening, 'coordinate the release train');
     });
-    expect(create.disabled).toBe(false);
+    expect(create!.disabled).toBe(false);
 
     const form = container.querySelector(
       '.topic-composer__form'
@@ -1316,6 +1316,7 @@ describe('TopicComposer', () => {
       createdAt: '2026-07-05T00:00:00.000Z',
       lastActivity: '2026-07-05T00:00:00.000Z',
       idle: false,
+      activityState: 'waiting-for-input',
     } as const;
     useSessionsStore.setState({
       sessions: [ptySession],

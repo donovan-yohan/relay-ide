@@ -1,7 +1,15 @@
 // @vitest-environment happy-dom
 
 import React, { act } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ChannelImagePart as ChannelImagePartModel } from '../../shared/channel-chat-protocol.js';
 import {
@@ -32,8 +40,8 @@ const part: ChannelImagePartModel = {
 let container: HTMLDivElement;
 let root: Root;
 let intersectionCallback: IntersectionObserverCallback | null = null;
-let createObjectUrl: ReturnType<typeof vi.fn>;
-let revokeObjectUrl: ReturnType<typeof vi.fn>;
+let createObjectUrl: Mock<(obj: Blob | MediaSource) => string>;
+let revokeObjectUrl: Mock<(url: string) => void>;
 const OriginalIntersectionObserver = globalThis.IntersectionObserver;
 const originalCreateObjectUrl = URL.createObjectURL;
 const originalRevokeObjectUrl = URL.revokeObjectURL;

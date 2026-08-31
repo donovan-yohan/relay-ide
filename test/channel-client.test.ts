@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   createRelayChannelClient,
   RelayChannelClientError,
-  RelayChannelSubscriptionOverflowError,
 } from '../shared/channel-client.js';
 
 const enc = new TextEncoder();
@@ -126,7 +125,7 @@ describe('relay-ide/channel-client', () => {
       baseUrl: 'http://relay.test/',
       token: 'secret-never-in-input',
       fetch: async (url, init) => {
-        requests.push({ url: String(url), init });
+        requests.push({ url: String(url), ...(init ? { init } : {}) });
         const pathname = new URL(String(url)).pathname;
         if (pathname.includes('/threads/') || pathname.endsWith('/messages')) {
           if (init?.method === 'POST')
@@ -223,7 +222,7 @@ describe('relay-ide/channel-client', () => {
     expect(two.run.id).toBe('chrun:two');
     await expect(
       client.run.get({ channelId: 'topic:one', runId: 'chrun:denied' })
-    ).rejects.toMatchObject<Partial<RelayChannelClientError>>({
+    ).rejects.toMatchObject({
       status: 403,
       code: 'FORBIDDEN',
       retryable: false,
@@ -660,7 +659,7 @@ describe('relay-ide/channel-client', () => {
 
     await expect(
       client.collect({ channelId: 'topic:one', maxEvents: 1 })
-    ).rejects.toMatchObject<Partial<RelayChannelClientError>>({
+    ).rejects.toMatchObject({
       code: 'UPSTREAM_ERROR',
       status: 502,
     });
@@ -723,7 +722,7 @@ describe('relay-ide/channel-client', () => {
       });
       await expect(
         client.collect({ channelId: 'topic:one', maxEvents: 1 })
-      ).rejects.toMatchObject<Partial<RelayChannelClientError>>({
+      ).rejects.toMatchObject({
         code: 'UPSTREAM_ERROR',
         status: 502,
         retryable: true,
@@ -751,7 +750,7 @@ describe('relay-ide/channel-client', () => {
         maxLineBytes: 16,
         maxStreamBytes: 128,
       })
-    ).rejects.toMatchObject<Partial<RelayChannelSubscriptionOverflowError>>({
+    ).rejects.toMatchObject({
       limit: 'line-bytes',
       maximum: 16,
       observed: 64,
@@ -778,7 +777,7 @@ describe('relay-ide/channel-client', () => {
         maxLineBytes: 32,
         maxStreamBytes: 12,
       })
-    ).rejects.toMatchObject<Partial<RelayChannelSubscriptionOverflowError>>({
+    ).rejects.toMatchObject({
       limit: 'stream-bytes',
       maximum: 12,
       observed: 16,
@@ -810,7 +809,7 @@ describe('relay-ide/channel-client', () => {
         channelId: 'topic:one',
         maxOutputBytes: 1,
       })
-    ).rejects.toMatchObject<Partial<RelayChannelSubscriptionOverflowError>>({
+    ).rejects.toMatchObject({
       limit: 'collected-output-bytes',
       maximum: 1,
     });
@@ -857,7 +856,7 @@ describe('relay-ide/channel-client', () => {
         maxEvents: 1,
         maxOutputBytes: exactBytes - 1,
       })
-    ).rejects.toMatchObject<Partial<RelayChannelSubscriptionOverflowError>>({
+    ).rejects.toMatchObject({
       limit: 'collected-output-bytes',
       maximum: exactBytes - 1,
       observed: exactBytes,

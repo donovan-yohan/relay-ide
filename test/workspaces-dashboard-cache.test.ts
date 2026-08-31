@@ -13,8 +13,17 @@ import {
 import { DEFAULTS, saveConfig } from '../server/config.js';
 import { createTestServer } from './helpers/test-server.js';
 
-type ExecFn = NonNullable<WorkspaceDeps['execAsync']>;
 type ExecResult = { stdout: string; stderr: string };
+// The product dep is `typeof promisify(execFile)`, an overload set no hand-written
+// double can satisfy structurally. Production code only ever calls the
+// (file, args[, options]) form, which is what these fakes implement.
+type ExecFn = (
+  file: string,
+  args: readonly string[],
+  options?: unknown
+) => Promise<ExecResult>;
+const asExecAsync = (fn: ExecFn): NonNullable<WorkspaceDeps['execAsync']> =>
+  fn as unknown as NonNullable<WorkspaceDeps['execAsync']>;
 
 let tmpDir = '';
 let configPath = '';
@@ -34,12 +43,15 @@ afterAll(() => {
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function fetchDashboard(
-  exec: ExecFn
-): Promise<{ pullRequests: { prs: Array<{ number: number; title: string }> } }> {
+async function fetchDashboard(exec: ExecFn): Promise<{
+  pullRequests: { prs: Array<{ number: number; title: string }> };
+}> {
   const app = express();
   app.use(express.json());
-  app.use('/workspaces', createWorkspaceRouter({ configPath, execAsync: exec }));
+  app.use(
+    '/workspaces',
+    createWorkspaceRouter({ configPath, execAsync: asExecAsync(exec) })
+  );
   const server = await createTestServer(app);
   try {
     const params = new URLSearchParams({ path: repoPath });
@@ -129,7 +141,11 @@ describe('/workspaces/dashboard PR cache', () => {
     let prListCalls = 0;
     const exec: ExecFn = async (file, args) => {
       // requireGitRepo needs git rev-parse --git-dir to succeed
-      if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+      if (
+        file === 'git' &&
+        args[0] === 'rev-parse' &&
+        args[1] === '--git-dir'
+      ) {
         return { stdout: '.git', stderr: '' };
       }
       if (file === 'gh' && args[0] === 'api' && args[1] === 'user') {

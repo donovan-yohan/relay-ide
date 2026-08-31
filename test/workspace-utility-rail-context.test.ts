@@ -88,11 +88,16 @@ vi.mock('../frontend/src/components/Terminal.js', () => ({
 
 import { WorkspaceUtilityRail } from '../frontend/src/components/WorkspaceUtilityRail.js';
 
-function session(
-  overrides: Partial<SessionSummary> & { id: string }
-): SessionSummary {
+/**
+ * Fixture overrides intentionally allow explicit `undefined` so a case can say
+ * "this session has no repo binding" and beat the repo-bound defaults below.
+ */
+type SessionOverrides = {
+  [K in keyof SessionSummary]?: SessionSummary[K] | undefined;
+} & { id: string };
+
+function session(overrides: SessionOverrides): SessionSummary {
   return {
-    id: overrides.id,
     repoName: 'a',
     repoPath: '/repo/a',
     worktreePath: null,
@@ -105,9 +110,8 @@ function session(
     idle: false,
     type: 'terminal',
     mode: 'pty',
-    useTmux: true,
     ...overrides,
-  };
+  } as SessionSummary;
 }
 
 function railState(

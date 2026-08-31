@@ -286,7 +286,9 @@ describe('<CommandPalette /> assistant shell', () => {
             onSelectSession: vi.fn(),
             onSelectPr: vi.fn(),
             resolveAssistantIntent,
-            executeAssistantCommand: options.executeAssistantCommand,
+            ...(options.executeAssistantCommand
+              ? { executeAssistantCommand: options.executeAssistantCommand }
+              : {}),
           })
         )
       );

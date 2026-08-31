@@ -880,8 +880,6 @@ describe('node-link-rpc-host', () => {
   });
 });
 
-// Surface unused CreateParams/CreateWebParams type imports so the
-// editor doesn't strip them on auto-import cleanup; they document the
-// payload shape the host coerces to.
+// Surface the unused CreateParams type import so the editor doesn't strip it
+// on auto-import cleanup; it documents the payload shape the host coerces to.
 void (null as unknown as CreateParams | undefined);
-void (null as unknown as CreateWebParams | undefined);

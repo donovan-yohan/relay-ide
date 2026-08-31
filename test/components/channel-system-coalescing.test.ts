@@ -290,6 +290,8 @@ describe('ChannelTimeline — system-run fold', () => {
         label: 'hermes',
         colorVar: 'var(--sender-hermes)',
         glyph: 'hermes',
+        queuedCount: 0,
+        steeringCount: 0,
       },
     ];
     await render({

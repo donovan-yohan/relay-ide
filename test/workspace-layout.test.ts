@@ -226,7 +226,7 @@ describe('splitPaneWithTab', () => {
     const split = next as WorkspaceSplit;
     expect(split.direction).toBe('horizontal');
     expect(split.children).toHaveLength(2);
-    expect(split.children[0].type).toBe('pane');
+    expect(split.children[0]!.type).toBe('pane');
     expect((split.children[0] as WorkspacePane).id).toBe('L');
     expect((split.children[0] as WorkspacePane).tabs.map(tid)).toEqual([
       tid(a),

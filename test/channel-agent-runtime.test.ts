@@ -41,7 +41,7 @@ class TestAdapter implements ProtocolAdapterV2 {
     cwd: '/tmp',
     capabilities: { text: true, resume: true },
   }).capabilities;
-  status = 'disconnected' as const | 'connected';
+  status: 'disconnected' | 'connected' = 'disconnected';
   resumed: string[] = [];
   connectConfigs: AdapterConfig[] = [];
   disconnectError: Error | null = null;
@@ -277,7 +277,7 @@ describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
           id: 'assistant-1',
           type: 'assistantMessage',
           text: 'CODEX_OK',
-          status: 'streaming',
+          status: 'running',
         },
       });
       observed.push(

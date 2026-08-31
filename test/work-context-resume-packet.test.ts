@@ -74,26 +74,30 @@ function stage(
     nonGoals: ['no raw transcript ingestion'],
   };
   if (input.stage === 'implementation') {
+    // `stage` is pinned by the branch, so keep it out of the override spread.
+    const { stage: _stage, ...overrides } = input;
     return {
       ...base,
       stage: 'implementation',
       decision: 'implemented',
       changedFiles: ['server/work-context-resume-packet.ts'],
       migrationOrStateRisk: 'new deterministic packet shape only',
-      ...input,
+      ...overrides,
     };
   }
   if (input.stage === 'qa') {
+    const { stage: _stage, ...overrides } = input;
     return {
       ...base,
       stage: 'qa',
       verdict: 'passed',
       testedHeadSha: currentHeadSha,
       findings: [],
-      ...input,
+      ...overrides,
     };
   }
   if (input.stage === 'review') {
+    const { stage: _stage, ...overrides } = input;
     return {
       ...base,
       stage: 'review',
@@ -101,16 +105,17 @@ function stage(
       reviewedHeadSha: currentHeadSha,
       blockers: [],
       nitsOrFollowUps: [],
-      ...input,
+      ...overrides,
     };
   }
+  const { stage: _stage, ...overrides } = input;
   return {
     ...base,
     stage: 'release',
     verdict: 'released',
     target: 'nightly',
     verifiedHeadSha: currentHeadSha,
-    ...input,
+    ...overrides,
   };
 }
 

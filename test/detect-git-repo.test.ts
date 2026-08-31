@@ -16,10 +16,12 @@ type ExecLike = (
   options?: { cwd?: string }
 ) => Promise<{ stdout: string; stderr: string }>;
 
-function gitExit128(): NodeJS.ErrnoException & { stderr: string } {
+// `git` surfaces a numeric exit status here, not an errno string, so this
+// fixture is typed as an exec error rather than an `ErrnoException`.
+function gitExit128(): Error & { code: number; stderr: string } {
   const err = new Error(
     'Command failed: git rev-parse --git-dir\nfatal: not a git repository (or any of the parent directories): .git'
-  ) as NodeJS.ErrnoException & { stderr: string };
+  ) as Error & { code: number; stderr: string };
   err.code = 128;
   err.stderr =
     'fatal: not a git repository (or any of the parent directories): .git\n';

@@ -70,13 +70,13 @@ describe('fetchNodeFsWrite', () => {
     const requests = restore();
     restore = () => [];
     expect(requests).toHaveLength(1);
-    expect(requests[0].method).toBe('POST');
-    expect(requests[0].url).toBe('/hub/nodes/mac/sessions/s1/files/write');
-    expect(requests[0].body.path).toBe('/x.txt');
-    expect(requests[0].body.mode).toBe('overwrite');
-    expect(requests[0].body.expectedHash).toBe('b'.repeat(64));
+    expect(requests[0]!.method).toBe('POST');
+    expect(requests[0]!.url).toBe('/hub/nodes/mac/sessions/s1/files/write');
+    expect(requests[0]!.body.path).toBe('/x.txt');
+    expect(requests[0]!.body.mode).toBe('overwrite');
+    expect(requests[0]!.body.expectedHash).toBe('b'.repeat(64));
     // 'hello' base64-encodes to 'aGVsbG8='
-    expect(requests[0].body.contentBase64).toBe('aGVsbG8=');
+    expect(requests[0]!.body.contentBase64).toBe('aGVsbG8=');
   });
 
   it('encodes UTF-8 content correctly (multi-byte chars)', async () => {
@@ -103,7 +103,7 @@ describe('fetchNodeFsWrite', () => {
     const requests = restore();
     restore = () => [];
     // 'café' UTF-8 bytes: 0x63 0x61 0x66 0xC3 0xA9 → base64 'Y2Fmw6k='
-    expect(requests[0].body.contentBase64).toBe('Y2Fmw6k=');
+    expect(requests[0]!.body.contentBase64).toBe('Y2Fmw6k=');
   });
 
   it('omits expectedHash when not supplied', async () => {
@@ -129,8 +129,8 @@ describe('fetchNodeFsWrite', () => {
 
     const requests = restore();
     restore = () => [];
-    expect(requests[0].body).not.toHaveProperty('expectedHash');
-    expect(requests[0].body.mode).toBe('create');
+    expect(requests[0]!.body).not.toHaveProperty('expectedHash');
+    expect(requests[0]!.body.mode).toBe('create');
   });
 
   it('surfaces an HttpError on non-OK response', async () => {

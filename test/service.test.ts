@@ -158,7 +158,7 @@ test('detectServiceManager distinguishes system systemd without a user manager',
 });
 
 test('detectServiceManager bounds systemctl probes and treats timeouts as unavailable', () => {
-  const calls: Array<{ command: string; timeout?: number }> = [];
+  const calls: Array<{ command: string; timeout?: number | undefined }> = [];
   const exec = ((command: string, options?: { timeout?: number }) => {
     calls.push({ command, timeout: options?.timeout });
     if (command === 'command -v systemctl') return '';

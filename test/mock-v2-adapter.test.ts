@@ -497,7 +497,7 @@ describe('MockProtocolAdapterV2', () => {
 
     await adapter.respondToApproval({
       requestId: 'approval-turn-approval',
-      decision: 'allow',
+      decision: { kind: 'accept' },
     });
     await turn;
 
@@ -506,7 +506,7 @@ describe('MockProtocolAdapterV2', () => {
         (patch) =>
           patch.type === 'agent-item-updated-v2' &&
           patch.item.type === 'approval' &&
-          patch.item.decision === 'allow'
+          patch.item.decision?.kind === 'accept'
       )
     ).toBe(true);
     expect(patches.at(-2)).toMatchObject({

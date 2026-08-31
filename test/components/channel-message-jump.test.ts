@@ -7,6 +7,7 @@
 
 import React, { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
@@ -112,7 +113,7 @@ describe('ChannelView deep-link message anchor', () => {
   let container: HTMLDivElement;
   let root: Root;
   let queryClient: QueryClient;
-  let scrollIntoView: ReturnType<typeof vi.fn>;
+  let scrollIntoView: Mock<(arg?: boolean | ScrollIntoViewOptions) => void>;
   let originalScrollIntoView: typeof Element.prototype.scrollIntoView;
 
   async function mount(): Promise<void> {
@@ -149,7 +150,7 @@ describe('ChannelView deep-link message anchor', () => {
     });
     useToastStore.setState({ toasts: [] });
     originalScrollIntoView = Element.prototype.scrollIntoView;
-    scrollIntoView = vi.fn();
+    scrollIntoView = vi.fn<(arg?: boolean | ScrollIntoViewOptions) => void>();
     Element.prototype.scrollIntoView = scrollIntoView;
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

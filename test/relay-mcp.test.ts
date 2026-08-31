@@ -675,7 +675,10 @@ describe('relay-mcp', () => {
   });
 
   it('preserves exact sibling scope failures and concurrent Relay post/run correlation', async () => {
-    const posts: Array<{ channelId: string; clientMessageId?: string }> = [];
+    const posts: Array<{
+      channelId: string;
+      clientMessageId?: string | undefined;
+    }> = [];
     const client = fakeClient({
       get: async ({ channelId }) => {
         if (channelId === 'topic:forbidden')

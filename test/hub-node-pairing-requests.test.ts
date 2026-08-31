@@ -50,9 +50,24 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   });
 }
 
+type PendingPairingRequestInput = Parameters<
+  Harness['registry']['submitPendingPairingRequest']
+>[0];
+
+/**
+ * Overrides deliberately allow explicit `undefined` so a case below can model
+ * an omitted `displayName`, which `exactOptionalPropertyTypes` forbids on a
+ * plain `Partial<...>`.
+ */
+type PendingPairingRequestOverrides = {
+  [K in keyof PendingPairingRequestInput]?:
+    | PendingPairingRequestInput[K]
+    | undefined;
+};
+
 function submit(
   h: Harness,
-  input: Partial<Parameters<Harness['registry']['submitPendingPairingRequest']>[0]> = {},
+  input: PendingPairingRequestOverrides = {},
   keys?: NodeIdentityKeyPair
 ) {
   return h.registry.submitPendingPairingRequest({
@@ -60,7 +75,7 @@ function submit(
     displayName: 'work-mac',
     ...(keys ? { publicKey: keys.publicKeyPem } : {}),
     ...input,
-  });
+  } as PendingPairingRequestInput);
 }
 
 describe('hub node pending pairing request lifecycle (#982)', () => {

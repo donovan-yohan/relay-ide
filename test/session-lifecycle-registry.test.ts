@@ -77,7 +77,6 @@ function makeSession(
   overrides: Partial<SessionSummary> & { id: string }
 ): SessionSummary {
   return {
-    id: overrides.id,
     type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
@@ -89,6 +88,7 @@ function makeSession(
     createdAt: '2026-06-10T00:00:00.000Z',
     lastActivity: '2026-06-10T00:00:00.000Z',
     idle: false,
+    activityState: 'idle',
     ...overrides,
   };
 }

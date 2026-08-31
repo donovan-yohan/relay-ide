@@ -15,12 +15,21 @@ import {
   workbenchAddFileBlock,
 } from '../../frontend/src/lib/actions/definitions/workspace-file-rpc.js';
 
-function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
+/**
+ * Overrides deliberately allow explicit `undefined` so cases below can model an
+ * absent `workspacePath` / unknown `activeNodeFileRpcAvailable`, which
+ * `exactOptionalPropertyTypes` forbids on plain `Partial<ActionContext>`.
+ */
+type ActionContextOverrides = {
+  [K in keyof ActionContext]?: ActionContext[K] | undefined;
+};
+
+function ctx(overrides: ActionContextOverrides = {}): ActionContext {
   return {
     view: 'workspace',
     workspacePath: '/home/user/project',
     ...overrides,
-  };
+  } as ActionContext;
 }
 
 describe('workspace-file-rpc actions — command palette gating (#654)', () => {

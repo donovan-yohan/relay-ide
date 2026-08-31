@@ -140,6 +140,9 @@ function reasoningStarted(
   };
 }
 
+type ProvisionalTurnStatus = 'completed' | 'failed' | 'interrupted';
+type ExplicitItemStatus = 'completed' | 'failed' | 'cancelled';
+
 function reasoningUpdated(
   sessionId: string,
   turnId: string,
@@ -399,11 +402,12 @@ describe('channel-agent-bridge lifecycle', () => {
   });
 
   it.each(
-    (['completed', 'failed', 'interrupted'] as const).flatMap((turnStatus) =>
-      (['completed', 'failed', 'cancelled'] as const).map((itemStatus) => [
-        turnStatus,
-        itemStatus,
-      ])
+    (['completed', 'failed', 'interrupted'] as const).flatMap<
+      [ProvisionalTurnStatus, ExplicitItemStatus]
+    >((turnStatus) =>
+      (['completed', 'failed', 'cancelled'] as const).map<
+        [ProvisionalTurnStatus, ExplicitItemStatus]
+      >((itemStatus) => [turnStatus, itemStatus])
     )
   )(
     'allows provisional turn %s to transition once to explicit item %s',
@@ -1691,6 +1695,7 @@ describe('channel-agent-bridge lifecycle', () => {
       )
     ).toEqual(['hermes']);
     const packet = buildMentionContextPacketEnvelope({
+      channelId: 'topic:failed-image',
       channelTitle: 'failed-image',
       framework: 'hermes',
       rows: [],

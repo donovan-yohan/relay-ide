@@ -10,8 +10,8 @@ import { getBranchDivergence } from '../server/git.js';
 
 const execFileAsync = promisify(execFile);
 type DivergenceExec = NonNullable<
-  Parameters<typeof getBranchDivergence>[1]
->['exec'];
+  NonNullable<Parameters<typeof getBranchDivergence>[1]>['exec']
+>;
 let tmpDir: string;
 let repoPath: string;
 

@@ -213,7 +213,7 @@ class SimulatedRelayNode {
 
   answerCreate(request: RelayNodeEnvelope): void {
     this.send('sessions.create.result', 'rpc', {
-      requestId: request.requestId,
+      requestId: request.requestId!,
       payload: {
         session: {
           ...remoteSession(this.nodeId, this.hostname),
@@ -519,7 +519,7 @@ describe('multi-node smoke harness', () => {
       browserWs.once('message', (data) => resolve(data.toString()))
     );
     nodeA.send('pty.data', 'pty', {
-      streamId: attachA.streamId,
+      streamId: attachA.streamId!,
       payload: { data: 'hello from smoke-node-a' },
     });
     await expect(browserMessage).resolves.toBe('hello from smoke-node-a');

@@ -22,8 +22,9 @@ const session = (
   cwd: '/repo/relay-ide',
   status: 'active',
   activityState: 'processing',
-  controlMode: 'human-driven',
-  controlFreshness: 'fresh',
+  // TODO(#1496): the fixture used to set `controlMode` /
+  // `controlFreshness`, but the frontend `WorkContextSessionSummary` never
+  // declared them (the server-side summary does), so nothing here read them.
   relationship: 'primary',
   associatedAt: '2026-05-17T00:00:00.000Z',
   live: true,

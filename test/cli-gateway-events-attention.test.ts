@@ -103,7 +103,9 @@ function actorTokenAuth(registry: ScopedActorCredentialRegistry): RequestHandler
       res.status(forbidden ? 403 : 401).json({
         error: cliGatewayActorFailure({
           reason: validation.reason,
-          credentialId: validation.credentialId,
+          ...(validation.credentialId !== undefined
+            ? { credentialId: validation.credentialId }
+            : {}),
           deniedBits: validation.deniedBits,
         }),
       });

@@ -73,12 +73,16 @@ function envelope(
   payload: PipelineHandoffArtifact,
   extra: Partial<PipelineHandoffArtifactEnvelope> = {}
 ): PipelineHandoffArtifactEnvelope {
+  const taskRef = payload.scope.taskRefs[0];
+  const stage = payload.stages.at(-1)?.stage;
+  const prNumber = payload.head.pr?.number;
+  const branchName = payload.head.branch?.name;
   return {
     metadata: {
       id: payload.id,
       workContextId: 'wc:885',
-      taskRef: payload.scope.taskRefs[0],
-      stage: payload.stages.at(-1)?.stage,
+      ...(taskRef !== undefined ? { taskRef } : {}),
+      ...(stage !== undefined ? { stage } : {}),
       kind: 'report',
       title: payload.title,
       summary: payload.scope.summary,
@@ -87,10 +91,10 @@ function envelope(
       payloadKind: 'pipeline-handoff-artifact',
       payloadSha256: '0'.repeat(64),
       payloadBytes: 1234,
-      prNumber: payload.head.pr?.number,
+      ...(prNumber !== undefined ? { prNumber } : {}),
       headSha: payload.head.headSha,
       baseName: payload.head.base.name,
-      branchName: payload.head.branch?.name,
+      ...(branchName !== undefined ? { branchName } : {}),
     },
     payload,
     ...extra,
@@ -151,8 +155,10 @@ describe('pipeline handoff timeline summary', () => {
   });
 
   it('marks an isolated payload fetch failure as failed without losing metadata', () => {
+    // exactOptionalPropertyTypes: omit `payload` entirely rather than set it to undefined.
+    const { payload: _droppedPayload, ...metadataOnly } = envelope(artifact());
     const summary = summarizeHandoffArtifact(
-      envelope(artifact(), { payload: undefined, payloadError: 'HTTP 404' }),
+      { ...metadataOnly, payloadError: 'HTTP 404' },
       HEAD_A
     );
 

@@ -410,9 +410,13 @@ describe('node doctor --json output shape', () => {
   it('degradedReasons from a manifest have the expected fields', () => {
     const manifest = makeMinimalManifest({
       fileRpc: { available: false, capabilities: [] },
+      // TODO(#1498): this fixture also set an unavailable `tmux`
+      // probe, but `NodeCapabilities` has carried no `tmux` key since tmux
+      // support was removed, and `deriveDegradedReasons` never scanned it —
+      // so the probe contributed no reason. The reasons asserted below come
+      // from `fileRpc.available: false` only.
       capabilities: {
         ...makeMinimalManifest().capabilities,
-        tmux: makeProbe('tmux', 'unavailable', 'tmux not found.'),
         sessionResume: 'none',
       },
     });

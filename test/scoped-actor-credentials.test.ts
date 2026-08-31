@@ -169,6 +169,9 @@ describe('scoped actor credential registry', () => {
     ).toThrow(/UNKNOWN_CAPABILITY/);
   });
 
+  // `as` rather than `satisfies` below: the `missing_scope` row deliberately
+  // passes an explicit `scope: { nodeId: undefined }`, which literal inference
+  // would reject under exactOptionalPropertyTypes.
   it.each([
     ['wrong_audience', { audience: 'relay:cli-gateway:v1' }],
     ['unknown_audience', { audience: 'relay:nope' }],
@@ -188,7 +191,7 @@ describe('scoped actor credential registry', () => {
     ['missing_scope', { scope: { nodeId: undefined } }],
     ['unknown_capability', { requiredCapabilities: ['session:teleport'] }],
     ['insufficient_capability', { requiredCapabilities: ['rpc:fs:write'] }],
-  ] satisfies [
+  ] as [
     ScopedActorCredentialValidationFailureReason,
     Record<string, unknown>,
   ][])('fails closed for %s', (reason, override) => {
@@ -447,7 +450,7 @@ describe('scoped actor credential registry', () => {
       },
     });
 
-    const serialized = JSON.stringify(entry.material.scope);
+    const serialized = JSON.stringify(entry.material!.scope);
     expect(serialized).not.toContain(
       'relay-sac-v1.custom.raw-secret-token-material'
     );

@@ -150,7 +150,7 @@ describe('node Command Center action projection', () => {
       'settings.nodes.copy-pair-command',
       'settings.nodes.install-instructions',
     ]) {
-      const descriptor = nodeCommandCenterActions.find((action) => action.id === id)!.descriptor;
+      const descriptor = nodeCommandCenterActions.find((action) => action.id === id)!.descriptor!;
       expect(descriptor.source).toBe('ui-action-registry');
       expect(descriptor.stable).toBe(false);
       expect(descriptor.contract).toBeUndefined();
@@ -161,13 +161,13 @@ describe('node Command Center action projection', () => {
   it('marks credential/destructive node descriptors as confirmation-gated', () => {
     const approve = nodeCommandCenterActions.find(
       (action) => action.id === 'settings.nodes.approve-request'
-    )!.descriptor;
+    )!.descriptor!;
     const rotate = nodeCommandCenterActions.find(
       (action) => action.id === 'settings.nodes.rotate-credential'
-    )!.descriptor;
+    )!.descriptor!;
     const revoke = nodeCommandCenterActions.find(
       (action) => action.id === 'settings.nodes.revoke'
-    )!.descriptor;
+    )!.descriptor!;
 
     expect(approve.confirmation.required).toBe(true);
     expect(rotate.confirmation.required).toBe(true);

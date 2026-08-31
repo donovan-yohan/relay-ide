@@ -179,7 +179,9 @@ describe('local Relay logs', () => {
       if (failNextRead) {
         failNextRead = false;
         queueMicrotask(() => failingStream.destroy(new Error('simulated stream failure')));
-        return failingStream as ReturnType<typeof fs.createReadStream>;
+        return failingStream as unknown as ReturnType<
+          typeof fs.createReadStream
+        >;
       }
       return fs.createReadStream(...args);
     }) as typeof fs.createReadStream;

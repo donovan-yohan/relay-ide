@@ -35,6 +35,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       credentialId: 'cred-1',
       issuedAt: '2026-01-02T03:00:00.000Z',
       state: 'active',
+      keyBound: false,
     },
     version: {
       state: 'compatible',

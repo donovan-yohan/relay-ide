@@ -35,6 +35,12 @@ interface DshRecord {
   seq?: number;
   time?: number;
   data?: unknown;
+  /** `type: 'session'` header fields (see `headerRecord()` below). */
+  version?: number;
+  id?: string;
+  createdAt?: number;
+  cwd?: string;
+  delegationDepth?: number;
 }
 
 function frameRecords(records: DshRecord[]): Buffer {

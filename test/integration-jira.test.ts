@@ -166,22 +166,22 @@ test('GET /issues returns mapped JiraIssue[] from mocked acli JSON output', asyn
 
   const issue42 = data.issues.find((i: JiraIssue) => i.key === 'PROJ-42');
   expect(issue42).toBeTruthy();
-  expect(issue42.title).toBe('Fix the login bug');
-  expect(issue42.status).toBe('In Progress');
-  expect(issue42.priority).toBe('High');
-  expect(issue42.assignee).toBe('Alice');
-  expect(issue42.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-42');
-  expect(issue42.projectKey).toBe('PROJ');
-  expect(issue42.updatedAt).toBe('');
-  expect(issue42.sprint).toBe(null);
-  expect(issue42.storyPoints).toBe(null);
+  expect(issue42!.title).toBe('Fix the login bug');
+  expect(issue42!.status).toBe('In Progress');
+  expect(issue42!.priority).toBe('High');
+  expect(issue42!.assignee).toBe('Alice');
+  expect(issue42!.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-42');
+  expect(issue42!.projectKey).toBe('PROJ');
+  expect(issue42!.updatedAt).toBe('');
+  expect(issue42!.sprint).toBe(null);
+  expect(issue42!.storyPoints).toBe(null);
 
   const issue10 = data.issues.find((i: JiraIssue) => i.key === 'PROJ-10');
   expect(issue10).toBeTruthy();
-  expect(issue10.priority).toBe(null);
-  expect(issue10.assignee).toBe(null);
-  expect(issue10.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-10');
-  expect(issue10.projectKey).toBe('PROJ');
+  expect(issue10!.priority).toBe(null);
+  expect(issue10!.assignee).toBe(null);
+  expect(issue10!.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-10');
+  expect(issue10!.projectKey).toBe('PROJ');
 });
 
 test('GET /issues returns acli_not_in_path when exec throws ENOENT', async () => {

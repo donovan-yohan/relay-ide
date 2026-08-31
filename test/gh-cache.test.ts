@@ -57,12 +57,15 @@ describe('batchGetPrsForRepo cache', () => {
 
   it('deduplicates concurrent calls for the same repo path', async () => {
     let calls = 0;
-    let resolveExec: ((value: { stdout: string; stderr: string }) => void) | null =
-      null;
+    // Held in an object so the assignment inside the promise executor is
+    // visible to control-flow analysis at the call sites below.
+    const pending: {
+      resolveExec: ((value: { stdout: string; stderr: string }) => void) | null;
+    } = { resolveExec: null };
     const exec: ExecFn = async () => {
       calls += 1;
       return new Promise((resolve) => {
-        resolveExec = resolve;
+        pending.resolveExec = resolve;
       });
     };
 
@@ -70,7 +73,7 @@ describe('batchGetPrsForRepo cache', () => {
     const second = batchGetPrsForRepo('/repos/one', { exec });
 
     expect(calls).toBe(1);
-    resolveExec?.({ stdout: prList, stderr: '' });
+    pending.resolveExec?.({ stdout: prList, stderr: '' });
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult.get('feat/cache')?.number).toBe(42);
@@ -94,22 +97,25 @@ describe('batchGetPrsForRepo cache', () => {
 
   it('does not let an invalidated in-flight lookup repopulate the cache', async () => {
     let calls = 0;
-    let resolveExec: ((value: { stdout: string; stderr: string }) => void) | null =
-      null;
+    // Held in an object so the assignment inside the promise executor is
+    // visible to control-flow analysis at the call sites below.
+    const pending: {
+      resolveExec: ((value: { stdout: string; stderr: string }) => void) | null;
+    } = { resolveExec: null };
     const exec: ExecFn = async () => {
       calls += 1;
       return new Promise((resolve) => {
-        resolveExec = resolve;
+        pending.resolveExec = resolve;
       });
     };
 
     const first = batchGetPrsForRepo('/repos/one', { exec });
     clearBatchPrCache('/repos/one');
-    resolveExec?.({ stdout: prList, stderr: '' });
+    pending.resolveExec?.({ stdout: prList, stderr: '' });
     await first;
 
     const second = batchGetPrsForRepo('/repos/one', { exec });
-    resolveExec?.({ stdout: prList, stderr: '' });
+    pending.resolveExec?.({ stdout: prList, stderr: '' });
     await second;
 
     expect(calls).toBe(2);
@@ -162,12 +168,15 @@ describe('getCiStatus cache', () => {
 
   it('deduplicates concurrent calls for the same repo path and branch', async () => {
     let calls = 0;
-    let resolveExec: ((value: { stdout: string; stderr: string }) => void) | null =
-      null;
+    // Held in an object so the assignment inside the promise executor is
+    // visible to control-flow analysis at the call sites below.
+    const pending: {
+      resolveExec: ((value: { stdout: string; stderr: string }) => void) | null;
+    } = { resolveExec: null };
     const exec: ExecFn = async () => {
       calls += 1;
       return new Promise((resolve) => {
-        resolveExec = resolve;
+        pending.resolveExec = resolve;
       });
     };
 
@@ -175,7 +184,7 @@ describe('getCiStatus cache', () => {
     const second = getCiStatus('/repos/one', 'feat/cache', { exec });
 
     expect(calls).toBe(1);
-    resolveExec?.({ stdout: checks, stderr: '' });
+    pending.resolveExec?.({ stdout: checks, stderr: '' });
 
     await expect(Promise.all([first, second])).resolves.toEqual([
       { total: 1, passing: 1, failing: 0, pending: 0 },

@@ -136,7 +136,25 @@ afterEach(() => {
   }
 });
 
-function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
+/**
+ * Fixture overrides intentionally allow explicit `undefined` (a fixture saying
+ * "this session has no repo binding" must beat the repo-bound default below),
+ * and still allow the wider control-mode vocabulary the store actually passes
+ * through at runtime.
+ *
+ * TODO(#1496): `ControlMode` in shared/control-state.ts is now just
+ * 'human-driven', but shared/work-context.ts still validates
+ * 'agent-driven' | 'co-driven' | 'human-driven' and the store round-trips
+ * 'co-driven' unchanged (asserted below). The two should agree.
+ */
+type SessionOverrides = Omit<
+  { [K in keyof SessionSummary]?: SessionSummary[K] | undefined },
+  'controlMode'
+> & {
+  controlMode?: SessionSummary['controlMode'] | 'agent-driven' | 'co-driven';
+};
+
+function session(overrides: SessionOverrides = {}): SessionSummary {
   const now = '2026-05-17T08:00:00.000Z';
   const id = overrides.id ?? 'sess-local';
   const nodeId = overrides.nodeId ?? DEFAULT_LOCAL_NODE_ID;
@@ -719,7 +737,7 @@ describe('WorkContext store', () => {
               kind: 'remote',
               displayName: 'Remote node',
               messages: ['hidden node payload'],
-            } as WorkContext['anchors']['node'],
+            } as NonNullable<WorkContext['anchors']['node']>,
           },
           artifacts: [
             {
@@ -798,7 +816,7 @@ describe('WorkContext store', () => {
               kind: 'remote',
               displayName: 'remote node',
               debugPayload: 'hidden node payload must not leave the read path',
-            } as WorkContext['anchors']['node'],
+            } as NonNullable<WorkContext['anchors']['node']>,
             session: {
               nodeId: 'node-remote',
               sessionId: live.id,
@@ -807,7 +825,7 @@ describe('WorkContext store', () => {
               cwd: live.cwd,
               debugPayload:
                 'hidden session payload must not leave the read path',
-            } as WorkContext['anchors']['session'],
+            } as NonNullable<WorkContext['anchors']['session']>,
           },
           artifacts: [
             {

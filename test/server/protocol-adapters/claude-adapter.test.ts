@@ -14,7 +14,10 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaudeProtocolAdapter } from '../../../server/protocol-adapters/claude-adapter.js';
 import { AdapterProcessRegistry } from '../../../server/protocol-adapters/adapter-utils.js';
-import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
+import type {
+  AdapterConfig,
+  ProtocolAdapterV2,
+} from '../../../server/protocol-adapter-v2.js';
 import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 import claudeDetailFixture from '../../fixtures/agent-detail/claude.js';
@@ -119,7 +122,10 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(
       slash?.type === 'agent-session-updated-v2' && slash.slashCommands
     ).toEqual([]);
-    expect(adapter.executeControlCommand).toBeUndefined();
+    // `executeControlCommand` is an optional `ProtocolAdapterV2` member the
+    // Claude adapter deliberately does not implement; read it through the
+    // interface so the assertion still checks the real contract.
+    expect((adapter as ProtocolAdapterV2).executeControlCommand).toBeUndefined();
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

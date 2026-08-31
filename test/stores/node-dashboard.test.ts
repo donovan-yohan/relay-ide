@@ -40,6 +40,13 @@ function policy(
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'node-1',
+    identity: {
+      nodeId: 'node-1',
+      displayName: 'dev mac',
+      hostname: 'dev-mac.local',
+      createdAt: '2026-01-02T03:00:00.000Z',
+      pairedAt: '2026-01-02T03:00:00.000Z',
+    },
     displayName: 'dev mac',
     hostname: 'dev-mac.local',
     platform: 'darwin',
@@ -70,6 +77,12 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       policy: policy('node-1'),
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred-1',
+      issuedAt: '2026-01-02T03:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',
@@ -107,7 +120,7 @@ function confirmationChallenge(
 
 describe('hub node dashboard state', () => {
   it('marks online nodes with shell, relay-pty, git, and agent CLIs as ready to work', () => {
-    const [row] = deriveHubNodeDashboardRows([node()], { now });
+    const row = deriveHubNodeDashboardRows([node()], { now })[0]!;
 
     expect(row).toMatchObject({
       nodeId: 'node-1',
@@ -162,7 +175,7 @@ describe('hub node dashboard state', () => {
   });
 
   it('annotates degraded capabilities that block work actions', () => {
-    const [row] = deriveHubNodeDashboardRows(
+    const row = deriveHubNodeDashboardRows(
       [
         node({
           capabilities: {
@@ -177,7 +190,7 @@ describe('hub node dashboard state', () => {
         }),
       ],
       { now }
-    );
+    )[0]!;
 
     expect(row.attachable).toBe(false);
     expect(row.disabledReason).toBe(
@@ -200,7 +213,7 @@ describe('hub node dashboard state', () => {
     // that value wins over the core.git fallback. Verify the precedence
     // by pinning git=available but worktrees=degraded — derived would
     // be 'available', explicit override should produce 'degraded'.
-    const [row] = deriveHubNodeDashboardRows(
+    const row = deriveHubNodeDashboardRows(
       [
         node({
           capabilities: {
@@ -210,7 +223,7 @@ describe('hub node dashboard state', () => {
         }),
       ],
       { now }
-    );
+    )[0]!;
 
     expect(row.capabilityHints).toEqual(
       expect.arrayContaining([
@@ -223,7 +236,7 @@ describe('hub node dashboard state', () => {
   it('falls back to deriving worktrees status from core.git when no explicit override is set', () => {
     // Inverse of the above — explicit absence on a node where core.git
     // is 'degraded' should produce a 'degraded' worktrees hint.
-    const [row] = deriveHubNodeDashboardRows(
+    const row = deriveHubNodeDashboardRows(
       [
         node({
           capabilities: {
@@ -233,7 +246,7 @@ describe('hub node dashboard state', () => {
         }),
       ],
       { now }
-    );
+    )[0]!;
 
     expect(row.capabilityHints).toEqual(
       expect.arrayContaining([
@@ -244,10 +257,10 @@ describe('hub node dashboard state', () => {
   });
 
   it('surfaces protocol version warnings separately from availability', () => {
-    const [row] = deriveHubNodeDashboardRows(
+    const row = deriveHubNodeDashboardRows(
       [node({ protocolVersion: '1.1', relayVersion: '9.9.0' })],
       { now, expectedProtocolVersion: '1.0' }
-    );
+    )[0]!;
 
     expect(row.attachable).toBe(true);
     expect(row.versionWarning).toBe('protocol 1.1 != hub 1.0');
@@ -333,14 +346,14 @@ describe('hub node dashboard state', () => {
       ['dev', 'allow 17 · challenge 0 · deny 15'],
       ['prod', 'allow 1 · challenge 2 · deny 29'],
     ]);
-    expect(rows[2].security).toMatchObject({
+    expect(rows[2]!.security).toMatchObject({
       tone: 'danger',
       highRiskLabel: 'prod high-risk: 2 require challenge',
     });
   });
 
   it('shows an honest audit cli affordance when policy visibility is unavailable', () => {
-    const [row] = deriveHubNodeDashboardRows(
+    const row = deriveHubNodeDashboardRows(
       [
         node({
           trust: {
@@ -351,7 +364,7 @@ describe('hub node dashboard state', () => {
         }),
       ],
       { now }
-    );
+    )[0]!;
 
     expect(row.security).toMatchObject({
       trustTier: 'unknown',

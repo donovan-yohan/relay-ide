@@ -50,8 +50,15 @@ function baseNode() {
   };
 }
 
+// Explicit `undefined` is part of what these guards are asserted against
+// (an option whose `repoInstance` key is present but unset), so the override
+// bag deliberately admits it where `Partial<EnvironmentOption>` would not.
+type EnvironmentOptionOverrides = {
+  [K in keyof EnvironmentOption]?: EnvironmentOption[K] | undefined;
+};
+
 function baseOption(
-  overrides: Partial<EnvironmentOption> = {}
+  overrides: EnvironmentOptionOverrides = {}
 ): EnvironmentOption {
   return {
     schemaVersion: ENVIRONMENT_OPTION_SCHEMA_VERSION,
@@ -64,7 +71,7 @@ function baseOption(
     repoInstance: baseRepoInstance(),
     generatedAt: '2026-05-19T00:00:00.000Z',
     ...overrides,
-  };
+  } as EnvironmentOption;
 }
 
 describe('environment-option type guards', () => {

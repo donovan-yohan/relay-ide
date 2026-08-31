@@ -464,8 +464,8 @@ describe('relayctl agent preturn', () => {
   it('honours --session override outside the env-injected session', async () => {
     const { messageId } = seedPendingInbox();
     // No RELAY_SESSION_ID in env — proves the gateway/explicit path.
-    const env = { ...process.env, RELAY_HUB_URL: baseUrl };
-    delete env.RELAY_SESSION_ID;
+    const env: NodeJS.ProcessEnv = { ...process.env, RELAY_HUB_URL: baseUrl };
+    delete env['RELAY_SESSION_ID'];
     const { code, stdout } = await runPreturn(['--session', SESSION_ID], env);
     expect(code).toBe(0);
     expect(stdout).toContain(SESSION_ID);

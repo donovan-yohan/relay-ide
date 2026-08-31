@@ -11,6 +11,7 @@ import {
 } from '../server/diagnostics-bundle.js';
 import type { Config } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
+import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
 
 const cleanup: string[] = [];
 
@@ -27,8 +28,15 @@ function makeManifest(): NodeManifest {
     arch: 'arm64',
     hostname: 'test-host',
     homeDir: '/Users/tester',
+    helperVersion: '0.1.0',
     relayVersion: '0.1.0',
+    protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {
+      binary: '/usr/local/bin/relay-ide',
+      configDir: '/Users/tester/.config/relay-ide',
+    },
+    fileRpc: { available: true, capabilities: ['fs.list', 'fs.stat', 'fs.read'] },
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'launchd',
@@ -41,7 +49,9 @@ function makeManifest(): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      // TODO(#1498): this fixture also carried a `tmux` capability
+      // probe, but `NodeCapabilities` dropped that key when tmux support was
+      // removed, so the diagnostics bundle never surfaced it.
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -68,9 +78,10 @@ function makeManifest(): NodeManifest {
         message: 'missing',
       },
       ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
-      sessionResume: 'tmux',
+      sessionResume: 'none',
       agents: {},
     },
+    degradedReasons: [],
   };
 }
 

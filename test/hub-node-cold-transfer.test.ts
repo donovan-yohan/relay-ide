@@ -25,8 +25,13 @@ function manifest(): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'cold-transfer-node',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -251,7 +256,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         nodeLinks,
         requireAuth,
         repoInventoryFeature,
-        collectLocalRepoInventory: options?.collectLocalRepoInventory,
+        ...(options?.collectLocalRepoInventory
+          ? { collectLocalRepoInventory: options.collectLocalRepoInventory }
+          : {}),
       })
     );
     app.use(
@@ -260,7 +267,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         nodeLinks,
         requireAuth,
         repoInventoryFeature,
-        collectLocalRepoInventory: options?.collectLocalRepoInventory,
+        ...(options?.collectLocalRepoInventory
+          ? { collectLocalRepoInventory: options.collectLocalRepoInventory }
+          : {}),
       })
     );
     const server = http.createServer(app);

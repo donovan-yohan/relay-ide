@@ -37,8 +37,8 @@ async function readLaunched(page: Page): Promise<LaunchedRecord> {
   return JSON.parse(raw) as LaunchedRecord;
 }
 
-function groupLabels(page: Page): Locator {
-  return page.getByTestId('env-picker-group-label');
+function groupLabels(scope: Page | Locator): Locator {
+  return scope.getByTestId('env-picker-group-label');
 }
 
 test.describe('EnvPickerDialog e2e — four picker scenarios (#632)', () => {

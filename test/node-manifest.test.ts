@@ -77,7 +77,7 @@ describe('node manifest', () => {
       id: 'frameworks',
       status: 'degraded',
     });
-    expect(manifest.capabilities.agents.frameworks.message).toContain(
+    expect(manifest.capabilities.agents.frameworks!.message).toContain(
       'Agent framework probes failed non-fatally'
     );
   });

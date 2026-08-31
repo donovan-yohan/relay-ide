@@ -191,6 +191,13 @@ const { WorkspaceArea } =
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'remote',
+    identity: {
+      nodeId: 'remote',
+      displayName: 'remote box',
+      hostname: 'remote.local',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      pairedAt: '2026-05-12T00:00:00.000Z',
+    },
     displayName: 'remote box',
     hostname: 'remote.local',
     platform: 'linux',
@@ -202,6 +209,12 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     connection: { route: 'reverse-link', status: 'connected' },
     trust: { state: 'trusted', level: 'privileged-local-user', warning: '' },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred-remote',
+      issuedAt: '2026-05-12T00:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',
@@ -211,7 +224,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',

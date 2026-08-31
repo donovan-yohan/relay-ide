@@ -160,12 +160,13 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
       workContextId: undefined,
     });
     // PATH should either be unchanged (binary not found) or start with per-session bin dir.
-    if (env.PATH !== originalPath) {
+    const injectedPath = env.PATH;
+    if (injectedPath !== originalPath) {
       // Shim was written: PATH has a per-session component ending with /bin
-      const shimDir = env.PATH.split(':')[0];
+      const shimDir = injectedPath!.split(':')[0]!;
       expect(shimDir).toContain('ses-path');
       expect(shimDir).toMatch(/bin$/);
-      expect(env.PATH).toContain(originalPath);
+      expect(injectedPath).toContain(originalPath);
       // Verify only the documented relayctl shim was written.
       const { existsSync } = fs;
       expect(existsSync(path.join(shimDir, 'relayctl'))).toBe(true);
@@ -272,6 +273,11 @@ describe('env isolation — non-Relay shells are clean', () => {
 });
 
 // ── Integration: sessions.create passes RELAY_* to the spawned process ─────
+// TODO(#1498): these cases used to pass `tmuxAttach: true` to
+// sessions.create, but `CreateParams` has no such field anywhere in the
+// product any more (tmux attach was removed). The flag was silently ignored,
+// so the tmux-attached variant of this env-injection path is untested; the
+// file also still provisions a TMUX_TMPDIR fixture that nothing consumes.
 
 describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
   it('RELAY_NODE_ID and RELAY_SESSION_ID appear in scrollback via env print', async () => {
@@ -293,7 +299,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
     });
     createdIds.push(result.id);
 
@@ -319,7 +324,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
       workContextId: 'wc-test-42',
     });
     createdIds.push(result.id);
@@ -342,7 +346,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
     });
     createdIds.push(result.id);
 
@@ -365,7 +368,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
       envOverrides: { BENCH_VAR: 'from-bench' },
     });
     createdIds.push(result.id);
@@ -388,7 +390,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
       // Adversarial override: must NOT win over Relay's own identity injection.
       envOverrides: { RELAY_NODE_ID: 'spoofed' },
     });
@@ -413,7 +414,6 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
           'setTimeout(()=>{}, 10000);',
         ].join(' '),
       ],
-      tmuxAttach: true,
     });
     createdIds.push(result.id);
 
@@ -479,9 +479,10 @@ describe('relayctl logs tail — stub', () => {
         },
       }
     ).catch((err: { stderr?: string; code?: number }) => ({
+      stdout: '',
       stderr: err.stderr ?? '',
       code: err.code ?? 1,
-    }));
+    })) as { stdout: string; stderr?: string; code?: number };
 
     expect(result.stderr ?? '').toContain('not yet available');
     expect(result.code).toBe(1);

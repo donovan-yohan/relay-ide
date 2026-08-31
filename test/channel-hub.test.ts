@@ -496,10 +496,10 @@ describe('channel-hub snapshot correctness', () => {
     const fairSnapshot = fairSocket.sent[0];
     if (fairSnapshot?.type !== 'channel-snapshot-v1')
       throw new Error('expected snapshot');
-    expect(fairSnapshot.runs.map((run) => run.id)).toEqual([
+    expect(fairSnapshot.runs!.map((run) => run.id)).toEqual([
       recentSmall.run.id,
     ]);
-    expect(fairSnapshot.runs.map((run) => run.id)).not.toContain(
+    expect(fairSnapshot.runs!.map((run) => run.id)).not.toContain(
       oversizedOlder.run.id
     );
   });

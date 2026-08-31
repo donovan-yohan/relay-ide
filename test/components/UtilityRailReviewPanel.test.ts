@@ -15,8 +15,20 @@ async function flush() {
 
 const mocks = vi.hoisted(() => {
   const files: ChangedFile[] = [
-    { path: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
-    { path: 'src/b.ts', status: 'added', additions: 4, deletions: 0 },
+    {
+      path: 'src/a.ts',
+      status: 'modified',
+      additions: 2,
+      deletions: 1,
+      directory: 'src',
+    },
+    {
+      path: 'src/b.ts',
+      status: 'added',
+      additions: 4,
+      deletions: 0,
+      directory: 'src',
+    },
   ];
   return {
     fetchChangedFiles: vi.fn(async (_workspacePath: string, _base?: string) => ({

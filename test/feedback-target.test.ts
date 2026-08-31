@@ -18,6 +18,7 @@ function session(
     createdAt: '2026-05-28T00:00:00.000Z',
     lastActivity: '2026-05-28T00:00:00.000Z',
     idle: false,
+    activityState: 'idle',
     ...overrides,
   };
 }

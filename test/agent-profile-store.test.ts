@@ -744,7 +744,13 @@ describe('gateway secret storage', () => {
     // The declared type is `string | null`, so a caller spreading an optional
     // variable in means "leave it alone". Treating the present-but-undefined
     // property as a clear would destroy the secret on an ordinary save.
-    store.update(created.id, { hermesApiKey: undefined, model: 'sonnet' });
+    // The present-but-undefined property is the whole point of this case, and
+    // `exactOptionalPropertyTypes` will not let it be written literally.
+    const untouchedKeyUpdate = {
+      hermesApiKey: undefined,
+      model: 'sonnet',
+    } as unknown as Parameters<typeof store.update>[1];
+    store.update(created.id, untouchedKeyUpdate);
     expect(store.getGatewaySecret(created.id)).toBe('first-key');
   });
 

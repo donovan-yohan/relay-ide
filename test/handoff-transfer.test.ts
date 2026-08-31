@@ -96,18 +96,10 @@ function allowedGrants(): HandoffRequiredGrant[] {
       capability: 'rpc:fs:write',
       decision: 'allow',
     },
-    {
-      leg: 'destination-session-create',
-      nodeId: DESTINATION_NODE,
-      capability: 'session:create:terminal',
-      decision: 'allow',
-    },
-    {
-      leg: 'destination-exec',
-      nodeId: DESTINATION_NODE,
-      capability: 'pty:exec:arbitrary',
-      decision: 'allow',
-    },
+    // TODO(#1497): the fixture used to also allow
+    // `destination-session-create` / `destination-exec` legs, but
+    // `HandoffRequiredGrantLeg` only models `source-read` and
+    // `destination-write`, so the transfer path never read them.
   ];
 }
 
@@ -123,8 +115,10 @@ async function applyFixture(input: {
   const dryRun = await planHandoffSnapshot({
     repoPath: input.source,
     nodeId: SOURCE_NODE,
-    approvedUntrackedPaths: input.approvedUntrackedPaths,
-    exec: input.exec,
+    ...(input.approvedUntrackedPaths !== undefined
+      ? { approvedUntrackedPaths: input.approvedUntrackedPaths }
+      : {}),
+    ...(input.exec !== undefined ? { exec: input.exec } : {}),
   });
   return applyHandoffTransfer({
     requestId: 'handoff-request-test',
@@ -135,11 +129,15 @@ async function applyFixture(input: {
     sourceNodeId: SOURCE_NODE,
     destinationNodeId: DESTINATION_NODE,
     baseCommit: input.baseCommit,
-    approvedUntrackedPaths: input.approvedUntrackedPaths,
+    ...(input.approvedUntrackedPaths !== undefined
+      ? { approvedUntrackedPaths: input.approvedUntrackedPaths }
+      : {}),
     requiredGrants: input.requiredGrants ?? allowedGrants(),
     expectedDryRun: dryRun,
-    maxUntrackedFileBytes: input.maxUntrackedFileBytes,
-    exec: input.exec,
+    ...(input.maxUntrackedFileBytes !== undefined
+      ? { maxUntrackedFileBytes: input.maxUntrackedFileBytes }
+      : {}),
+    ...(input.exec !== undefined ? { exec: input.exec } : {}),
     now: () => '2026-05-21T12:00:00.000Z',
     createId: createIdFactory(),
   });

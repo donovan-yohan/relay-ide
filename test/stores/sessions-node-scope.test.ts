@@ -130,16 +130,18 @@ function sidebarItem(session: SessionSummary): SidebarItem {
   return {
     id: `session::${session.globalSessionId}`,
     kind: 'repo',
-    path: session.repoPath,
-    repoPath: session.repoPath,
+    path: session.repoPath!,
+    repoPath: session.repoPath!,
     displayName: session.displayName,
-    branchName: session.branchName,
+    branchName: session.branchName!,
     lastActivity: session.lastActivity,
     displayState: 'running',
     lastKnownBackendState: 'running',
     sessions: [session],
-    nodeId: session.nodeId,
-    repoInstanceId: session.repoInstanceId,
+    ...(session.nodeId !== undefined ? { nodeId: session.nodeId } : {}),
+    ...(session.repoInstanceId !== undefined
+      ? { repoInstanceId: session.repoInstanceId }
+      : {}),
   };
 }
 

@@ -32,11 +32,10 @@ describe('Tooltip', () => {
     });
 
     const html = renderToStaticMarkup(
-      React.createElement(
-        Tooltip,
-        { actionId: 'workspace.open-diff-view' },
-        React.createElement('button', { type: 'button' }, 'review')
-      )
+      React.createElement(Tooltip, {
+        actionId: 'workspace.open-diff-view',
+        children: React.createElement('button', { type: 'button' }, 'review'),
+      })
     );
 
     expect(html).toContain('open review pane');
@@ -47,11 +46,11 @@ describe('Tooltip', () => {
 
   it('lets TuiButton expose the same tooltip contract', () => {
     const html = renderToStaticMarkup(
-      React.createElement(
-        TuiButton,
-        { tooltip: 'refresh PR data', tooltipShortcut: 'mod+r' },
-        'refresh'
-      )
+      React.createElement(TuiButton, {
+        tooltip: 'refresh PR data',
+        tooltipShortcut: 'mod+r',
+        children: 'refresh',
+      })
     );
 
     expect(html).toContain('refresh PR data');
