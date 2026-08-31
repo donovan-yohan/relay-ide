@@ -508,12 +508,14 @@ search`), and Claude channel agents get the Relay MCP facade mounted
 
 #### Fixed
 
-- The browser-automation feature now works on an installed copy of Relay.
+- Installed copies of Relay now ship the browser-automation driver.
   `playwright` was only ever present in the development checkout, so
   `relay-ide-browser` and the agent browser tools answered "Playwright is
   unavailable" on any `npm install relay-ide`. It is now a declared runtime
-  dependency; browser binaries are still a separate `npx playwright install`
-  (#1477)
+  dependency, pinned with the rest of the tree. Chromium is still a separate
+  download, and it has to be the build that Relay's pinned Playwright expects
+  — a bare `npx playwright install` resolves whatever Playwright is newest and
+  can still leave the feature unavailable (#1477)
 
 ## [0.1.1] - 2026-08-05
 
