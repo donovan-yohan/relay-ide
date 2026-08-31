@@ -31,8 +31,6 @@ function makeSession(
     nodeId: 'node:test',
     nodeLabel: 'test node',
     cwd: '/repo',
-    // TODO(#1496): the fixture used to set `controlFreshness`, but
-    // `TopicNavSessionRef` never declared it, so nothing here read it.
     durability: null,
     currentActivity: null,
     lastActivity: null,

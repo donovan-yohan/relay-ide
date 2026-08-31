@@ -7,11 +7,16 @@ import {
   normalizeControlStateSummary,
 } from '../shared/control-state.js';
 
-describe('human terminal control-state contract', () => {
-  it('uses human-driven as the only supported terminal ownership mode', () => {
+describe('terminal control-state contract', () => {
+  it('validates known control modes and rejects unknown values', () => {
     expect(isControlMode('human-driven')).toBe(true);
-    expect(isControlMode('agent-driven')).toBe(false);
-    expect(isControlMode('co-driven')).toBe(false);
+    expect(isControlMode('agent-driven')).toBe(true);
+    expect(isControlMode('co-driven')).toBe(true);
+    expect(isControlMode('unknown')).toBe(false);
+    expect(isControlMode('retired-mode')).toBe(false);
+    expect(isControlMode(123)).toBe(false);
+    expect(isControlMode(null)).toBe(false);
+    expect(isControlMode(undefined)).toBe(false);
   });
 
   it('defaults missing and retired ownership state to a human backfill', () => {
@@ -22,9 +27,20 @@ describe('human terminal control-state contract', () => {
     });
     expect(
       normalizeControlStateSummary({
-        controlMode: 'agent-driven',
+        controlMode: 'retired-mode',
         activeActors: [{ kind: 'agent', id: 'worker-1' }],
-        activeWorker: { kind: 'agent', id: 'worker-1' },
+        controlFreshness: 'fresh',
+      })
+    ).toMatchObject({
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'local-user' }],
+      controlFreshness: 'unknown',
+      controlReason: 'legacy-backfill',
+    });
+    expect(
+      normalizeControlStateSummary({
+        controlMode: 'human-driven',
+        activeActors: [],
         controlFreshness: 'fresh',
       })
     ).toMatchObject({
@@ -35,21 +51,23 @@ describe('human terminal control-state contract', () => {
     });
   });
 
-  it('preserves a valid human-driven summary', () => {
-    const state = normalizeControlStateSummary({
-      controlMode: 'human-driven',
-      activeActors: [{ kind: 'human', id: 'operator' }],
-      controlFreshness: 'fresh',
-      lastInterventionAt: null,
-      lastInterventionBy: null,
-      lastInterventionEventId: null,
-    });
-    expect(state).toMatchObject({
-      controlMode: 'human-driven',
-      activeActors: [{ kind: 'human', id: 'operator' }],
-      controlFreshness: 'fresh',
-    });
-    expect(isControlStateSummary(state)).toBe(true);
+  it('preserves a valid summary across supported control modes', () => {
+    for (const mode of ['human-driven', 'agent-driven', 'co-driven'] as const) {
+      const state = normalizeControlStateSummary({
+        controlMode: mode,
+        activeActors: [{ kind: 'human', id: 'operator' }],
+        controlFreshness: 'fresh',
+        lastInterventionAt: null,
+        lastInterventionBy: null,
+        lastInterventionEventId: null,
+      });
+      expect(state).toMatchObject({
+        controlMode: mode,
+        activeActors: [{ kind: 'human', id: 'operator' }],
+        controlFreshness: 'fresh',
+      });
+      expect(isControlStateSummary(state)).toBe(true);
+    }
   });
 
   it('rejects activeWorker ownership even on an otherwise valid summary', () => {

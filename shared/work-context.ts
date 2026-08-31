@@ -14,7 +14,7 @@ import {
   type RelayCapabilityDecision,
   type RelayPolicyScope,
 } from './security-policy.js';
-import type { ControlMode } from './control-state.js';
+import { isControlMode, type ControlMode } from './control-state.js';
 
 export const WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
 
@@ -318,11 +318,6 @@ const CAPABILITY_POLICY_CLASSES = new Set<string>([
   'privileged',
   'unknown',
 ]);
-const CONTROL_MODES = new Set<string>([
-  'agent-driven',
-  'human-driven',
-  'co-driven',
-]);
 const POLICY_SCOPE_KINDS = new Set<string>([
   'node',
   'workspace',
@@ -451,8 +446,7 @@ function isSessionRef(value: unknown): value is SessionRef {
     isOptionalString(value.tabId) &&
     isEnumValue(value.tabKind, TAB_KINDS) &&
     hasString(value.cwd) &&
-    (value.controlMode === undefined ||
-      isEnumValue(value.controlMode, CONTROL_MODES))
+    (value.controlMode === undefined || isControlMode(value.controlMode))
   );
 }
 

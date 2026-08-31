@@ -143,9 +143,6 @@ describe('workspace topic room API', () => {
 
     await launchWorkspaceTopicRoom({
       room: { topic: topic(), workContext: workContext() },
-      // TODO(#1496): `controlMode` is not part of CreateSessionBody;
-      // it only ever rode along on the verbatim `...input.launch` spread and
-      // was never read by the session-create contract.
       launch: {
         type: 'terminal',
         mode: 'pty',

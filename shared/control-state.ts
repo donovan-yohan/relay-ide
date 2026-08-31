@@ -1,14 +1,18 @@
-/**
- * Public Relay sessions are human-driven terminals.
- *
- * Agent execution lives in channel-private runtimes and is not a terminal
- * ownership mode.
- */
-export type ControlMode = 'human-driven';
+export const CONTROL_MODES = [
+  'agent-driven',
+  'human-driven',
+  'co-driven',
+] as const;
 
-export type ControlFreshness = 'fresh' | 'stale' | 'unknown';
+export type ControlMode = (typeof CONTROL_MODES)[number];
 
-export type ControlActorKind = 'agent' | 'human' | 'system';
+export const CONTROL_FRESHNESSES = ['fresh', 'stale', 'unknown'] as const;
+
+export type ControlFreshness = (typeof CONTROL_FRESHNESSES)[number];
+
+export const CONTROL_ACTOR_KINDS = ['agent', 'human', 'system'] as const;
+
+export type ControlActorKind = (typeof CONTROL_ACTOR_KINDS)[number];
 
 export interface ControlActor {
   kind: ControlActorKind;
@@ -137,15 +141,24 @@ export function createLegacyControlStateSummary(
 }
 
 export function isControlMode(value: unknown): value is ControlMode {
-  return value === 'human-driven';
+  return (
+    typeof value === 'string' &&
+    (CONTROL_MODES as readonly string[]).includes(value)
+  );
 }
 
 export function isControlFreshness(value: unknown): value is ControlFreshness {
-  return value === 'fresh' || value === 'stale' || value === 'unknown';
+  return (
+    typeof value === 'string' &&
+    (CONTROL_FRESHNESSES as readonly string[]).includes(value)
+  );
 }
 
 export function isControlActorKind(value: unknown): value is ControlActorKind {
-  return value === 'agent' || value === 'human' || value === 'system';
+  return (
+    typeof value === 'string' &&
+    (CONTROL_ACTOR_KINDS as readonly string[]).includes(value)
+  );
 }
 
 function optionalString(value: unknown): string | undefined {

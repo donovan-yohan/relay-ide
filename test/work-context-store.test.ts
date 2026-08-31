@@ -138,20 +138,10 @@ afterEach(() => {
 
 /**
  * Fixture overrides intentionally allow explicit `undefined` (a fixture saying
- * "this session has no repo binding" must beat the repo-bound default below),
- * and still allow the wider control-mode vocabulary the store actually passes
- * through at runtime.
- *
- * TODO(#1496): `ControlMode` in shared/control-state.ts is now just
- * 'human-driven', but shared/work-context.ts still validates
- * 'agent-driven' | 'co-driven' | 'human-driven' and the store round-trips
- * 'co-driven' unchanged (asserted below). The two should agree.
+ * "this session has no repo binding" must beat the repo-bound default below).
  */
-type SessionOverrides = Omit<
-  { [K in keyof SessionSummary]?: SessionSummary[K] | undefined },
-  'controlMode'
-> & {
-  controlMode?: SessionSummary['controlMode'] | 'agent-driven' | 'co-driven';
+type SessionOverrides = {
+  [K in keyof SessionSummary]?: SessionSummary[K] | undefined;
 };
 
 function session(overrides: SessionOverrides = {}): SessionSummary {
