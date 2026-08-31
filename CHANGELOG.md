@@ -135,6 +135,31 @@ workflow.
   one, and deleting a profile revokes its credential. Neither leaves a working
   token behind (#1455)
 
+### Planting an agent credential on the agent's own host
+
+#### Added
+
+- `install-profile-credential` plants a minted profile credential into an agent
+  host's per-profile environment file, which is the last step in letting an
+  agent on another machine talk back to Relay as itself:
+
+  ```sh
+  relay-ide v1 agent-profiles credential mint --id <profile> --json \
+    | node dist/scripts/install-profile-credential.js \
+        --env-file ~/.hermes/profiles/<profile>/.env
+  ```
+
+  The token travels down the pipe, so it never appears in a command line, a
+  shell history, or the script's output. Re-running it rotates the value in
+  place rather than appending a second one, every other line of the file is left
+  exactly as it was, a backup is taken first, and a file other users can read is
+  refused rather than written to (#1455)
+
+- `docs/references/hermes-multiplex-setup.md` now carries the end-to-end recipe
+  for a Hermes profile: mint, plant, and the one line a turn needs in order to
+  read the credential — plus what Hermes does and does not hand a tool from a
+  profile's `.env` (#1455)
+
 ### CLI-only agent-profile setup
 
 #### Added

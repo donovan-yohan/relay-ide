@@ -147,6 +147,83 @@ still shows as available whenever the gateway is up. A binding the gateway does
 not serve surfaces as a typed error on the first turn, not as an unavailable
 agent — which is why the curl matrix above is worth running first.
 
+## Give the profile a Relay credential (#1455)
+
+Binding makes Relay able to _reach_ the profile. This makes the profile able to
+reach _back_ — to create a channel, invite another agent, post, and read
+history as itself, through `relay-ide v1`. See
+[`../CHANNEL_CHAT.md`](../CHANNEL_CHAT.md) § Profile-bound credentials and
+membership for what the credential is and is not allowed to do.
+
+### 1. Mint, and plant it in one pipe
+
+On the **Relay** host, mint the credential for the agent profile bound to this
+Hermes profile. On the **Hermes** host, plant it:
+
+```bash
+relay-ide v1 agent-profiles credential mint --id <agent-profile-id> --json \
+  | node dist/scripts/install-profile-credential.js \
+      --env-file ~/.hermes/profiles/coder/.env
+```
+
+When the two hosts differ, the pipe becomes an `ssh` — the point is that the
+token goes stdout-to-stdin and never becomes a command-line argument, which
+every other local process can read out of `/proc`. There is deliberately no
+`--token` flag. `--token-file` is the other accepted source.
+
+The installer writes `RELAY_IDE_ACTOR_TOKEN`, and `RELAY_IDE_PORT` too if you
+pass `--port` (the CLI's gateway lane dials `127.0.0.1:<port>`, so the hub has
+to be reachable on loopback from the Hermes host). It rewrites the assignment in
+place if one is already there, leaves every other line of the file untouched,
+takes a timestamped backup first, keeps the file's mode, and refuses outright to
+write a file that is group- or other-readable. Running it twice with the same
+token changes nothing at all.
+
+Rotation is the same command again: `credential mint` revokes the old token as
+it issues the new one, and the installer overwrites the dead value in place.
+
+### 2. Read the credential from the turn
+
+**A variable in a profile's `.env` is not in the environment of a command the
+`terminal` tool runs.** Hermes hydrates the profile's secrets into an in-process
+scope (`_profile_runtime_scope` in `gateway/run.py`, `build_profile_secret_scope`
+in `agent/secret_scope.py`) and deliberately does _not_ touch `os.environ` —
+that isolation is what stops one profile's secrets leaking into another
+profile's subprocesses. On the `local` terminal backend the child inherits the
+**gateway process's** environment, which is the _host_ profile's, not the routed
+one's.
+
+What does cross is `HERMES_HOME`: the local backend points it at the routed
+profile's own directory. So the profile reads its own credential by sourcing its
+own `.env`:
+
+```bash
+set -a; . "$HERMES_HOME/.env"; set +a; relay-ide v1 channels history --channel-id <id> --json
+```
+
+Put that prefix in a profile-local skill (`skills/<category>/<name>/SKILL.md`)
+so the agent has the working invocation to hand. A skill is prompt text and
+cannot add a tool, but it does not need to: the `terminal` tool is already in
+the `api_server` toolset, so no `platform_toolsets` edit is required to give a
+profile `relay-ide` — the profile-static toolset resolution people worry about
+is not the obstacle here.
+
+`terminal.env_passthrough` is the other route, but it only rewrites the _value_
+of a name that already exists in the gateway process environment; it cannot
+introduce a new one on the local backend. Using it means also defining
+`RELAY_IDE_ACTOR_TOKEN` in the gateway host profile's `.env`, which is more
+moving parts for the same result. (The Docker backend forwards passthrough names
+straight from the scope and does not need the placeholder.) **The one primitive
+genuinely missing upstream** is a way to inject a variable present only in the
+routed profile's `.env` into a local-backend terminal child.
+
+### 3. Membership, not scope
+
+Minting admits the profile to nothing. It joins a channel by creating it, by
+being invited by a member, or by being mentioned by one — and every channel verb
+is refused `CHANNEL_NOT_MEMBER` until then. Revoking the credential kills the
+planted token on its next call, with no edit to the `.env` needed.
+
 ## Related
 
 - [`../provider-guide.md`](../provider-guide.md) — the adapter contract, path
