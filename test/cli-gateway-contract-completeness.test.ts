@@ -13,8 +13,9 @@ import {
 
 /**
  * Control character regex forbidding unescaped C0 control codes except \t (0x09), \n (0x0A), and \r (0x0D).
-// eslint-disable-next-line no-control-regex -- the control characters ARE the assertion * Matches ASCII range [\x00-\x08\x0b\x0c\x0e-\x1f].
+ * Matches ASCII range [\x00-\x08\x0b\x0c\x0e-\x1f].
  */
+// eslint-disable-next-line no-control-regex -- the control characters ARE the assertion
 const CONTROL_CHAR_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
 
 /**
