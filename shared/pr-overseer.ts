@@ -53,23 +53,21 @@ export type PrOverseerStatus = (typeof PR_OVERSEER_STATUSES)[number];
  * keep it `observing` (in progress / awaiting an external signal). Either kind
  * keeps the run out of `ready`, so a handoff is gated until they all clear.
  */
-export const PR_OVERSEER_BLOCKER_KINDS = [
-  'pr-draft',
-  'checks-unknown',
-  'checks-pending',
-  'checks-failed',
-  'review-changes-requested',
-  'review-required',
-  'unresolved-review-threads',
-  'merge-conflict',
-  'mergeability-unknown',
-  'stale-head',
-  'issue-closeout-mismatch',
-] as const;
-export type PrOverseerBlockerKind = (typeof PR_OVERSEER_BLOCKER_KINDS)[number];
+type PrOverseerBlockerKind =
+  | 'pr-draft'
+  | 'checks-unknown'
+  | 'checks-pending'
+  | 'checks-failed'
+  | 'review-changes-requested'
+  | 'review-required'
+  | 'unresolved-review-threads'
+  | 'merge-conflict'
+  | 'mergeability-unknown'
+  | 'stale-head'
+  | 'issue-closeout-mismatch';
 
 /** Blockers that force `blocked` (vs merely keeping the run out of `ready`). */
-export const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
+const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
   'checks-failed',
   'review-changes-requested',
   'unresolved-review-threads',
@@ -78,55 +76,56 @@ export const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
   'issue-closeout-mismatch',
 ]);
 
-export function isHardBlocker(kind: PrOverseerBlockerKind): boolean {
+function isHardBlocker(kind: PrOverseerBlockerKind): boolean {
   return PR_OVERSEER_HARD_BLOCKERS.has(kind);
 }
 
 /** Structured next-action verbs for the steering/release contract. */
-export const PR_OVERSEER_NEXT_ACTIONS = [
-  'observe-first',
-  're-observe',
-  'fix-checks',
-  'await-checks',
-  'address-review',
-  'await-review',
-  'resolve-review-threads',
-  'resolve-merge-conflict',
-  'await-mergeability',
-  'resync-head',
-  'mark-pr-ready',
-  'fix-issue-closeout',
-  'verify-issue-closeout',
-  'hand-off-to-release-train',
-  'none',
-] as const;
-export type PrOverseerNextAction = (typeof PR_OVERSEER_NEXT_ACTIONS)[number];
+type PrOverseerNextAction =
+  | 'observe-first'
+  | 're-observe'
+  | 'fix-checks'
+  | 'await-checks'
+  | 'address-review'
+  | 'await-review'
+  | 'resolve-review-threads'
+  | 'resolve-merge-conflict'
+  | 'await-mergeability'
+  | 'resync-head'
+  | 'mark-pr-ready'
+  | 'fix-issue-closeout'
+  | 'verify-issue-closeout'
+  | 'hand-off-to-release-train'
+  | 'none';
 
 /** Who the next action is addressed to. A collaboration hint, not an auth boundary. */
-export const PR_OVERSEER_ACTORS = ['implementer', 'release-train', 'operator', 'none'] as const;
-export type PrOverseerActor = (typeof PR_OVERSEER_ACTORS)[number];
+type PrOverseerActor = 'implementer' | 'release-train' | 'operator' | 'none';
 
-export const PR_OVERSEER_PR_STATES = ['OPEN', 'CLOSED', 'MERGED'] as const;
+const PR_OVERSEER_PR_STATES = ['OPEN', 'CLOSED', 'MERGED'] as const;
 export type PrOverseerPrState = (typeof PR_OVERSEER_PR_STATES)[number];
 
-export const PR_OVERSEER_REVIEW_DECISIONS = [
+const PR_OVERSEER_REVIEW_DECISIONS = [
   'APPROVED',
   'CHANGES_REQUESTED',
   'REVIEW_REQUIRED',
 ] as const;
-export type PrOverseerReviewDecision = (typeof PR_OVERSEER_REVIEW_DECISIONS)[number];
+export type PrOverseerReviewDecision =
+  (typeof PR_OVERSEER_REVIEW_DECISIONS)[number];
 
-export const PR_OVERSEER_MERGEABLE_STATES = ['MERGEABLE', 'CONFLICTING', 'UNKNOWN'] as const;
-export type PrOverseerMergeableState = (typeof PR_OVERSEER_MERGEABLE_STATES)[number];
+const PR_OVERSEER_MERGEABLE_STATES = [
+  'MERGEABLE',
+  'CONFLICTING',
+  'UNKNOWN',
+] as const;
+export type PrOverseerMergeableState =
+  (typeof PR_OVERSEER_MERGEABLE_STATES)[number];
 
 /** Why a fresh GitHub observation could not be taken. */
-export const PR_OVERSEER_UNAVAILABLE_REASONS = [
-  'gh-missing',
-  'auth',
-  'not-found',
-  'error',
-] as const;
-export type PrOverseerUnavailableReason = (typeof PR_OVERSEER_UNAVAILABLE_REASONS)[number];
+export type PrOverseerUnavailableReason =
+  | 'gh-missing'
+  | 'auth'
+  | 'not-found'
+  | 'error';
 
 // ─── Reference shapes ──────────────────────────────────────────────────────────
 
@@ -150,15 +149,17 @@ export interface PrOverseerSessionRef {
   globalSessionId?: GlobalSessionId | undefined;
 }
 
-export interface PrOverseerOwner {
+interface PrOverseerOwner {
   /** Orchestrator label, e.g. `ebi`, `hermes`, `operator`. */
   orchestrator: string;
   actorId?: string | undefined;
   actorType?: string | undefined;
 }
 
-export interface PrOverseerLinks {
-  taskRefs?: Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[] | undefined;
+interface PrOverseerLinks {
+  taskRefs?:
+    | Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[]
+    | undefined;
   prUrls?: string[] | undefined;
   issueUrls?: string[] | undefined;
 }
@@ -199,7 +200,7 @@ export interface PrObservationClosingIssueRef {
   url?: string | undefined;
 }
 
-export interface PrObservationPr {
+interface PrObservationPr {
   number: number;
   url?: string | undefined;
   state: PrOverseerPrState;
@@ -234,7 +235,7 @@ export interface PrObservation {
 
 // ─── Persisted record ──────────────────────────────────────────────────────────
 
-export interface PrOverseerHeartbeat {
+interface PrOverseerHeartbeat {
   /** A run that does not re-`observe` within this window derives `stale`. */
   ttlSeconds: number;
   lastObservedAt: string;
@@ -255,17 +256,16 @@ export interface PrOverseerLastFetch {
   unavailableReason?: PrOverseerUnavailableReason | undefined;
 }
 
-export const PR_OVERSEER_CLEANUP_STATES = ['none', 'needed', 'retired'] as const;
-export type PrOverseerCleanupState = (typeof PR_OVERSEER_CLEANUP_STATES)[number];
+type PrOverseerCleanupState = 'none' | 'needed' | 'retired';
 
-export interface PrOverseerCleanup {
+interface PrOverseerCleanup {
   state: PrOverseerCleanupState;
   reason?: string | undefined;
   retiredAt?: string | undefined;
   retiredBy?: string | undefined;
 }
 
-export interface PrOverseerRedaction {
+interface PrOverseerRedaction {
   rawPayloadStored: false;
   rawTranscriptStored: false;
   truncated: boolean;
@@ -275,7 +275,7 @@ export interface PrOverseerRedaction {
 // ─── Derived (read-time) shapes ────────────────────────────────────────────────
 
 /** Exact-head / freshness risk for the stored evidence. */
-export interface PrOverseerStaleHeadRisk {
+interface PrOverseerStaleHeadRisk {
   diverged: boolean;
   /** Head the last successful observation covers. */
   observedHeadSha?: string | undefined;
@@ -291,7 +291,7 @@ export interface PrOverseerStaleHeadRisk {
   lastFetchFailed: boolean;
 }
 
-export interface PrOverseerRequiredNextAction {
+interface PrOverseerRequiredNextAction {
   action: PrOverseerNextAction;
   actor: PrOverseerActor;
   summary: string;
@@ -303,7 +303,7 @@ export interface PrOverseerRequiredNextAction {
  * blockers, exact-head evidence current, heartbeat fresh) — a tester/release
  * agent must treat `ready: false` as "do not QA/review/merge yet".
  */
-export interface PrOverseerHandoff {
+interface PrOverseerHandoff {
   ready: boolean;
   exactHeadEvidenceCurrent: boolean;
   evidenceHeadSha?: string | undefined;
@@ -393,14 +393,14 @@ export interface PrOverseerReadOptions {
 
 // ─── Bounds + secret rejection ─────────────────────────────────────────────────
 
-export const PR_OVERSEER_SUMMARY_MAX_BYTES = 4 * 1024;
-export const PR_OVERSEER_MAX_LINKS = 50;
+const PR_OVERSEER_SUMMARY_MAX_BYTES = 4 * 1024;
+const PR_OVERSEER_MAX_LINKS = 50;
 export const PR_OVERSEER_MAX_NAMES = 50;
-export const PR_OVERSEER_MAX_INPUT_DEPTH = 20;
-export const PR_OVERSEER_TTL_MIN_SECONDS = 30;
-export const PR_OVERSEER_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
-export const PR_OVERSEER_TTL_DEFAULT_SECONDS = 600;
-export const PR_OVERSEER_SHA_MAX_LEN = 64;
+const PR_OVERSEER_MAX_INPUT_DEPTH = 20;
+const PR_OVERSEER_TTL_MIN_SECONDS = 30;
+const PR_OVERSEER_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
+const PR_OVERSEER_TTL_DEFAULT_SECONDS = 600;
+const PR_OVERSEER_SHA_MAX_LEN = 64;
 
 const SECRETISH_KEYS = new Set<string>([
   'rawcontent',
@@ -476,17 +476,24 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function stringField(input: Record<string, unknown>, key: string): string | undefined {
+function stringField(
+  input: Record<string, unknown>,
+  key: string
+): string | undefined {
   return optionalString(input[key]);
 }
 
 function requireString(input: Record<string, unknown>, key: string): string {
   const value = stringField(input, key);
-  if (!value) throw new PrOverseerValidationError(`${key} is required`, { field: key });
+  if (!value)
+    throw new PrOverseerValidationError(`${key} is required`, { field: key });
   return value;
 }
 
-function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+function truncateUtf8(
+  value: string,
+  maxBytes: number
+): { value: string; truncated: boolean } {
   const encoded = textEncoder.encode(value);
   if (encoded.length <= maxBytes) return { value, truncated: false };
   return {
@@ -502,13 +509,18 @@ function collectForbiddenKeys(
   depth = 0
 ): string[] {
   if (depth > PR_OVERSEER_MAX_INPUT_DEPTH) {
-    throw new PrOverseerValidationError('pr overseer payload exceeds maximum nested depth', {
-      path,
-      maxDepth: PR_OVERSEER_MAX_INPUT_DEPTH,
-    });
+    throw new PrOverseerValidationError(
+      'pr overseer payload exceeds maximum nested depth',
+      {
+        path,
+        maxDepth: PR_OVERSEER_MAX_INPUT_DEPTH,
+      }
+    );
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => collectForbiddenKeys(item, `${path}[${index}]`, found, depth + 1));
+    value.forEach((item, index) =>
+      collectForbiddenKeys(item, `${path}[${index}]`, found, depth + 1)
+    );
     return found;
   }
   if (!isRecord(value)) return found;
@@ -539,7 +551,10 @@ function rejectForbiddenKeys(input: Record<string, unknown>): void {
 function clampTtl(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   const rounded = Math.round(value);
-  return Math.min(PR_OVERSEER_TTL_MAX_SECONDS, Math.max(PR_OVERSEER_TTL_MIN_SECONDS, rounded));
+  return Math.min(
+    PR_OVERSEER_TTL_MAX_SECONDS,
+    Math.max(PR_OVERSEER_TTL_MIN_SECONDS, rounded)
+  );
 }
 
 function normalizeComparisonSha(value: string | undefined): string | undefined {
@@ -547,22 +562,30 @@ function normalizeComparisonSha(value: string | undefined): string | undefined {
 }
 
 /** Normalize a head SHA: hex only, lowercased, bounded. Returns undefined if empty/invalid. */
-export function normalizeHeadSha(value: unknown): string | undefined {
+function normalizeHeadSha(value: unknown): string | undefined {
   const raw = optionalString(value);
   if (!raw) return undefined;
   const hex = raw.toLowerCase();
   if (!/^[0-9a-f]{7,64}$/.test(hex)) {
-    throw new PrOverseerValidationError('head sha must be a 7-64 char hex string', {
-      field: 'headSha',
-    });
+    throw new PrOverseerValidationError(
+      'head sha must be a 7-64 char hex string',
+      {
+        field: 'headSha',
+      }
+    );
   }
   return hex.slice(0, PR_OVERSEER_SHA_MAX_LEN);
 }
 
 function parsePositiveInt(value: unknown, field: string): number {
-  const num = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  const num =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? ''), 10);
   if (!Number.isInteger(num) || num <= 0) {
-    throw new PrOverseerValidationError(`${field} must be a positive integer`, { field });
+    throw new PrOverseerValidationError(`${field} must be a positive integer`, {
+      field,
+    });
   }
   return num;
 }
@@ -570,7 +593,9 @@ function parsePositiveInt(value: unknown, field: string): number {
 function parseOwnerRepo(value: unknown, field: string): string {
   const raw = optionalString(value);
   if (!raw || !isOwnerRepo(raw)) {
-    throw new PrOverseerValidationError(`${field} must be in owner/repo form`, { field });
+    throw new PrOverseerValidationError(`${field} must be in owner/repo form`, {
+      field,
+    });
   }
   return raw;
 }
@@ -581,18 +606,26 @@ function isOwnerRepo(value: string): boolean {
 
 function parseOwner(value: unknown): PrOverseerOwner {
   if (!isRecord(value)) {
-    throw new PrOverseerValidationError('owner is required', { field: 'owner' });
+    throw new PrOverseerValidationError('owner is required', {
+      field: 'owner',
+    });
   }
   return {
     orchestrator: requireString(value, 'orchestrator'),
-    ...(stringField(value, 'actorId') ? { actorId: stringField(value, 'actorId') } : {}),
-    ...(stringField(value, 'actorType') ? { actorType: stringField(value, 'actorType') } : {}),
+    ...(stringField(value, 'actorId')
+      ? { actorId: stringField(value, 'actorId') }
+      : {}),
+    ...(stringField(value, 'actorType')
+      ? { actorType: stringField(value, 'actorType') }
+      : {}),
   };
 }
 
 function parsePrRef(value: unknown): PrOverseerPrRef {
   if (!isRecord(value)) {
-    throw new PrOverseerValidationError('pr is required (ownerRepo + number)', { field: 'pr' });
+    throw new PrOverseerValidationError('pr is required (ownerRepo + number)', {
+      field: 'pr',
+    });
   }
   return {
     ownerRepo: parseOwnerRepo(value['ownerRepo'], 'pr.ownerRepo'),
@@ -619,20 +652,27 @@ function parseSessionRef(value: unknown): PrOverseerSessionRef | undefined {
   if (!sessionId && !globalSessionId) return undefined;
   return {
     ...(sessionId ? { sessionId } : {}),
-    ...(globalSessionId ? { globalSessionId: globalSessionId as GlobalSessionId } : {}),
+    ...(globalSessionId
+      ? { globalSessionId: globalSessionId as GlobalSessionId }
+      : {}),
   };
 }
 
 function parseStringList(value: unknown, limit: number): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const strings = value
-    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .filter(
+      (item): item is string =>
+        typeof item === 'string' && item.trim().length > 0
+    )
     .map((item) => item.trim())
     .slice(0, limit);
   return strings.length ? strings : undefined;
 }
 
-function parseTaskRefs(value: unknown): PrOverseerLinks['taskRefs'] | undefined {
+function parseTaskRefs(
+  value: unknown
+): PrOverseerLinks['taskRefs'] | undefined {
   if (!Array.isArray(value)) return undefined;
   const refs: NonNullable<PrOverseerLinks['taskRefs']> = [];
   for (const entry of value.slice(0, PR_OVERSEER_MAX_LINKS)) {
@@ -667,21 +707,21 @@ function parseLinks(value: unknown): PrOverseerLinks | undefined {
   return Object.keys(links).length ? links : undefined;
 }
 
-export function parsePrOverseerStatus(value: unknown): PrOverseerStatus | undefined {
-  return typeof value === 'string' && (PR_OVERSEER_STATUSES as readonly string[]).includes(value)
-    ? (value as PrOverseerStatus)
-    : undefined;
-}
-
-export function parsePrOverseerRegisterInput(value: unknown): PrOverseerRegisterInput & {
+export function parsePrOverseerRegisterInput(
+  value: unknown
+): PrOverseerRegisterInput & {
   redaction: PrOverseerRedaction;
 } {
   if (!isRecord(value)) {
-    throw new PrOverseerValidationError('pr overseer register payload must be an object');
+    throw new PrOverseerValidationError(
+      'pr overseer register payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const summaryRaw = optionalString(value['observationSummary']);
-  const summary = summaryRaw ? truncateUtf8(summaryRaw, PR_OVERSEER_SUMMARY_MAX_BYTES) : undefined;
+  const summary = summaryRaw
+    ? truncateUtf8(summaryRaw, PR_OVERSEER_SUMMARY_MAX_BYTES)
+    : undefined;
   const links = parseLinks(value['links']);
   const issue = parseIssueRef(value['issue']);
   const session = parseSessionRef(value['session']);
@@ -691,7 +731,9 @@ export function parsePrOverseerRegisterInput(value: unknown): PrOverseerRegister
     pr: parsePrRef(value['pr']),
     ttlSeconds: clampTtl(value['ttlSeconds'], PR_OVERSEER_TTL_DEFAULT_SECONDS),
     ...(stringField(value, 'id') ? { id: stringField(value, 'id') } : {}),
-    ...(stringField(value, 'repoPath') ? { repoPath: stringField(value, 'repoPath') } : {}),
+    ...(stringField(value, 'repoPath')
+      ? { repoPath: stringField(value, 'repoPath') }
+      : {}),
     ...(stringField(value, 'workContextId')
       ? { workContextId: stringField(value, 'workContextId') as WorkContextId }
       : {}),
@@ -702,7 +744,9 @@ export function parsePrOverseerRegisterInput(value: unknown): PrOverseerRegister
       : {}),
     ...(links ? { links } : {}),
     ...(summary ? { observationSummary: summary.value } : {}),
-    ...(stringField(value, 'createdAt') ? { createdAt: stringField(value, 'createdAt') } : {}),
+    ...(stringField(value, 'createdAt')
+      ? { createdAt: stringField(value, 'createdAt') }
+      : {}),
     redaction: {
       rawPayloadStored: false,
       rawTranscriptStored: false,
@@ -712,39 +756,58 @@ export function parsePrOverseerRegisterInput(value: unknown): PrOverseerRegister
   };
 }
 
-export function parsePrOverseerObserveInput(value: unknown): PrOverseerObserveInput & {
+export function parsePrOverseerObserveInput(
+  value: unknown
+): PrOverseerObserveInput & {
   truncated: boolean;
 } {
   if (value === undefined || value === null) return { truncated: false };
   if (!isRecord(value)) {
-    throw new PrOverseerValidationError('pr overseer observe payload must be an object');
+    throw new PrOverseerValidationError(
+      'pr overseer observe payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const summaryRaw = optionalString(value['summary']);
-  const summary = summaryRaw ? truncateUtf8(summaryRaw, PR_OVERSEER_SUMMARY_MAX_BYTES) : undefined;
+  const summary = summaryRaw
+    ? truncateUtf8(summaryRaw, PR_OVERSEER_SUMMARY_MAX_BYTES)
+    : undefined;
   return {
     ...(summary ? { summary: summary.value } : {}),
     ...(normalizeHeadSha(value['expectedHeadSha'])
       ? { expectedHeadSha: normalizeHeadSha(value['expectedHeadSha']) }
       : {}),
     ...(value['ttlSeconds'] !== undefined
-      ? { ttlSeconds: clampTtl(value['ttlSeconds'], PR_OVERSEER_TTL_DEFAULT_SECONDS) }
+      ? {
+          ttlSeconds: clampTtl(
+            value['ttlSeconds'],
+            PR_OVERSEER_TTL_DEFAULT_SECONDS
+          ),
+        }
       : {}),
     truncated: Boolean(summary?.truncated),
   };
 }
 
-export function parsePrOverseerRetireInput(value: unknown): PrOverseerRetireInput {
+export function parsePrOverseerRetireInput(
+  value: unknown
+): PrOverseerRetireInput {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) {
-    throw new PrOverseerValidationError('pr overseer retire payload must be an object');
+    throw new PrOverseerValidationError(
+      'pr overseer retire payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const reasonRaw = optionalString(value['reason']);
-  const reason = reasonRaw ? truncateUtf8(reasonRaw, PR_OVERSEER_SUMMARY_MAX_BYTES).value : undefined;
+  const reason = reasonRaw
+    ? truncateUtf8(reasonRaw, PR_OVERSEER_SUMMARY_MAX_BYTES).value
+    : undefined;
   return {
     ...(reason ? { reason } : {}),
-    ...(stringField(value, 'retiredBy') ? { retiredBy: stringField(value, 'retiredBy') } : {}),
+    ...(stringField(value, 'retiredBy')
+      ? { retiredBy: stringField(value, 'retiredBy') }
+      : {}),
   };
 }
 
@@ -755,19 +818,28 @@ function boundNames(value: unknown, limit: number): string[] {
 }
 
 function boundInt(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : 0;
 }
 
-function boundClosingIssueNumbers(value: unknown, limit: number): number[] | undefined {
+function boundClosingIssueNumbers(
+  value: unknown,
+  limit: number
+): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const numbers: number[] = [];
   for (const item of value.slice(0, limit)) {
-    if (typeof item === 'number' && Number.isInteger(item) && item > 0) numbers.push(item);
+    if (typeof item === 'number' && Number.isInteger(item) && item > 0)
+      numbers.push(item);
   }
   return numbers;
 }
 
-function boundClosingIssueRefs(value: unknown, limit: number): PrObservationClosingIssueRef[] | undefined {
+function boundClosingIssueRefs(
+  value: unknown,
+  limit: number
+): PrObservationClosingIssueRef[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const refs: PrObservationClosingIssueRef[] = [];
   for (const item of value.slice(0, limit)) {
@@ -775,7 +847,8 @@ function boundClosingIssueRefs(value: unknown, limit: number): PrObservationClos
     const ownerRepo = optionalString(item.ownerRepo);
     const number = item.number;
     if (!ownerRepo || !isOwnerRepo(ownerRepo)) continue;
-    if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) continue;
+    if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0)
+      continue;
     refs.push({
       ownerRepo,
       number,
@@ -797,9 +870,13 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
     const pr = raw.pr;
     out.pr = {
       number: pr.number,
-      state: (PR_OVERSEER_PR_STATES as readonly string[]).includes(pr.state) ? pr.state : 'OPEN',
+      state: (PR_OVERSEER_PR_STATES as readonly string[]).includes(pr.state)
+        ? pr.state
+        : 'OPEN',
       isDraft: Boolean(pr.isDraft),
-      mergeable: (PR_OVERSEER_MERGEABLE_STATES as readonly string[]).includes(pr.mergeable)
+      mergeable: (PR_OVERSEER_MERGEABLE_STATES as readonly string[]).includes(
+        pr.mergeable
+      )
         ? pr.mergeable
         : 'UNKNOWN',
       ...(pr.url ? { url: pr.url } : {}),
@@ -826,7 +903,10 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
       )
         ? (raw.reviews.decision as PrOverseerReviewDecision)
         : null,
-      changesRequestedBy: boundNames(raw.reviews.changesRequestedBy, PR_OVERSEER_MAX_NAMES),
+      changesRequestedBy: boundNames(
+        raw.reviews.changesRequestedBy,
+        PR_OVERSEER_MAX_NAMES
+      ),
       approvedBy: boundNames(raw.reviews.approvedBy, PR_OVERSEER_MAX_NAMES),
       unresolvedThreadCount: boundInt(raw.reviews.unresolvedThreadCount),
     };
@@ -837,9 +917,15 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
       sources: boundNames(raw.botComments.sources, PR_OVERSEER_MAX_NAMES),
     };
   }
-  const closingIssueNumbers = boundClosingIssueNumbers(raw.closingIssueNumbers, PR_OVERSEER_MAX_NAMES);
+  const closingIssueNumbers = boundClosingIssueNumbers(
+    raw.closingIssueNumbers,
+    PR_OVERSEER_MAX_NAMES
+  );
   if (closingIssueNumbers) out.closingIssueNumbers = closingIssueNumbers;
-  const closingIssueRefs = boundClosingIssueRefs(raw.closingIssueRefs, PR_OVERSEER_MAX_NAMES);
+  const closingIssueRefs = boundClosingIssueRefs(
+    raw.closingIssueRefs,
+    PR_OVERSEER_MAX_NAMES
+  );
   if (closingIssueRefs) out.closingIssueRefs = closingIssueRefs;
   return out;
 }
@@ -847,7 +933,7 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
 // ─── Derivation ────────────────────────────────────────────────────────────────
 
 /** Input shape for the pure derivation (a subset of the stored record). */
-export interface PrOverseerDerivationInput {
+interface PrOverseerDerivationInput {
   pr: PrOverseerPrRef;
   expectedHeadSha?: string | undefined;
   issue?: PrOverseerIssueRef | undefined;
@@ -857,7 +943,7 @@ export interface PrOverseerDerivationInput {
   cleanup: Pick<PrOverseerCleanup, 'state'>;
 }
 
-export interface PrOverseerDerivedView {
+interface PrOverseerDerivedView {
   status: PrOverseerStatus;
   blockers: PrOverseerBlockerKind[];
   staleHeadRisk: PrOverseerStaleHeadRisk;
@@ -879,7 +965,8 @@ export function computePrOverseerBlockers(input: {
   prOwnerRepo?: string | undefined;
   currentHeadSha?: string | undefined;
 }): PrOverseerBlockerKind[] {
-  const { snapshot, expectedHeadSha, issue, prOwnerRepo, currentHeadSha } = input;
+  const { snapshot, expectedHeadSha, issue, prOwnerRepo, currentHeadSha } =
+    input;
   const pr = snapshot.pr;
   if (!pr) return [];
   const blockers: PrOverseerBlockerKind[] = [];
@@ -893,7 +980,9 @@ export function computePrOverseerBlockers(input: {
     const qualified = snapshot.closingIssueRefs ?? [];
     if (expectedOwnerRepo && qualified.length > 0) {
       return qualified.some(
-        (ref) => ref.number === issue.number && ref.ownerRepo.toLowerCase() === expectedOwnerRepo
+        (ref) =>
+          ref.number === issue.number &&
+          ref.ownerRepo.toLowerCase() === expectedOwnerRepo
       );
     }
     const closing = snapshot.closingIssueNumbers ?? [];
@@ -929,7 +1018,8 @@ export function computePrOverseerBlockers(input: {
     } else if (snapshot.reviews.decision !== 'APPROVED') {
       blockers.push('review-required');
     }
-    if (snapshot.reviews.unresolvedThreadCount > 0) blockers.push('unresolved-review-threads');
+    if (snapshot.reviews.unresolvedThreadCount > 0)
+      blockers.push('unresolved-review-threads');
   } else {
     // Successful OPEN observations with missing review evidence are unknown, not
     // approved. Future/injected observers may emit partial snapshots; never let a
@@ -946,8 +1036,12 @@ export function computePrOverseerBlockers(input: {
   // covers an UNKNOWN head and must never read as exact-head-current.
   const headDiverged =
     !observedHead ||
-    (normalizedExpectedHead && observedHead && normalizedExpectedHead !== observedHead) ||
-    (normalizedCurrentHead && observedHead && normalizedCurrentHead !== observedHead);
+    (normalizedExpectedHead &&
+      observedHead &&
+      normalizedExpectedHead !== observedHead) ||
+    (normalizedCurrentHead &&
+      observedHead &&
+      normalizedCurrentHead !== observedHead);
   if (headDiverged) blockers.push('stale-head');
 
   if (!issueClosesOut()) blockers.push('issue-closeout-mismatch');
@@ -955,13 +1049,15 @@ export function computePrOverseerBlockers(input: {
   return blockers;
 }
 
-export function derivePrOverseerStaleHeadRisk(
+function derivePrOverseerStaleHeadRisk(
   input: PrOverseerDerivationInput,
   nowIso: string,
   opts: PrOverseerReadOptions = {}
 ): PrOverseerStaleHeadRisk {
   const now = Date.parse(nowIso);
-  const observedHeadSha = normalizeComparisonSha(input.lastObservation?.snapshot.pr?.headSha);
+  const observedHeadSha = normalizeComparisonSha(
+    input.lastObservation?.snapshot.pr?.headSha
+  );
   const expectedHeadSha = normalizeComparisonSha(input.expectedHeadSha);
   const currentHeadSha = normalizeComparisonSha(opts.currentHeadSha);
   const observedAt = input.lastObservation?.observedAt;
@@ -973,8 +1069,10 @@ export function derivePrOverseerStaleHeadRisk(
   const hasPrSnapshot = Boolean(input.lastObservation?.snapshot.pr);
   const diverged = Boolean(
     (hasPrSnapshot && !observedHeadSha) ||
-      (expectedHeadSha && observedHeadSha && expectedHeadSha !== observedHeadSha) ||
-      (currentHeadSha && observedHeadSha && currentHeadSha !== observedHeadSha)
+    (expectedHeadSha &&
+      observedHeadSha &&
+      expectedHeadSha !== observedHeadSha) ||
+    (currentHeadSha && observedHeadSha && currentHeadSha !== observedHeadSha)
   );
   return {
     diverged,
@@ -995,12 +1093,13 @@ export function derivePrOverseerStaleHeadRisk(
  *
  *   retired > pending > merged > closed > blocked > stale > observing > ready
  */
-export function derivePrOverseerStatus(
+function derivePrOverseerStatus(
   input: PrOverseerDerivationInput,
   nowIso: string,
   opts: PrOverseerReadOptions = {}
 ): { status: PrOverseerStatus; blockers: PrOverseerBlockerKind[] } {
-  if (input.cleanup.state === 'retired') return { status: 'retired', blockers: [] };
+  if (input.cleanup.state === 'retired')
+    return { status: 'retired', blockers: [] };
   if (!input.lastObservation) return { status: 'pending', blockers: [] };
   const snapshot = input.lastObservation.snapshot;
   // A stored observation with no PR object is not usable evidence (defensive: the
@@ -1009,7 +1108,9 @@ export function derivePrOverseerStatus(
   if (!snapshot.pr) return { status: 'pending', blockers: [] };
   const blockers = computePrOverseerBlockers({
     snapshot,
-    ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}),
+    ...(input.expectedHeadSha
+      ? { expectedHeadSha: input.expectedHeadSha }
+      : {}),
     ...(input.issue ? { issue: input.issue } : {}),
     prOwnerRepo: input.pr.ownerRepo,
     ...(opts.currentHeadSha ? { currentHeadSha: opts.currentHeadSha } : {}),
@@ -1018,7 +1119,8 @@ export function derivePrOverseerStatus(
   if (prState === 'MERGED') return { status: 'merged', blockers };
   if (prState === 'CLOSED') return { status: 'closed', blockers };
   if (blockers.some(isHardBlocker)) return { status: 'blocked', blockers };
-  const heartbeatExpired = Date.parse(input.heartbeat.expiresAt) <= Date.parse(nowIso);
+  const heartbeatExpired =
+    Date.parse(input.heartbeat.expiresAt) <= Date.parse(nowIso);
   const lastFetchFailed = Boolean(input.lastFetch && !input.lastFetch.ok);
   // A lapsed heartbeat OR a failed most-recent fetch means we could not confirm
   // the PR is still in its last-known good state — bias to `stale` (re-observe)
@@ -1036,7 +1138,7 @@ function firstBlocker(
   return undefined;
 }
 
-export function derivePrOverseerRequiredNextAction(
+function derivePrOverseerRequiredNextAction(
   status: PrOverseerStatus,
   blockers: PrOverseerBlockerKind[],
   input: PrOverseerDerivationInput,
@@ -1049,7 +1151,8 @@ export function derivePrOverseerRequiredNextAction(
     summary: string
   ): PrOverseerRequiredNextAction => ({ action, actor, summary, blockers });
 
-  if (status === 'retired') return make('none', 'none', 'Overseer retired; no further action.');
+  if (status === 'retired')
+    return make('none', 'none', 'Overseer retired; no further action.');
   if (status === 'pending') {
     if (input.lastFetch && !input.lastFetch.ok) {
       return make(
@@ -1058,7 +1161,11 @@ export function derivePrOverseerRequiredNextAction(
         'The PR has not been observed successfully yet and the last GitHub fetch failed; re-run pr-overseer observe (check gh auth/availability).'
       );
     }
-    return make('observe-first', 'operator', 'Run pr-overseer observe to take the first PR snapshot.');
+    return make(
+      'observe-first',
+      'operator',
+      'Run pr-overseer observe to take the first PR snapshot.'
+    );
   }
   if (status === 'merged') {
     if (blockers.includes('issue-closeout-mismatch')) {
@@ -1071,7 +1178,11 @@ export function derivePrOverseerRequiredNextAction(
     return make('none', 'none', 'PR merged; release complete.');
   }
   if (status === 'closed') {
-    return make('none', 'operator', 'PR closed without merge; re-open or retire the overseer.');
+    return make(
+      'none',
+      'operator',
+      'PR closed without merge; re-open or retire the overseer.'
+    );
   }
   if (status === 'stale') {
     return make(
@@ -1099,13 +1210,29 @@ export function derivePrOverseerRequiredNextAction(
           'Evidence head diverged from the PR head — push/rebase so the session and PR share a head, then re-observe.'
         );
       case 'merge-conflict':
-        return make('resolve-merge-conflict', 'implementer', 'PR has merge conflicts; rebase onto the base branch.');
+        return make(
+          'resolve-merge-conflict',
+          'implementer',
+          'PR has merge conflicts; rebase onto the base branch.'
+        );
       case 'checks-failed':
-        return make('fix-checks', 'implementer', 'One or more checks failed; fix and push.');
+        return make(
+          'fix-checks',
+          'implementer',
+          'One or more checks failed; fix and push.'
+        );
       case 'review-changes-requested':
-        return make('address-review', 'implementer', 'A reviewer requested changes; address the feedback and push.');
+        return make(
+          'address-review',
+          'implementer',
+          'A reviewer requested changes; address the feedback and push.'
+        );
       case 'unresolved-review-threads':
-        return make('resolve-review-threads', 'implementer', 'Unresolved review threads remain; resolve them.');
+        return make(
+          'resolve-review-threads',
+          'implementer',
+          'Unresolved review threads remain; resolve them.'
+        );
       case 'issue-closeout-mismatch':
         return make(
           'fix-issue-closeout',
@@ -1113,7 +1240,11 @@ export function derivePrOverseerRequiredNextAction(
           `PR does not reference issue #${issueNum ?? '?'} as closing — add "Closes #${issueNum ?? '?'}" to the PR body.`
         );
       default:
-        return make('re-observe', 'operator', 'Blocked; re-observe for current evidence.');
+        return make(
+          're-observe',
+          'operator',
+          'Blocked; re-observe for current evidence.'
+        );
     }
   }
   // observing (soft blockers only)
@@ -1126,15 +1257,35 @@ export function derivePrOverseerRequiredNextAction(
   ]);
   switch (soft) {
     case 'checks-unknown':
-      return make('re-observe', 'operator', 'Check evidence is missing; re-run pr-overseer observe before handoff.');
+      return make(
+        're-observe',
+        'operator',
+        'Check evidence is missing; re-run pr-overseer observe before handoff.'
+      );
     case 'checks-pending':
-      return make('await-checks', 'none', 'Checks are still running; wait for the rollup to settle.');
+      return make(
+        'await-checks',
+        'none',
+        'Checks are still running; wait for the rollup to settle.'
+      );
     case 'mergeability-unknown':
-      return make('await-mergeability', 'none', 'GitHub is still computing mergeability; re-observe shortly.');
+      return make(
+        'await-mergeability',
+        'none',
+        'GitHub is still computing mergeability; re-observe shortly.'
+      );
     case 'review-required':
-      return make('await-review', 'release-train', 'Required review not yet approved; request/await review.');
+      return make(
+        'await-review',
+        'release-train',
+        'Required review not yet approved; request/await review.'
+      );
     case 'pr-draft':
-      return make('mark-pr-ready', 'implementer', 'PR is a draft; mark it ready for review when implementation is done.');
+      return make(
+        'mark-pr-ready',
+        'implementer',
+        'PR is a draft; mark it ready for review when implementation is done.'
+      );
     default:
       return make(
         'hand-off-to-release-train',
@@ -1144,7 +1295,7 @@ export function derivePrOverseerRequiredNextAction(
   }
 }
 
-export function derivePrOverseerHandoff(
+function derivePrOverseerHandoff(
   status: PrOverseerStatus,
   blockers: PrOverseerBlockerKind[],
   staleHeadRisk: PrOverseerStaleHeadRisk,
@@ -1163,7 +1314,9 @@ export function derivePrOverseerHandoff(
   return {
     ready,
     exactHeadEvidenceCurrent,
-    ...(staleHeadRisk.observedHeadSha ? { evidenceHeadSha: staleHeadRisk.observedHeadSha } : {}),
+    ...(staleHeadRisk.observedHeadSha
+      ? { evidenceHeadSha: staleHeadRisk.observedHeadSha }
+      : {}),
     ...(staleHeadRisk.evidenceAgeSeconds !== undefined
       ? { evidenceAgeSeconds: staleHeadRisk.evidenceAgeSeconds }
       : {}),
@@ -1180,13 +1333,25 @@ export function derivePrOverseerView(
 ): PrOverseerDerivedView {
   const staleHeadRisk = derivePrOverseerStaleHeadRisk(input, nowIso, opts);
   const { status, blockers } = derivePrOverseerStatus(input, nowIso, opts);
-  const requiredNextAction = derivePrOverseerRequiredNextAction(status, blockers, input, staleHeadRisk);
-  const handoff = derivePrOverseerHandoff(status, blockers, staleHeadRisk, requiredNextAction);
+  const requiredNextAction = derivePrOverseerRequiredNextAction(
+    status,
+    blockers,
+    input,
+    staleHeadRisk
+  );
+  const handoff = derivePrOverseerHandoff(
+    status,
+    blockers,
+    staleHeadRisk,
+    requiredNextAction
+  );
   return { status, blockers, staleHeadRisk, requiredNextAction, handoff };
 }
 
 /** Bounded, redaction-safe event payload (ids/refs/derived state only). */
-export function prOverseerSummaryPayload(record: PrOverseerRecord): Record<string, unknown> {
+export function prOverseerSummaryPayload(
+  record: PrOverseerRecord
+): Record<string, unknown> {
   return {
     prOverseerId: record.id,
     name: record.name,
@@ -1197,7 +1362,9 @@ export function prOverseerSummaryPayload(record: PrOverseerRecord): Record<strin
     blockers: record.blockers,
     nextAction: record.requiredNextAction.action,
     handoffReady: record.handoff.ready,
-    ...(record.handoff.evidenceHeadSha ? { evidenceHeadSha: record.handoff.evidenceHeadSha } : {}),
+    ...(record.handoff.evidenceHeadSha
+      ? { evidenceHeadSha: record.handoff.evidenceHeadSha }
+      : {}),
     staleHeadDiverged: record.staleHeadRisk.diverged,
     version: record.version,
     updatedAt: record.updatedAt,
