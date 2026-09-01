@@ -18,6 +18,7 @@ import type {
   ScopedActorCredentialScope,
 } from '../shared/scoped-actor-credentials.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import { createAgentProfileStore } from '../server/agent-profile-store.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -31,6 +32,7 @@ import {
   authenticatedSourceRuntimeId,
   channelSearchRequestedChannelId,
   createChannelChatRouter,
+  DEFAULT_KNOWN_PROVIDER_IDS,
 } from '../server/channel-chat-router.js';
 import {
   ChannelAgentBusyError,
@@ -3410,6 +3412,102 @@ describe('channel routes — message edit (#1308 slice 1 item 3)', () => {
     expect(forged.body.error.details?.['reasonCode']).toBe(
       'CHANNEL_SENDER_NOT_ALLOWED'
     );
+  });
+
+  it('re-derives edited mentions through the binder resolver so a multi-word profile mention keeps its profileId (#1503)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const tako = profiles.create({
+      id: 'agent-profile:mock:tako-planner',
+      providerId: 'mock',
+      displayName: 'Tako Planner',
+    });
+    const expected = [
+      { raw: '@Tako Planner', providerId: 'mock', profileId: tako.id },
+    ];
+
+    const h = await harness({
+      binderFactory: ({ store, hub, topicStore }) =>
+        createChannelAgentBinder({
+          store,
+          hub,
+          topicStore,
+          agentProfileStore: profiles,
+          runtimes: {
+            create: async () => {
+              throw new Error('edits must not create a runtime');
+            },
+            get: () => undefined,
+            destroy: async () => {},
+            onRuntimeEnd: () => () => {},
+          },
+          knownProviderIds: ['mock'],
+          mentionTargets: async () => [
+            {
+              id: 'mock',
+              displayName: 'Mock',
+              kind: 'framework' as const,
+              available: true,
+              reason: null,
+            },
+          ],
+          port: 0,
+          configDir: '/tmp',
+        }),
+    });
+
+    const posted = await postHuman(h, 'draft the plan');
+    const res = await req<{
+      message: {
+        id: string;
+        seq: number;
+        body: { text: string };
+        mentions?: unknown[];
+      };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: '@Tako Planner draft the plan' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message.mentions).toEqual(expected);
+    expect(h.store.getMessage(posted.id)?.mentions).toEqual(expected);
+    expect(h.store.getBinding(h.channelId, tako.id)).toBeNull();
+
+    // Stray-spawn detection: routeOne catches runtime create errors and posts a
+    // SYSTEM row into the timeline. Assert no system rows exist to verify edits never route.
+    const rows = h.store.history(h.channelId, { limit: 50 });
+    expect(rows).toHaveLength(1);
+    expect(rows.filter((m) => m.kind === 'system')).toHaveLength(0);
+
+    const cleared = await req<{
+      message: {
+        id: string;
+        seq: number;
+        body: { text: string };
+        mentions?: unknown[];
+      };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'no mention now' },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.message.mentions).toBeUndefined();
+    expect(h.store.getMessage(posted.id)?.mentions).toBeUndefined();
+  });
+
+  it('persists the vendor-only tokenizer shape when no binder is wired (fallback)', async () => {
+    const vendor = DEFAULT_KNOWN_PROVIDER_IDS[0]!;
+    const h = await harness();
+    const posted = await postHuman(h, `ping @${vendor}`);
+    expect(h.store.getMessage(posted.id)?.mentions).toEqual([
+      { raw: `@${vendor}`, providerId: vendor },
+    ]);
   });
 });
 

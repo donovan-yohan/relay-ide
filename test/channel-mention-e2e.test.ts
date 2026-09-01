@@ -54,7 +54,12 @@ import {
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import {
+  createAgentProfileStore,
+  type AgentProfileStore,
+} from '../server/agent-profile-store.js';
+import {
   channelTurnId,
+  channelMessageMatchesSubscriptionFilter,
   parseMentions,
   type ChannelAsyncRun,
   type ChannelMessage,
@@ -336,6 +341,7 @@ async function harness(
     actorRegistry?: ScopedActorCredentialRegistry;
     targets?: MentionTarget[];
     knownProviderIds?: string[];
+    agentProfileStore?: AgentProfileStore;
   } = {}
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mention-e2e-'));
@@ -371,6 +377,9 @@ async function harness(
     mentionTargets: async () => opts.targets ?? TARGETS,
     port: 0,
     configDir: dir,
+    ...(opts.agentProfileStore
+      ? { agentProfileStore: opts.agentProfileStore }
+      : {}),
   });
   cleanup.push(() => binder.close());
   hub.onMessagePosted((m, mentions, options) =>
@@ -776,6 +785,134 @@ describe('mention routing — end-to-end via the router', () => {
     });
     expect(res.status).toBe(409);
     expect(res.body.error.details?.reasonCode).toBe('NO_ACTIVE_TURN');
+  });
+
+  it('persists the profile-resolved mention for a multi-word display name and routes to exactly that profile (#1503)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const tako = profiles.create({
+      id: 'agent-profile:mock:tako-planner',
+      providerId: 'mock',
+      displayName: 'Tako Planner',
+    });
+    const expected = [
+      { raw: '@Tako Planner', providerId: 'mock', profileId: tako.id },
+    ];
+
+    const h = await harness(undefined, { agentProfileStore: profiles });
+    const res = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@Tako Planner draft the plan' },
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.message.mentions).toEqual(expected);
+    expect(h.store.getMessage(res.body.message.id)?.mentions).toEqual(expected);
+    expect(res.body.run.targets.map((t) => t.targetId)).toEqual(
+      expected.map((m) => m.profileId)
+    );
+    expect(res.body.run.targets[0]).toMatchObject({
+      targetId: tako.id,
+      state: 'queued',
+    });
+    await waitFor(() =>
+      Boolean(h.store.getBinding(h.channelId, tako.id)?.runtimeId)
+    );
+    expect(
+      h.store.getBinding(h.channelId, builtInAgentProfileId('mock'))
+    ).toBeNull();
+    const row = h.store.getMessage(res.body.message.id)!;
+    expect(
+      channelMessageMatchesSubscriptionFilter(row, { mentionTargetId: tako.id })
+    ).toBe(true);
+    // vendor-id filter now also matches a named profile of that vendor (providerId is set):
+    expect(
+      channelMessageMatchesSubscriptionFilter(row, { mentionTargetId: 'mock' })
+    ).toBe(true);
+  });
+
+  it('persists the resolved default profileId for a vendor alias and still routes to the default (#1503)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const tako = profiles.create({
+      id: 'agent-profile:mock:tako-planner',
+      providerId: 'mock',
+      displayName: 'Tako Planner',
+    });
+    const expectedDefault = [
+      {
+        raw: '@mock',
+        providerId: 'mock',
+        profileId: builtInAgentProfileId('mock'),
+      },
+    ];
+
+    const h = await harness(undefined, { agentProfileStore: profiles });
+    const res = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock hello there' },
+    });
+    expect(res.body.message.mentions).toEqual(expectedDefault);
+    expect(h.store.getMessage(res.body.message.id)?.mentions).toEqual(
+      expectedDefault
+    );
+    expect(res.body.run.targets.map((t) => t.targetId)).toEqual([
+      builtInAgentProfileId('mock'),
+    ]);
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    expect(h.store.getBinding(h.channelId, tako.id)).toBeNull();
+    const row = h.store.getMessage(res.body.message.id)!;
+    expect(
+      channelMessageMatchesSubscriptionFilter(row, {
+        mentionTargetId: builtInAgentProfileId('mock'),
+      })
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(row, { mentionTargetId: 'mock' })
+    ).toBe(true);
+  });
+
+  it('a CLI-gateway-actor post persists the same binder-resolved mention as a browser post (#1503)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const tako = profiles.create({
+      id: 'agent-profile:mock:tako-planner',
+      providerId: 'mock',
+      displayName: 'Tako Planner',
+    });
+    const expected = [
+      { raw: '@Tako Planner', providerId: 'mock', profileId: tako.id },
+    ];
+
+    const h = await harness(undefined, { agentProfileStore: profiles });
+    enrollActor(h, 'orchestrator');
+    const res = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: { 'x-test-actor-id': 'orchestrator' },
+      body: { text: '@Tako Planner draft the plan' },
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.message.sender).toMatchObject({
+      kind: 'agent',
+      id: 'agent:orchestrator',
+    });
+    expect(res.body.message.mentions).toEqual(expected);
+    expect(h.store.getMessage(res.body.message.id)?.mentions).toEqual(expected);
+    expect(res.body.run.targets.map((t) => t.targetId)).toEqual([tako.id]);
+    await waitFor(() =>
+      Boolean(h.store.getBinding(h.channelId, tako.id)?.runtimeId)
+    );
+    expect(
+      h.store.getBinding(h.channelId, builtInAgentProfileId('mock'))
+    ).toBeNull();
   });
 });
 

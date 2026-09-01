@@ -3264,6 +3264,81 @@ describe('channel-agent-binder — lifecycle', () => {
     ).toBeNull();
   });
 
+  it('resolveMentions is the one resolver: its output persisted as-is admits and routes the same profiles (#1503)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const tako = profiles.create({
+      id: 'agent-profile:mock:tako',
+      providerId: 'mock',
+      displayName: 'Tako Planner',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    const text = '@Tako Planner and @mock and @nobody go';
+    const resolved = binder.resolveMentions(text);
+    expect(resolved).toEqual([
+      { raw: '@Tako Planner', providerId: 'mock', profileId: tako.id },
+      {
+        raw: '@mock',
+        providerId: 'mock',
+        profileId: builtInAgentProfileId('mock'),
+      },
+      { raw: '@nobody' },
+    ]);
+    expect(
+      binder.resolvePostTargetIds({
+        channelId: CH,
+        sender: OPERATOR,
+        text,
+        mentions: resolved,
+      })
+    ).toEqual([tako.id, builtInAgentProfileId('mock')]);
+    const message = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text,
+      mentions: resolved,
+    });
+    binder.handleMessagePosted(message, message.mentions ?? []);
+    await waitFor(() => sessions.spawns() === 2);
+    expect(store.getBinding(CH, tako.id)?.runtimeId).toBeTruthy();
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('mock'))?.runtimeId
+    ).toBeTruthy();
+  });
+
+  it('resolveMentions without a profile catalog keeps the vendor-only tokenizer shape', () => {
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    expect(binder.resolveMentions('@mock hi @Tako Planner')).toEqual([
+      { raw: '@mock', providerId: 'mock' },
+      { raw: '@Tako' },
+    ]);
+  });
+
+  it('resolveMentions with a present but unseeded catalog degrades to the vendor-only shape (contacts === [])', () => {
+    const empty = createAgentProfileStore(':memory:');
+    cleanup.push(() => empty.close());
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: empty,
+    });
+    expect(binder.resolveMentions('@mock hi @Tako Planner')).toEqual([
+      { raw: '@mock', providerId: 'mock' },
+      { raw: '@Tako' },
+    ]);
+  });
+
   it('designates an orchestrator without submitting a turn', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
