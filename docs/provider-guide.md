@@ -28,14 +28,15 @@ refresh. Capabilities must describe only implemented behavior.
 
 ## Built-in native transports
 
-| Provider    | Provider id   | Native channel transport               |
-| ----------- | ------------- | -------------------------------------- |
-| Claude Code | `claude`      | persistent subprocess over stream JSON |
-| Codex       | `codex`       | `codex app-server` JSON-RPC            |
-| OpenCode    | `opencode`    | native SDK/events                      |
-| Hermes      | `hermes`      | Responses API/SSE                      |
-| Prime Agent | `prime-agent` | `prime-agent` RPC                      |
-| Pi          | `pi`          | `pi --mode rpc` JSONL                  |
+| Provider    | Provider id   | Native channel transport                   |
+| ----------- | ------------- | ------------------------------------------ |
+| Claude Code | `claude`      | persistent subprocess over stream JSON     |
+| Codex       | `codex`       | `codex app-server` JSON-RPC                |
+| OpenCode    | `opencode`    | native SDK/events                          |
+| Hermes      | `hermes`      | Responses API/SSE                          |
+| Prime Agent | `prime-agent` | `prime-agent` RPC                          |
+| Pi          | `pi`          | `pi --mode rpc` JSONL                      |
+| Antigravity | `antigravity` | `agy` stream-json NDJSON over stdin/stdout |
 
 Prime Agent is a first-class channel provider. In version 0.7.0, it uses a daemon-backed RPC architecture (the channel subprocess is a thin client communicating with the supervisor daemon; environment variable denylists cover the client process). Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
 lifecycle, `message_update` text and
@@ -101,6 +102,11 @@ an assertion that every earlier or later provider version behaves identically.
 The `pi` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.
+
+Antigravity is a first-class channel provider (#1508). Its adapter drives the
+`agy` CLI in headless mode over stream-json (`--input-format stream-json --output-format stream-json -p ''`). It maps `step_update` agent response text deltas to streaming assistant items, tool execution steps to canonical `commandExecution` (for `run_command`), `fileChange` (for `write_to_file`, `replace_file_content`, `multi_replace_file_content`, `sed_file`, `notebook_edit`), and `dynamicToolCall` items with step-index IDs. Cumulative usage is folded across turn steps. It advertises text, tools, command execution, file changes, queueing, interrupt, resume, telemetry, and streaming; unsupported reasoning streaming, approvals, questions, plans, and slash commands remain false. Sessions resume across respawns via `--conversation <id>`.
+
+The Antigravity channel transport is installed-tested with Antigravity CLI (`agy`) 1.1.23. The `agy` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
 
 ### Live Pi and Prime RPC smoke
 
@@ -290,9 +296,8 @@ walk; only restarts are free.
 
 ### Antigravity CLI (`agy`) state adapter
 
-The Antigravity CLI is wired as a native-session provider only (`#1439`): no
-channel adapter exists yet, so it does not appear in the built-in native
-transports table above. State root: `~/.gemini/antigravity-cli/`.
+The Antigravity CLI is wired as both a native-session provider (`#1439`) and a
+first-class channel adapter (`#1508`). State root: `~/.gemini/antigravity-cli/`.
 
 - Listing reads `history.jsonl` (one row per user prompt) grouped by
   `conversationId`; the first prompt's text is the bounded, redacted title.

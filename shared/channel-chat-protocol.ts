@@ -340,9 +340,12 @@ export interface ChannelMention {
   providerId?: string;
   /**
    * Resolved profile Actor id (`AgentProfile.id`) when `parseMentions` is given
-   * a contact set (#1236). Additive + optional: rows parsed without a contact
-   * set — every current server caller — leave this absent, and `providerId`
-   * stays populated for the legacy vendor-alias path.
+   * a contact set (#1236). Set whenever the caller supplies a contact set; on
+   * the hub the binder's `resolveMentions` is that caller for every human/CLI
+   * row (POST and edit) and for routing (#1236, #1503), so a persisted
+   * `profileId` is a pin that survives renames (binder `resolveProfileMention`).
+   * Rows parsed without a contact set (embedding/test routers built without a
+   * binder or profile catalog) leave it absent.
    */
   profileId?: string;
 }
@@ -2175,8 +2178,11 @@ export function mergeHistoryPage(
  * LONGEST-MATCH-FIRST, `@<vendor>` resolves to that vendor's default profile,
  * and a trailing `#<token>` disambiguates same-name collisions. Resolution
  * delegates to the keystone `resolveProfileForMention` (vendor alias + tiebreak
- * are NOT reimplemented here). Callers that pass no contacts — every current
- * server caller — keep the exact single-token behavior above.
+ * are NOT reimplemented here). Callers that pass no contacts — the
+ * no-binder router fallback, `summaryMentions`
+ * (`server/channel-message-store.ts`), `messageMentionsOperator`
+ * (`frontend/src/lib/channel-sender-label.ts`), and legacy tests — keep the
+ * exact single-token behavior above.
  */
 export function parseMentions(
   text: string,

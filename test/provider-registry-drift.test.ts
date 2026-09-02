@@ -15,11 +15,10 @@
  * cannot quietly disconnect the registry from the code that reads it. The
  * expectation table records what the code does today — a row that looks wrong is a
  * finding to fix in its own slice, not something to silently "generalize" here.
- *
  * Compile-time backpressure lives both in the source (`PROVIDER_DESCRIPTORS` and
  * the `ProviderDescriptor` interface) and in this suite: `test/tsconfig.json`
- * typechecks test files via `npm run typecheck:test`, so `satisfies` clauses
- * here are enforced compile gates.
+ * typechecks test files during `npm run check` (`npm run typecheck:test`), so
+ * `satisfies` clauses here are enforced compile gates.
  *
  * Run: `npx vitest run test/provider-registry-drift.test.ts`
  */
@@ -278,6 +277,30 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: [], commandBasenames: ['pi'] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
+    isDefaultOrchestratorProvider: false,
+    validLegacyChatEventSource: false,
+  },
+  antigravity: {
+    agentType: 'antigravity',
+    legacyBridged: false,
+    resumeKey: 'antigravityConversationId',
+    declaresResumeCapability: true,
+    resumeLadderExemption: null,
+    deliversImages: false,
+    imageRawBudgetMiB: 10,
+    terminalFrameworkId: 'antigravity',
+    supportsChannelAgents: true,
+    inTopicProviderAllowlist: true,
+    inRouterFallbackRoster: true,
+    advertisedControlNames: [],
+    guardedControlNames: [],
+    processMatch: { commandLineSubstrings: [], commandBasenames: ['agy'] },
+    authCredentialPaths: [
+      ['.gemini', 'antigravity-cli', 'antigravity-oauth-token'],
+    ],
+    yoloPermissionMode: 'always-proceed',
     agentProfileGatewayBindingKey: null,
     agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,

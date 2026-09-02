@@ -27,7 +27,8 @@ export type KnownAgentGlyph =
   | 'hermes'
   | 'opencode'
   | 'prime-agent'
-  | 'pi';
+  | 'pi'
+  | 'antigravity';
 
 export interface SenderIdentity {
   /** Display label — human is always 'you'. */
@@ -46,6 +47,7 @@ const KNOWN_AGENT_COLOR_VAR: Record<string, string> = {
   opencode: '--sender-opencode',
   'prime-agent': '--sender-prime-agent',
   pi: '--sender-pi',
+  antigravity: '--sender-antigravity',
 };
 
 const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
@@ -55,6 +57,7 @@ const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
   'opencode',
   'prime-agent',
   'pi',
+  'antigravity',
 ];
 
 function isKnownGlyph(value: string): value is KnownAgentGlyph {

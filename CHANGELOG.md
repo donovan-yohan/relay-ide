@@ -18,6 +18,15 @@ workflow.
 
 ## [Unreleased]
 
+### Channel Adapters
+
+#### Added
+
+- First-class Antigravity (`antigravity`) channel adapter driving the `agy` CLI
+  in headless stream-json mode over stdin/stdout with streaming text, typed tool
+  cards (`run_command`, file modifications, dynamic tools), token usage aggregation,
+  interrupts via SIGINT, and session resumption (#1508)
+
 ### Prime Agent channel adapter
 
 #### Fixed
@@ -56,6 +65,30 @@ workflow.
   now advertises every wired channels verb — `list`, `get`, `history`,
   `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
   which were dispatchable but undiscoverable (#1472)
+
+### Channel mentions
+
+#### Fixed
+
+- Mentioning a custom agent profile by its multi-word name (for example
+  `@Tako Planner`) from the browser or the local CLI now stores the whole
+  mention and the resolved profile id on the message row. Previously the row
+  kept only the first word (`@Tako`) with no profile, so the stored mention
+  disagreed with where the message was actually delivered and
+  `relay-ide v1 channels subscribe --mention-target-id <profile id>` never
+  matched those posts. Editing a message re-resolves its mentions the same
+  way. The agent binder is now the single mention resolver for both the
+  stored row and delivery, so the two cannot drift again (#1503)
+
+#### Changed
+
+- Vendor mentions such as `@claude` now also carry the resolved default
+  `profileId` (`agent-profile:<vendor>:default`) in `channels post` and
+  `channels history --json` output, and a named-profile mention carries its
+  vendor `providerId`. As a result `--mention-target-id <vendor>` now matches
+  mentions of every profile of that vendor, not only `@<vendor>`; filter on
+  the profile id for an exact match. Rows written before this release are not
+  rewritten (#1503)
 
 ### Hub-authoritative channel membership
 

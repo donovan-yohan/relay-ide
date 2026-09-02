@@ -48,7 +48,7 @@ export interface AgentProfile {
    * `builtInAgentProfileId(providerId)`.
    */
   id: string;
-  /** Framework catalog key (`AgentFramework.id`): claude/codex/opencode/hermes/prime-agent/pi/custom. */
+  /** Framework catalog key (`AgentFramework.id`): claude/codex/opencode/hermes/prime-agent/pi/antigravity/custom. */
   providerId: string;
   /**
    * Free-form, possibly multi-word display name. EMPTY ('') on a built-in

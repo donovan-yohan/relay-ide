@@ -54,7 +54,8 @@ export type BuiltinFrameworkId =
   | 'opencode'
   | 'hermes'
   | 'prime-agent'
-  | 'pi';
+  | 'pi'
+  | 'antigravity';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
@@ -209,6 +210,22 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsHooks: false,
       supportsContinue: true,
       supportsYolo: false,
+      supportsTelemetry: true,
+      supportsAttachedRuntime: false,
+    },
+  },
+  antigravity: {
+    id: 'antigravity',
+    displayName: 'Antigravity',
+    command: 'agy',
+    continueArgs: ['--continue'],
+    yoloArgs: ['--dangerously-skip-permissions'],
+    parserType: 'generic',
+    eventSource: 'timer',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: false,
     },
