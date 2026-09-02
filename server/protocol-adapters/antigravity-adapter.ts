@@ -85,6 +85,28 @@ function assistantItemId(turnId: string): string {
   return `${turnId}-assistant`;
 }
 
+/** Cap for provider-authored diagnostic text that reaches a durable row. */
+const DIAGNOSTIC_MAX_BYTES = 4096;
+const DIAGNOSTIC_TRUNCATION_MARKER = '… [truncated]';
+
+/**
+ * Bound a provider-authored diagnostic to `DIAGNOSTIC_MAX_BYTES` of UTF-8,
+ * cutting on a code-point boundary so the marker never lands mid-character.
+ */
+function truncateDiagnostic(text: string): string {
+  const encoded = Buffer.from(text, 'utf8');
+  if (encoded.byteLength <= DIAGNOSTIC_MAX_BYTES) return text;
+  const markerBytes = Buffer.byteLength(DIAGNOSTIC_TRUNCATION_MARKER, 'utf8');
+  const budget = Math.max(0, DIAGNOSTIC_MAX_BYTES - markerBytes);
+  // `toString` on a slice would emit a replacement char for a split sequence;
+  // walk back to the last whole code point instead.
+  let head = encoded.subarray(0, budget).toString('utf8');
+  while (Buffer.byteLength(head, 'utf8') > budget) head = head.slice(0, -1);
+  if (head.endsWith('\uFFFD') && !text.includes('\uFFFD'))
+    head = head.slice(0, -1);
+  return `${head}${DIAGNOSTIC_TRUNCATION_MARKER}`;
+}
+
 const DEFAULT_CRASH_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RESPAWNS = 3;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -953,9 +975,16 @@ export class AntigravityProtocolAdapter
 
   /**
    * Fold one `agent_response` step's text into this turn's single assistant
-   * item. Text from two different steps is separated by a blank line: agy's
-   * per-step deltas are a self-contained paragraph and would otherwise run
-   * into the previous step's last word.
+   * item. Text from two different steps is separated by exactly one blank
+   * line: agy's per-step deltas are self-contained paragraphs and would
+   * otherwise run into the previous step's last word.
+   *
+   * The seam is topped up to two newlines rather than skipped whenever the
+   * previous chunk already ended in one: a chunk ending in a single `'\n'`
+   * still needs one more to make a blank line, and the earlier "ends with \n
+   * -> append nothing" rule ran those two steps together. Deltas are
+   * append-only, so an existing run of three or more newlines can be left
+   * alone but never trimmed back.
    */
   private appendAssistantText(
     turnId: string,
@@ -983,10 +1012,16 @@ export class AntigravityProtocolAdapter
         accumulated && accumulated.type === 'assistantMessage'
           ? accumulated.text
           : '';
-      if (sofar && !sofar.endsWith('\n')) text = `\n\n${textDelta}`;
+      if (sofar.trimEnd().length > 0) {
+        // Count the newlines already at the seam and top up to exactly two.
+        const trailing = /\n*$/.exec(sofar)?.[0].length ?? 0;
+        text = `${'\n'.repeat(Math.max(0, 2 - trailing))}${textDelta}`;
+      }
     }
     this.assistantStepIndex = stepIndex;
-    this.emitDelta(itemId, { text });
+    // A step boundary that needs no separator and carries no new text would
+    // otherwise emit a delta the bridge drops anyway.
+    if (text.length > 0) this.emitDelta(itemId, { text });
     this.assistantEmittedThisTurn = true;
   }
 
@@ -1003,11 +1038,16 @@ export class AntigravityProtocolAdapter
     step: Record<string, unknown>,
     stepIndex: number
   ): void {
-    const message =
+    const raw =
       stringField(step.message) ??
       stringField(step.text) ??
       stringField(step.text_delta) ??
       stringField(step.error);
+    // The step's text is whatever agy chose to put there -- a Python traceback
+    // or a raw stderr dump is entirely possible -- and this becomes a durable
+    // channel row. Bound it here, at the adapter boundary, rather than trusting
+    // the provider.
+    const message = raw ? truncateDiagnostic(raw) : undefined;
     this.emitProviderExtension(
       {
         kind: 'errorMessage',

@@ -1175,4 +1175,186 @@ describe('AntigravityProtocolAdapter', () => {
     expect(spawn.options.cwd).toBe(worktree);
     expect(spawn.args.slice(0, 2)).toEqual(['--add-dir', worktree]);
   });
+
+  // #1532 review P2: a tool step can precede any narration text
+  it('creates the assistant item lazily after a leading tool step, once and in order', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'tool first' });
+
+    const step = (su: Record<string, unknown>) =>
+      child.serverWrite({
+        event: 'step_update',
+        step_update: {
+          conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+          ...su,
+        },
+      });
+    const command = (stepIndex: number, state: string, cmd: string) =>
+      step({
+        step_index: stepIndex,
+        state,
+        step_type: 'tool',
+        tool_name: 'run_command',
+        tool_info: { name: 'run_command', parameters: { CommandLine: cmd } },
+      });
+
+    step({ step_index: 0, state: 'DONE', step_type: 'user_input' });
+    // The turn opens with a tool, before a single character of narration.
+    command(1, 'ACTIVE', 'ls');
+    command(1, 'DONE', 'ls');
+    step({
+      step_index: 2,
+      state: 'ACTIVE',
+      step_type: 'agent_response',
+      text_delta: 'Here is what I found.',
+    });
+    command(3, 'ACTIVE', 'git status');
+    command(3, 'DONE', 'git status');
+    step({
+      step_index: 4,
+      state: 'DONE',
+      step_type: 'agent_response',
+      text_delta: 'All clean.',
+    });
+    child.serverWrite({
+      event: 'result',
+      result: {
+        conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+        status: 'SUCCESS',
+        response: 'Here is what I found.\n\nAll clean.',
+      },
+    });
+
+    // Lazy creation must not reorder the cards: the leading tool opened first.
+    const startedIds = patches
+      .filter((p) => p.type === 'agent-item-started-v2')
+      .map((p) => (p as any).item.id)
+      .filter((id: string) => id !== 'user-t1');
+    expect(startedIds).toEqual(['t1-tool-1', 't1-assistant', 't1-tool-3']);
+
+    const assistantStarted = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(assistantStarted).toHaveLength(1);
+
+    const assistantTerminal = patches.filter(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'assistantMessage' &&
+        p.item.status === 'completed'
+    );
+    expect(assistantTerminal).toHaveLength(1);
+    expect((assistantTerminal[0]! as any).item.text).toBe(
+      'Here is what I found.\n\nAll clean.'
+    );
+  });
+
+  // #1532 review P2: the step seam is normalized, not skipped
+  it('always leaves a blank line between two agent_response steps, whatever the chunk ends in', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['no trailing newline', 'One.', 'One.\n\nTwo.'],
+      ['one trailing newline', 'One.\n', 'One.\n\nTwo.'],
+      ['two trailing newlines', 'One.\n\n', 'One.\n\nTwo.'],
+      // Deltas are append-only: an existing wider gap is left as agy sent it.
+      ['many trailing newlines', 'One.\n\n\n\n', 'One.\n\n\n\nTwo.'],
+    ];
+    for (const [, first, expected] of cases) {
+      const { adapter, spawns, patches } = harness();
+      await connect(adapter, spawns);
+      const child = spawns[0]!.child;
+      await adapter.sendMessage({ turnId: 't1', content: 'seam' });
+      const step = (su: Record<string, unknown>) =>
+        child.serverWrite({
+          event: 'step_update',
+          step_update: {
+            conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+            ...su,
+          },
+        });
+      step({
+        step_index: 1,
+        state: 'DONE',
+        step_type: 'agent_response',
+        text_delta: first,
+      });
+      step({
+        step_index: 3,
+        state: 'DONE',
+        step_type: 'agent_response',
+        text_delta: 'Two.',
+      });
+      child.serverWrite({
+        event: 'result',
+        result: { status: 'SUCCESS', response: expected },
+      });
+
+      const terminal = patches.filter(
+        (p) =>
+          p.type === 'agent-item-updated-v2' &&
+          p.item.type === 'assistantMessage' &&
+          p.item.status === 'completed'
+      );
+      expect(terminal).toHaveLength(1);
+      expect((terminal[0]! as any).item.text).toBe(expected);
+    }
+  });
+
+  // #1532 review P2: agy's diagnostic text is provider-authored and unbounded
+  it('caps an oversized error_message diagnostic before it reaches a channel row', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'traceback' });
+
+    const huge = `Traceback (most recent call last):\n${'x'.repeat(20_000)}`;
+    child.serverWrite({
+      event: 'step_update',
+      step_update: {
+        conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+        step_index: 2,
+        state: 'DONE',
+        step_type: 'error_message',
+        message: huge,
+      },
+    });
+
+    const diagnostic = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension' &&
+        (p.item as any).payload?.kind === 'errorMessage'
+    );
+    expect(diagnostic).toBeTruthy();
+    const message = (diagnostic as any).item.payload.message as string;
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(message.endsWith('… [truncated]')).toBe(true);
+    expect(message.startsWith('Traceback (most recent call last):')).toBe(true);
+
+    // A message inside the cap is passed through untouched.
+    const { adapter: a2, spawns: s2, patches: p2 } = harness();
+    await connect(a2, s2);
+    await a2.sendMessage({ turnId: 't1', content: 'short' });
+    s2[0]!.child.serverWrite({
+      event: 'step_update',
+      step_update: {
+        conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+        step_index: 1,
+        state: 'DONE',
+        step_type: 'error_message',
+        message: 'Individual quota reached.',
+      },
+    });
+    const small = p2.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension' &&
+        (p.item as any).payload?.kind === 'errorMessage'
+    );
+    expect((small as any).item.payload.message).toBe(
+      'Individual quota reached.'
+    );
+  });
 });
