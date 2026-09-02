@@ -221,7 +221,7 @@ describe('DshStateAdapter', () => {
       capabilities: {
         canImportTranscript: true,
         canReadProviderState: true,
-        canResumeNative: true,
+        canResumeNative: false,
         canStreamLiveEvents: true,
         readOnly: true,
       },
@@ -529,9 +529,11 @@ describe('DshStateAdapter', () => {
     expect(snapshot.summary.lastTimestamp).toBe(
       new Date(1787593057345).toISOString()
     );
+    // #1520: no shipped dsh app parses a resume flag, so there is no argv to
+    // hand an operator.
     expect(
       adapter.resumeCommand({ provider: 'dsh', nativeId: SESSION_ID })
-    ).toEqual(['dsh', '--resume', SESSION_ID]);
+    ).toEqual([]);
   });
 
   it('reports honest capabilities including live streaming', () => {
@@ -539,7 +541,7 @@ describe('DshStateAdapter', () => {
     expect(adapter.capabilities).toEqual({
       canImportTranscript: true,
       canReadProviderState: true,
-      canResumeNative: true,
+      canResumeNative: false,
       canStreamLiveEvents: true,
       canRespondToApprovals: false,
       canExposeToolCalls: false,
