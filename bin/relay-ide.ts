@@ -6654,6 +6654,10 @@ type ChannelCliValueFlag =
   | '--include-archived'
   | '--title'
   | '--description'
+  | '--text'
+  | '--format'
+  | '--parent-message-id'
+  | '--client-message-id'
   | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
@@ -7051,6 +7055,76 @@ async function runGatewayChannelsMembership(
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
 
+async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
+  const values = parseChannelCliFlags('channels.post', channelArgs, [
+    '--input-json',
+    '--channel-id',
+    '--text',
+    '--format',
+    '--thread-id',
+    '--parent-message-id',
+    '--client-message-id',
+  ]);
+  const inputJson = values.get('--input-json');
+  const flagFormFlags = [
+    '--channel-id',
+    '--text',
+    '--format',
+    '--thread-id',
+    '--parent-message-id',
+    '--client-message-id',
+  ] as const;
+  const hasFlagForm = flagFormFlags.some((flag) => values.has(flag));
+  if (inputJson !== undefined && hasFlagForm) {
+    gatewayInvalid(
+      'channels.post',
+      '--input-json and the flag form are mutually exclusive',
+      { field: 'inputJson' }
+    );
+  }
+  let input: Record<string, unknown>;
+  if (inputJson !== undefined) {
+    input = parseGatewayJson('channels.post', inputJson);
+  } else {
+    input = {};
+    const channelId = values.get('--channel-id');
+    const text = values.get('--text');
+    if (channelId === undefined) {
+      gatewayInvalid('channels.post', '--channel-id is required', {
+        field: 'channelId',
+      });
+    }
+    if (text === undefined) {
+      gatewayInvalid('channels.post', '--text is required', {
+        field: 'text',
+      });
+    }
+    input['channelId'] = channelId;
+    input['text'] = text;
+    for (const [flag, key] of [
+      ['--format', 'format'],
+      ['--thread-id', 'threadId'],
+      ['--parent-message-id', 'parentMessageId'],
+      ['--client-message-id', 'clientMessageId'],
+    ] as const) {
+      const value = values.get(flag);
+      if (value !== undefined) input[key] = value;
+    }
+  }
+  validateChannelPostCliInput(input);
+  const channelId = input['channelId'] as string;
+  const body = { ...input };
+  delete body['channelId'];
+  const result = await gatewayHttpJson({
+    commandName: 'channels.post',
+    pathName: `/channels/${encodeURIComponent(channelId)}/messages`,
+    method: 'POST',
+    body,
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('channels.post', result), 0);
+}
+
 async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   const subcommand = gatewayArgs[1];
   const channelArgs = gatewayArgs.slice(2);
@@ -7261,30 +7335,7 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
 
   if (subcommand === 'search') await runGatewayChannelsSearch(channelArgs);
 
-  if (subcommand === 'post') {
-    const values = parseChannelCliFlags('channels.post', channelArgs, [
-      '--input-json',
-    ]);
-    const inputJson = values.get('--input-json');
-    if (inputJson === undefined) {
-      gatewayInvalid('channels.post', '--input-json is required', {
-        field: 'inputJson',
-      });
-    }
-    const input = parseGatewayJson('channels.post', inputJson);
-    validateChannelPostCliInput(input);
-    const channelId = input['channelId'] as string;
-    const body = { ...input };
-    delete body['channelId'];
-    const result = await gatewayHttpJson({
-      commandName: 'channels.post',
-      pathName: `/channels/${encodeURIComponent(channelId)}/messages`,
-      method: 'POST',
-      body,
-      capabilities: ['context:write'],
-    });
-    printGatewayEnvelope(gatewayOk('channels.post', result), 0);
-  }
+  if (subcommand === 'post') return runGatewayChannelsPost(channelArgs);
   if (subcommand === 'create') return runGatewayChannelsCreate(channelArgs);
 
   gatewayInvalid('channels.list', 'unknown channels command', {

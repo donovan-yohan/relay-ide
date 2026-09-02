@@ -102,6 +102,8 @@ relay-ide v1 settings get --json
 relay-ide v1 settings update --input-json '{"key":"updateChannel","value":"nightly","confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
 relay-ide v1 webhooks ping --json
+relay-ide v1 channels post --channel-id <id> --text <text> [--format <text|markdown>] [--thread-id <id|null>] [--parent-message-id <id>] [--client-message-id <id>] --json
+relay-ide v1 channels post --input-json '{"channelId":"<id>","text":"<text>"}' --json
 ```
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas. `inbox list --target-session-id` expects the scoped session key form (`local:<session-id>` for local sessions or `<nodeId>:<session-id>` for routed sessions); passing a raw session id (without the node prefix) returns an empty list.
