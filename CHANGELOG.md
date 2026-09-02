@@ -20,6 +20,15 @@ workflow.
 
 ### Channel Adapters
 
+#### Fixed
+
+- An `@antigravity` turn that used tools no longer floods the channel with empty
+  messages. Antigravity narrates between tool calls, and each burst was becoming
+  its own channel row — around thirty blank rows on a long turn. A turn is now
+  one reply row whose text accumulates across the whole turn, alongside its tool
+  cards, and Antigravity's own error notices are surfaced as diagnostics instead
+  of being dropped (#1532)
+
 #### Added
 
 - First-class Antigravity (`antigravity`) channel adapter driving the `agy` CLI
@@ -45,6 +54,21 @@ workflow.
   copyable resume command. No shipped dsh app accepts that flag, so the command
   always failed; dsh sessions now report that native resume is unavailable and
   point at the dsh channel agent instead (#1520)
+
+### Channels
+
+#### Fixed
+
+- A channel whose worktree is changed after its agent is already running now
+  says so instead of silently continuing in the old directory. A channel agent
+  keeps the working directory it was started in, so repointing the channel at a
+  different worktree posts a note naming both directories and telling you to
+  restart the agent to move it (#1534)
+- A channel post typed at the hub's own terminal (`relay-ide v1 channels post`)
+  no longer marks its run `failed` while the agent is still working. The
+  host-local CLI is the operator, not an agent profile, so its posts no longer
+  schedule an agent-to-agent completion callback to a profile that cannot exist
+  (#1533)
 
 ### Prime Agent channel adapter
 

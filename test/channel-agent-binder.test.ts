@@ -8749,3 +8749,163 @@ describe('channel-agent-binder — delivery receipts (#1442)', () => {
     expect(offline[0]!.reasonCode).toBe('runtime_unavailable');
   });
 });
+
+describe('channel-agent-binder — host-local CLI requester (#1533)', () => {
+  /** `deriveSender` stamps the #1467 host-local CLI credential like this. */
+  const LOCAL_CLI_SENDER: ChannelSenderRef = {
+    kind: 'agent',
+    id: 'agent:local-cli',
+    providerId: 'local-cli',
+    displayName: 'relay-ide local CLI',
+  };
+
+  it('schedules no completion callback for a host-local CLI post', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const { run } = postWithAsyncRun(
+      store,
+      binder,
+      '@mock do the thing',
+      ['mock'],
+      LOCAL_CLI_SENDER
+    );
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    await waitFor(() => store.getAsyncRun(run.id)?.state === 'completed');
+    expect(store.getAsyncRun(run.id)).toMatchObject({
+      state: 'completed',
+      targets: [
+        { targetId: builtInAgentProfileId('mock'), state: 'completed' },
+      ],
+    });
+    // No `agent-profile:local-cli:default` edge was ever created, so nothing
+    // can terminalize as `requester-profile-unavailable` (#1533).
+    expect(store.claimSatisfiedCompletionCallbacks()).toEqual([]);
+  });
+
+  it('records an unavailable requester as undeliverable without failing a running target', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) => new ScriptedAdapter(agentType, { mode: 'stall' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock long job', ['mock']);
+    await waitFor(
+      () => store.getAsyncRun(run.id)?.targets[0]?.state === 'working'
+    );
+
+    const edge = store.createCompletionCallback({
+      id: 'chcb:unavailable-requester-running-target',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: run.requestMessageId,
+      requesterProfileId: 'agent-profile:missing',
+      targetProfileId: builtInAgentProfileId('mock'),
+      targetRuntimeId: 'runtime:mock',
+      targetTurnId: 'turn:unavailable-requester-running-target',
+    });
+    store.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    await binder.recoverCompletionCallbacks();
+    await waitFor(
+      () => store.getCompletionCallback(edge.id)?.state === 'undeliverable'
+    );
+
+    expect(store.getCompletionCallback(edge.id)).toMatchObject({
+      state: 'undeliverable',
+      deliveryReason: 'requester-profile-unavailable',
+    });
+    // The target is still working: an undeliverable callback records delivery,
+    // it never terminalizes the run it rode in on (#1533).
+    expect(store.getAsyncRun(run.id)).toMatchObject({
+      state: 'working',
+      targets: [{ targetId: builtInAgentProfileId('mock'), state: 'working' }],
+    });
+  });
+});
+
+describe('channel-agent-binder — topic routing cwd (#1534)', () => {
+  const WORKTREE = '/repo/relay/.worktrees/lane';
+
+  function makeTopicStore(): WorkspaceTopicStore {
+    const topicStore = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topicStore.close());
+    return topicStore;
+  }
+
+  it('spawns the runtime in the topic worktree cwd, verbatim', async () => {
+    const topicStore = makeTopicStore();
+    topicStore.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'lane',
+      routingDefaults: { repoPath: '/repo/relay', cwd: WORKTREE },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock where am i', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    // The worktree wins over repoPath: a worktree cwd is the whole point of
+    // `routingDefaults.cwd`, and nothing between here and `spawn` rewrites it.
+    expect(sessions.createParams()[0]).toMatchObject({
+      cwd: WORKTREE,
+      repoPath: '/repo/relay',
+    });
+  });
+
+  it('reports a reused runtime whose cwd no longer matches the topic routing cwd', async () => {
+    const topicStore = makeTopicStore();
+    topicStore.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'lane',
+      routingDefaults: { cwd: '/repo/relay' },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock first', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(sessions.createParams()[0]).toMatchObject({ cwd: '/repo/relay' });
+
+    // Point the topic at a worktree AFTER the runtime is live. The runtime
+    // keeps its spawn cwd, so the operator has to be told (#1534).
+    topicStore.update(CH, { routingDefaults: { cwd: WORKTREE } });
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes(WORKTREE))
+    );
+    const diverged = systemRows(store).filter((m) =>
+      m.body.text.includes(WORKTREE)
+    );
+    expect(diverged).toHaveLength(1);
+    expect(diverged[0]!.body.text).toContain('/repo/relay');
+    expect(sessions.spawns()).toBe(1); // reuse never restarts behind the operator
+
+    // The same divergence is reported once, not once per turn.
+    post(store, binder, '@mock third', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 3);
+    expect(
+      systemRows(store).filter((m) => m.body.text.includes(WORKTREE))
+    ).toHaveLength(1);
+  });
+});

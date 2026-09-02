@@ -78,6 +78,35 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
 const QUEUE_ABANDONED_MESSAGE =
   'Antigravity session ended before this queued message was sent.';
 
+/**
+ * One assistant item per TURN, never per `agent_response` step (#1532).
+ */
+function assistantItemId(turnId: string): string {
+  return `${turnId}-assistant`;
+}
+
+/** Cap for provider-authored diagnostic text that reaches a durable row. */
+const DIAGNOSTIC_MAX_BYTES = 4096;
+const DIAGNOSTIC_TRUNCATION_MARKER = '… [truncated]';
+
+/**
+ * Bound a provider-authored diagnostic to `DIAGNOSTIC_MAX_BYTES` of UTF-8,
+ * cutting on a code-point boundary so the marker never lands mid-character.
+ */
+function truncateDiagnostic(text: string): string {
+  const encoded = Buffer.from(text, 'utf8');
+  if (encoded.byteLength <= DIAGNOSTIC_MAX_BYTES) return text;
+  const markerBytes = Buffer.byteLength(DIAGNOSTIC_TRUNCATION_MARKER, 'utf8');
+  const budget = Math.max(0, DIAGNOSTIC_MAX_BYTES - markerBytes);
+  // `toString` on a slice would emit a replacement char for a split sequence;
+  // walk back to the last whole code point instead.
+  let head = encoded.subarray(0, budget).toString('utf8');
+  while (Buffer.byteLength(head, 'utf8') > budget) head = head.slice(0, -1);
+  if (head.endsWith('\uFFFD') && !text.includes('\uFFFD'))
+    head = head.slice(0, -1);
+  return `${head}${DIAGNOSTIC_TRUNCATION_MARKER}`;
+}
+
 const DEFAULT_CRASH_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RESPAWNS = 3;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -111,6 +140,8 @@ export class AntigravityProtocolAdapter
   private turnUsage: AgentUsageV2 | undefined;
   private lastJetskiStderrLine: string | null = null;
   private assistantEmittedThisTurn = false;
+  /** Last `agent_response` step folded into this turn's assistant item (#1532). */
+  private assistantStepIndex: number | null = null;
   private providerExtensionSequence = 0;
   private queueAdvanceInFlight = false;
   private readonly items = new Map<string, AgentItemV2>();
@@ -269,6 +300,7 @@ export class AntigravityProtocolAdapter
     this.items.clear();
     this.lastJetskiStderrLine = null;
     this.assistantEmittedThisTurn = false;
+    this.assistantStepIndex = null;
     this.guardrails.noteTurnStart();
 
     const timestamp = nowIso();
@@ -385,6 +417,7 @@ export class AntigravityProtocolAdapter
     this.turnUsage = undefined;
     this.lastJetskiStderrLine = null;
     this.assistantEmittedThisTurn = false;
+    this.assistantStepIndex = null;
     this.guardrails.noteTurnEnd();
 
     this.emitLive({
@@ -563,6 +596,10 @@ export class AntigravityProtocolAdapter
       env: this.buildEnv(),
       spawn: this.spawnFn,
     };
+    // #1534: the child's working directory is the topic's `routingDefaults.cwd`
+    // (a worktree, usually). Log it at spawn so a wrong tree is diagnosable
+    // against `/proc/<pid>/cwd` and agy's own `init.cwd` without a rebuild.
+    logger.debug('spawning agy', { cwd: options.cwd, args });
     const client = new AntigravityStreamClient(options);
     this.client = client;
     this.exitedProcessRootPid = null;
@@ -861,6 +898,11 @@ export class AntigravityProtocolAdapter
       return;
     }
 
+    if (stepType === 'error_message') {
+      if (state === 'DONE') this.handleErrorMessageStep(step, stepIndex);
+      return;
+    }
+
     if (stepType === 'system_message' && state === 'DONE') {
       this.emitProviderExtension(
         {
@@ -896,6 +938,18 @@ export class AntigravityProtocolAdapter
     );
   }
 
+  /**
+   * ADAPTER QUIRK (#1532). `agy` opens a NEW `agent_response` step for every
+   * burst of narration between tool calls, each with its own `step_index` and
+   * its own ACTIVE/DONE pair. Keying the assistant item on the step index
+   * therefore produced one channel row per narration burst — around thirty per
+   * multi-tool turn, most of them empty because a step can go ACTIVE (or DONE)
+   * carrying no text at all. A turn is ONE assistant reply, so the item is
+   * keyed on the turn and its text accumulates across every step; the item is
+   * created lazily on the first non-empty delta so a text-free step can never
+   * materialize an empty row, and it stays `running` until the turn's own
+   * terminal boundary (`result`) completes it exactly once.
+   */
   private handleAgentResponseStep(
     step: Record<string, unknown>,
     state: string | undefined,
@@ -903,47 +957,12 @@ export class AntigravityProtocolAdapter
     turnId: string
   ): void {
     const textDelta = stringField(step.text_delta);
-    const itemId = `${turnId}-assistant-${stepIndex}`;
 
-    if (state === 'ACTIVE' && textDelta !== undefined) {
-      this.ensureItem(itemId, {
-        type: 'assistantMessage',
-        id: itemId,
-        text: '',
-        phase: 'answer',
-        status: 'running',
-      });
-      this.emitDelta(itemId, { text: textDelta });
-      this.assistantEmittedThisTurn = true;
-      return;
-    }
-
-    if (state === 'DONE') {
-      if (textDelta !== undefined) {
-        this.ensureItem(itemId, {
-          type: 'assistantMessage',
-          id: itemId,
-          text: '',
-          phase: 'answer',
-          status: 'running',
-        });
-        this.emitDelta(itemId, { text: textDelta });
-        const item = this.items.get(itemId);
-        this.emitItemUpdated({
-          ...(item ?? {
-            type: 'assistantMessage',
-            id: itemId,
-            text: textDelta,
-            phase: 'answer',
-          }),
-          status: 'completed',
-          completedAt: nowIso(),
-        });
-        this.assistantEmittedThisTurn = true;
-      }
-      const usage = objectField(step.usage);
-      if (usage) {
-        this.accumulateUsage(usage);
+    if (state === 'ACTIVE' || state === 'DONE') {
+      if (textDelta) this.appendAssistantText(turnId, stepIndex, textDelta);
+      if (state === 'DONE') {
+        const usage = objectField(step.usage);
+        if (usage) this.accumulateUsage(usage);
       }
       return;
     }
@@ -951,6 +970,91 @@ export class AntigravityProtocolAdapter
     this.emitProviderExtension(
       { kind: 'unmappedStep', stepType: 'agent_response', state, stepIndex },
       'debug'
+    );
+  }
+
+  /**
+   * Fold one `agent_response` step's text into this turn's single assistant
+   * item. Text from two different steps is separated by exactly one blank
+   * line: agy's per-step deltas are self-contained paragraphs and would
+   * otherwise run into the previous step's last word.
+   *
+   * The seam is topped up to two newlines rather than skipped whenever the
+   * previous chunk already ended in one: a chunk ending in a single `'\n'`
+   * still needs one more to make a blank line, and the earlier "ends with \n
+   * -> append nothing" rule ran those two steps together. Deltas are
+   * append-only, so an existing run of three or more newlines can be left
+   * alone but never trimmed back.
+   */
+  private appendAssistantText(
+    turnId: string,
+    stepIndex: number,
+    textDelta: string
+  ): void {
+    const itemId = assistantItemId(turnId);
+    const existing = this.items.get(itemId);
+    if (!existing) {
+      this.ensureItem(itemId, {
+        type: 'assistantMessage',
+        id: itemId,
+        text: '',
+        phase: 'answer',
+        status: 'running',
+      });
+    }
+    let text = textDelta;
+    if (
+      this.assistantStepIndex !== null &&
+      this.assistantStepIndex !== stepIndex
+    ) {
+      const accumulated = this.items.get(itemId);
+      const sofar =
+        accumulated && accumulated.type === 'assistantMessage'
+          ? accumulated.text
+          : '';
+      if (sofar.trimEnd().length > 0) {
+        // Count the newlines already at the seam and top up to exactly two.
+        const trailing = /\n*$/.exec(sofar)?.[0].length ?? 0;
+        text = `${'\n'.repeat(Math.max(0, 2 - trailing))}${textDelta}`;
+      }
+    }
+    this.assistantStepIndex = stepIndex;
+    // A step boundary that needs no separator and carries no new text would
+    // otherwise emit a delta the bridge drops anyway.
+    if (text.length > 0) this.emitDelta(itemId, { text });
+    this.assistantEmittedThisTurn = true;
+  }
+
+  /**
+   * ADAPTER QUIRK (#1532). `agy` reports a turn-level failure as an
+   * `error_message` step whose text lives in the terminal `result.error`, not
+   * on the step itself. Surface it as a visible diagnostic rather than
+   * dropping it, but never as `agent-error-v2`: that patch is a TERMINAL
+   * boundary for the bridge and the binder, and agy keeps working after one of
+   * these (it emitted three while retrying a quota error). The turn's own
+   * `result` owns the terminal status.
+   */
+  private handleErrorMessageStep(
+    step: Record<string, unknown>,
+    stepIndex: number
+  ): void {
+    const raw =
+      stringField(step.message) ??
+      stringField(step.text) ??
+      stringField(step.text_delta) ??
+      stringField(step.error);
+    // The step's text is whatever agy chose to put there -- a Python traceback
+    // or a raw stderr dump is entirely possible -- and this becomes a durable
+    // channel row. Bound it here, at the adapter boundary, rather than trusting
+    // the provider.
+    const message = raw ? truncateDiagnostic(raw) : undefined;
+    this.emitProviderExtension(
+      {
+        kind: 'errorMessage',
+        stepIndex,
+        ...(message ? { message } : {}),
+      },
+      'normal'
     );
   }
 
