@@ -28,15 +28,16 @@ refresh. Capabilities must describe only implemented behavior.
 
 ## Built-in native transports
 
-| Provider    | Provider id   | Native channel transport                   |
-| ----------- | ------------- | ------------------------------------------ |
-| Claude Code | `claude`      | persistent subprocess over stream JSON     |
-| Codex       | `codex`       | `codex app-server` JSON-RPC                |
-| OpenCode    | `opencode`    | native SDK/events                          |
-| Hermes      | `hermes`      | Responses API/SSE                          |
-| Prime Agent | `prime-agent` | `prime-agent` RPC                          |
-| Pi          | `pi`          | `pi --mode rpc` JSONL                      |
-| Antigravity | `antigravity` | `agy` stream-json NDJSON over stdin/stdout |
+| Provider         | Provider id   | Native channel transport                             |
+| ---------------- | ------------- | ---------------------------------------------------- |
+| Claude Code      | `claude`      | persistent subprocess over stream JSON               |
+| Codex            | `codex`       | `codex app-server` JSON-RPC                          |
+| OpenCode         | `opencode`    | native SDK/events                                    |
+| Hermes           | `hermes`      | Responses API/SSE                                    |
+| Prime Agent      | `prime-agent` | `prime-agent` RPC                                    |
+| Pi               | `pi`          | `pi --mode rpc` JSONL                                |
+| Antigravity      | `antigravity` | `agy` stream-json NDJSON over stdin/stdout           |
+| DeepSeek Harness | `dsh`         | `dsh --profile acp` Agent Client Protocol over stdio |
 
 Prime Agent is a first-class channel provider. Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
 lifecycle, `message_update` text and
@@ -93,6 +94,87 @@ channel capabilities from it.
 
 Antigravity is a first-class channel provider (#1508). Its adapter drives the
 `agy` CLI in headless mode over stream-json (`--input-format stream-json --output-format stream-json -p ''`). It maps `step_update` agent response text deltas to streaming assistant items, tool execution steps to canonical `commandExecution` (for `run_command`), `fileChange` (for `write_to_file`, `replace_file_content`, `multi_replace_file_content`, `sed_file`, `notebook_edit`), and `dynamicToolCall` items with step-index IDs. Cumulative usage is folded across turn steps. It advertises text, tools, command execution, file changes, queueing, interrupt, resume, telemetry, and streaming; unsupported reasoning streaming, approvals, questions, plans, and slash commands remain false. Sessions resume across respawns via `--conversation <id>`.
+
+DeepSeek Harness is a first-class channel provider. Its adapter boots the
+harness's automation-only ACP server (`dsh --profile acp`) and speaks the
+standard [Agent Client Protocol](https://agentclientprotocol.com) over
+newline-delimited JSON-RPC on stdio. That wire is BIDIRECTIONAL in a way no
+other Relay stdio harness is: besides answering Relay's requests and pushing
+`session/update` notifications, the server sends Relay a REQUEST
+(`session/request_permission`) and blocks the agent until Relay answers.
+`server/dsh-acp-client.ts` therefore exposes `respond`/`respondError` next to
+`request`, and every branch of the adapter's peer-request handler answers —
+including the unknown-method one, which replies `-32601` rather than leaving a
+turn wedged.
+
+Lifecycle: `initialize` is the readiness barrier and advertises what the server
+actually mounts (`sessionCapabilities: close/list/resume`,
+`promptCapabilities.image: false`). Relay then opens ONE session per runtime —
+`session/new`, or `session/resume` when a resume id is stored — with the
+Relay-assigned cwd as its workspace. A resume the server refuses does not
+strand the channel: the adapter opens a fresh session and says so on the
+transcript.
+
+**The turn boundary is the `session/prompt` RESPONSE.** The server answers it
+only after agent idle and ordered update delivery, so its `stopReason` is the
+turn outcome: `end_turn` completes, `cancelled` interrupts, and `max_tokens` /
+`max_turn_requests` / `refusal` fail the turn with an operator-facing message.
+Relay does not await that response before resolving `sendMessage` — the binder
+treats send resolution as its delivery boundary, so awaiting a whole turn there
+would hold every message undelivered and stall the queue behind it.
+
+| Native `session/update`                             | Relay item                                                 |
+| --------------------------------------------------- | ---------------------------------------------------------- |
+| `agent_message_chunk`                               | `assistantMessage`, keyed `<turnId>-assistant-<messageId>` |
+| `agent_thought_chunk`                               | `reasoning`, keyed `<turnId>-reasoning-<messageId>`        |
+| `tool_call` (`bash`, `pwsh`, `terminal_bash`)       | `commandExecution`, keyed by `toolCallId`                  |
+| `tool_call` (`write`, `edit`, `str_replace_editor`) | `fileChange`, keyed by `toolCallId`                        |
+| `tool_call` (anything else)                         | `dynamicToolCall` in the `dsh` namespace                   |
+| `tool_call_update`                                  | terminalizes that item; `status: 'failed'` fails it        |
+| `usage_update`                                      | folded into the turn total, published on turn-completed    |
+| `config_option_update`                              | debug provider extension                                   |
+
+Honest capabilities: text, reasoning, tools, command execution, file changes,
+queueing, interrupt, resume, approvals, telemetry, and streaming are true.
+Questions, plans, slash commands, steering, queue cancellation, fork, rollback,
+compaction, and rate limits are false — that is the ACP server's own documented
+non-surface (it omits or rejects `session/load`, deletion, fork, modes,
+commands, plans, terminals, client filesystem operations, and elicitation).
+Three of the trues deserve their reason stated:
+
+- **Interrupt is a real cancel.** `session/cancel` settles the in-flight prompt
+  with `stopReason: 'cancelled'`; nothing is killed and the conversation
+  survives for the next turn.
+- **Resume is a real resume.** `session/resume` reopens a closed session by id
+  with its history intact, so `resumeStateKey` is `dshSessionId` and a
+  transport reconnect continues the same conversation.
+- **Approvals are real.** A permission request becomes a pending approval card;
+  `respondToApproval` answers it with the harness's own `allow-once` /
+  `reject-once` option ids. Only the `once` scope is advertised, because the
+  harness offers one-shot choices and infers no durable grant. An approval left
+  outstanding when the turn ends or the transport dies is answered `cancelled`
+  on the wire before its card is terminalized.
+
+`usage_update` reports context OCCUPANCY (`used` of `size`), not per-turn input
+and output tokens, so Relay publishes the LAST reading as `totalTokens` plus
+`contextWindowSize`/`contextPercent` rather than summing.
+
+The adapter states `DSH_PERMISSION_MODE` on the child env — the ACP composition
+derives BOTH its sandbox mode and its approval policy from that one variable —
+translating Relay's `permissionMode` (`danger-full-access` is the yolo word) and
+letting a named profile override it outright. Credentials are env-only:
+`DEEPSEEK_API_KEY` and `DEEPSEEK_BASE_URL` on the agent profile's `envVars`. A
+missing key is not caught by preflight; it surfaces as a failed turn with the
+provider's own message.
+
+The dsh channel transport is installed-tested with dsh 0.1.2-alpha.4
+(`agentInfo.version` 0.0.1). Real redacted captures are committed under
+`test/fixtures/dsh/` and are the only source of the conformance fixture's
+payloads.
+
+The `dsh` executable is also available as a normal terminal launch, but that
+surface stays a generic PTY: Relay does not parse terminal output or infer
+channel capabilities from it.
 
 The Antigravity channel transport is installed-tested with Antigravity CLI (`agy`) 1.1.23. The `agy` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
 
@@ -212,6 +294,13 @@ the scoped `native-sessions` gateway topic with durable byte cursors (#1426,
 #1428). Adapters never mutate provider stores and never execute resume
 commands themselves. Providers currently covered: `claude`, `codex`,
 `prime-agent`, `pi`, `dsh` (framed-zstd tailer), and `antigravity`.
+
+`dsh` now also has a full channel adapter (above), so a dsh transcript can be
+read here and a live dsh conversation held there. Its state adapter reports NO
+resume argv and `canResumeNative: false` (#1520): no shipped dsh app parses
+`--resume`, so the previously advertised `dsh --resume <id>` was a command that
+fails. Resuming a dsh conversation is the channel adapter's job — it reopens a
+session over ACP with `session/resume`, which needs no argv at all.
 
 ### Read-path performance contract (#1449)
 

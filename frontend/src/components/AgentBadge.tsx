@@ -126,6 +126,22 @@ export function AgentBadge({ agent }: AgentBadgeProps) {
     );
   }
 
+  if (agent === 'dsh') {
+    return (
+      <svg
+        className="agent-badge"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="DeepSeek Harness"
+      >
+        <path
+          fill="currentColor"
+          d="M3 3h8v8H3V3Zm2 2v4h4V5H5Zm8-2h8v8h-8V3Zm2 2v4h4V5h-4ZM3 13h8v8H3v-8Zm2 2v4h4v-4H5Zm8-2h8v8h-8v-8Zm2 2v4h4v-4h-4Z"
+        />
+      </svg>
+    );
+  }
+
   const fallbackLetter = agent ? agent[0]!.toUpperCase() : '?';
   return (
     <span className="agent-badge agent-badge--fallback" aria-label={agent}>

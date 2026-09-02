@@ -19,6 +19,7 @@ test('BUILTIN_FRAMEWORKS contains all first-class providers', () => {
   expect('prime-agent' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('pi' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('antigravity' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('dsh' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -130,6 +131,29 @@ test('prime-agent framework exposes native channels and a generic PTY', () => {
   expect(
     frameworkCapabilitiesWithChannelLane(prime).supportsChannelAgents
   ).toBe(true);
+});
+
+test('dsh framework exposes native channels and a generic PTY', () => {
+  const dsh = BUILTIN_FRAMEWORKS['dsh'];
+  expect(dsh.id).toBe('dsh');
+  expect(dsh.displayName).toBe('DeepSeek Harness');
+  expect(dsh.command).toBe('dsh');
+  // No shipped dsh app parses `--resume`/`--continue`, and permission mode is
+  // an env variable rather than an argv flag.
+  expect(dsh.continueArgs).toEqual([]);
+  expect(dsh.yoloArgs).toEqual([]);
+  expect(dsh.parserType).toBe('generic');
+  expect(dsh.eventSource).toBe('timer');
+  expect(dsh.capabilities).toMatchObject({
+    supportsHooks: false,
+    supportsContinue: false,
+    supportsYolo: false,
+    supportsTelemetry: false,
+    supportsAttachedRuntime: false,
+  });
+  expect(frameworkCapabilitiesWithChannelLane(dsh).supportsChannelAgents).toBe(
+    true
+  );
 });
 
 test('pi framework exposes native channels and a generic PTY', () => {

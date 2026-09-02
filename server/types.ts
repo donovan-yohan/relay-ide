@@ -55,7 +55,8 @@ export type BuiltinFrameworkId =
   | 'hermes'
   | 'prime-agent'
   | 'pi'
-  | 'antigravity';
+  | 'antigravity'
+  | 'dsh';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
@@ -227,6 +228,26 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsContinue: true,
       supportsYolo: true,
       supportsTelemetry: true,
+      supportsAttachedRuntime: false,
+    },
+  },
+  dsh: {
+    id: 'dsh',
+    displayName: 'DeepSeek Harness',
+    command: 'dsh',
+    // No shipped dsh app parses `--resume`/`--continue`: the launcher forwards
+    // unknown tokens to the booted profile's app, which rejects them.
+    continueArgs: [],
+    // Permission mode is an environment variable (`DSH_PERMISSION_MODE`) on
+    // this harness, not an argv flag, so there is no yolo argv to state.
+    yoloArgs: [],
+    parserType: 'generic',
+    eventSource: 'timer',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: false,
+      supportsYolo: false,
+      supportsTelemetry: false,
       supportsAttachedRuntime: false,
     },
   },

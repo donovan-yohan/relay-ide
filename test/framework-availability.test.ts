@@ -58,6 +58,11 @@ const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
     command: 'agy',
     deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   },
+  dsh: {
+    kind: 'command',
+    command: 'dsh',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
   opencode: {
     kind: 'command',
     command: 'opencode',

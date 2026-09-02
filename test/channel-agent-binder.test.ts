@@ -5476,6 +5476,32 @@ describe('channel-agent-binder — roster + availability', () => {
     ).toBe(true);
   });
 
+  it('pins the dsh not-installed reason text on its roster rows', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'dsh' }]);
+    const reason = 'dsh is not installed on this node (not found on PATH).';
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'dsh',
+          displayName: 'DeepSeek Harness',
+          kind: 'framework',
+          available: false,
+          reason,
+          command: 'dsh',
+        },
+      ],
+      knownProviderIds: ['dsh'],
+      agentProfileStore: profiles,
+    });
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({ available: false, reason });
+  });
+
   it.each(CHANNEL_COMMAND_CONTRACTS)(
     'resolves %s command availability against built-in and named-profile PATH',
     async (providerId, command) => {

@@ -22,10 +22,12 @@ import { CodexNativeProtocolAdapter } from './codex-native-adapter.js';
 import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
 import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
 import { AntigravityProtocolAdapter } from './antigravity-adapter.js';
+import { DshProtocolAdapter } from './dsh-adapter.js';
 import {
   ANTIGRAVITY_ENV_DENYLIST,
   CLAUDE_ENV_DENYLIST,
   CODEX_ENV_DENYLIST,
+  DSH_ENV_DENYLIST,
   OPENCODE_ENV_DENYLIST,
   PI_AGENT_ENV_DENYLIST,
   PRIME_AGENT_ENV_DENYLIST,
@@ -34,6 +36,7 @@ import {
   ANTIGRAVITY_CHANNEL_COMMAND,
   CLAUDE_CHANNEL_COMMAND,
   CODEX_CHANNEL_COMMAND,
+  DSH_CHANNEL_COMMAND,
   OPENCODE_CHANNEL_COMMAND,
   PI_AGENT_CHANNEL_COMMAND,
   PRIME_AGENT_CHANNEL_COMMAND,
@@ -398,6 +401,43 @@ export const PROVIDER_DESCRIPTORS = {
     agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
+  dsh: {
+    id: 'dsh',
+    agentType: 'dsh',
+    terminalFrameworkId: 'dsh',
+    launch: {
+      requirement: { kind: 'command', command: DSH_CHANNEL_COMMAND },
+      processEnvDenylist: DSH_ENV_DENYLIST,
+    },
+    bridgedCapabilities: null,
+    supportsChannelAgents: true,
+    mentionableByDefault: true,
+    allowedAsTopicRoutingDefault: true,
+    // The ACP server persists sessions and advertises
+    // `sessionCapabilities.resume`; `session/resume` reopens this id with its
+    // history intact, so a respawn continues the same conversation.
+    resumeStateKey: 'dshSessionId',
+    deliversImages: false,
+    imageRawByteBudget: GENERAL_IMAGE_RAW_BYTE_BUDGET,
+    relayControls: EMPTY_RELAY_CONTROL_CATALOG,
+    // `dsh` is as short as `pi`/`agy` and is matched against the command
+    // basename; `--profile acp` additionally catches a CLI reached through a
+    // node shim, whose basename is `node`.
+    processMatch: {
+      commandLineSubstrings: ['--profile acp'],
+      commandBasenames: ['dsh'],
+    },
+    // Credentials on this lane are env-only (DEEPSEEK_API_KEY); there is no
+    // file heuristic, so the manifest auth probe reports `unknown`.
+    authCredentialPaths: [],
+    // The ACP composition derives both its sandbox mode and approval policy
+    // from DSH_PERMISSION_MODE, and `danger-full-access` is the word that
+    // turns both off; the adapter translates `config.permissionMode` into it.
+    yoloPermissionMode: 'danger-full-access',
+    agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
+    isDefaultOrchestratorProvider: false,
+  },
   opencode: {
     id: 'opencode',
     agentType: 'opencode',
@@ -586,6 +626,7 @@ export const v2Adapters = {
   'prime-agent': () => new PrimeAgentProtocolAdapter(),
   pi: () => new PiAgentProtocolAdapter(),
   antigravity: () => new AntigravityProtocolAdapter(),
+  dsh: () => new DshProtocolAdapter(),
   opencode: () =>
     new LegacyProtocolAdapterV2Bridge(
       new OpenCodeProtocolAdapter(),
