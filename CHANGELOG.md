@@ -20,6 +20,15 @@ workflow.
 
 ### Channel Adapters
 
+#### Fixed
+
+- An `@antigravity` turn that used tools no longer floods the channel with empty
+  messages. Antigravity narrates between tool calls, and each burst was becoming
+  its own channel row — around thirty blank rows on a long turn. A turn is now
+  one reply row whose text accumulates across the whole turn, alongside its tool
+  cards, and Antigravity's own error notices are surfaced as diagnostics instead
+  of being dropped (#1532)
+
 #### Added
 
 - First-class Antigravity (`antigravity`) channel adapter driving the `agy` CLI

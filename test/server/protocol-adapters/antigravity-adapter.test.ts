@@ -332,7 +332,7 @@ describe('AntigravityProtocolAdapter', () => {
   });
 
   // Test 8
-  it('maps p1 tool steps to fileChange, dynamicToolCall and assistant items with step-index ids', async () => {
+  it('maps p1 tool steps to fileChange, dynamicToolCall and one per-turn assistant item', async () => {
     const { adapter, spawns, patches } = harness();
     await connect(adapter, spawns);
 
@@ -540,11 +540,11 @@ describe('AntigravityProtocolAdapter', () => {
     expect((updatedTool4.item as any).tool).toBe('view_file');
     expect((updatedTool4.item as any).result).toBe('2 lines, 10 bytes');
 
-    // Check assistant item (t1-assistant-5)
+    // Check assistant item — ONE per turn, never per agent_response step (#1532)
     const startedAssistant = patches.find(
       (p) =>
         p.type === 'agent-item-started-v2' &&
-        p.item.id === 't1-assistant-5' &&
+        p.item.id === 't1-assistant' &&
         p.item.type === 'assistantMessage'
     );
     expect(startedAssistant).toBeTruthy();
@@ -1013,5 +1013,147 @@ describe('AntigravityProtocolAdapter', () => {
     await expect(
       adapter.sendMessage({ turnId: 't4', content: 'should fail' })
     ).rejects.toThrow('crash-looping');
+  });
+
+  // #1532 — one assistant row per turn, never one per agent_response step
+  it('folds every agent_response step into ONE assistant item and never emits an empty one', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'multi-tool turn' });
+
+    const step = (su: Record<string, unknown>) =>
+      child.serverWrite({
+        event: 'step_update',
+        step_update: {
+          conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+          ...su,
+        },
+      });
+    const command = (stepIndex: number, state: string, cmd: string) =>
+      step({
+        step_index: stepIndex,
+        state,
+        step_type: 'tool',
+        tool_name: 'run_command',
+        tool_info: { name: 'run_command', parameters: { CommandLine: cmd } },
+      });
+
+    step({ step_index: 0, state: 'DONE', step_type: 'user_input' });
+    // Narration burst 1: text arrives ACTIVE, DONE carries only usage.
+    step({
+      step_index: 1,
+      state: 'ACTIVE',
+      step_type: 'agent_response',
+      text_delta: 'Checking the tests.',
+    });
+    step({
+      step_index: 1,
+      state: 'DONE',
+      step_type: 'agent_response',
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+    });
+    command(2, 'ACTIVE', 'npm test');
+    command(2, 'DONE', 'npm test');
+    // Narration burst 2: text arrives on DONE.
+    step({
+      step_index: 3,
+      state: 'DONE',
+      step_type: 'agent_response',
+      text_delta: 'They passed.',
+    });
+    command(4, 'ACTIVE', 'git status');
+    command(4, 'DONE', 'git status');
+    // A text-free narration step must open no row at all.
+    step({ step_index: 5, state: 'ACTIVE', step_type: 'agent_response' });
+    step({ step_index: 5, state: 'DONE', step_type: 'agent_response' });
+
+    child.serverWrite({
+      event: 'result',
+      result: {
+        conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+        status: 'SUCCESS',
+        response: 'Checking the tests.\n\nThey passed.',
+      },
+    });
+
+    const assistantStarted = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(assistantStarted.map((p) => (p as any).item.id)).toEqual([
+      't1-assistant',
+    ]);
+
+    const assistantTerminal = patches.filter(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'assistantMessage' &&
+        p.item.status === 'completed'
+    ) as Array<Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }>>;
+    expect(assistantTerminal).toHaveLength(1);
+    expect((assistantTerminal[0]!.item as any).id).toBe('t1-assistant');
+    expect((assistantTerminal[0]!.item as any).text).toBe(
+      'Checking the tests.\n\nThey passed.'
+    );
+    // Never an empty completed assistant row (#1532).
+    for (const patch of assistantTerminal) {
+      expect((patch.item as any).text.trim().length).toBeGreaterThan(0);
+    }
+
+    const tools = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    );
+    expect(tools.map((p) => (p as any).item.id)).toEqual([
+      't1-tool-2',
+      't1-tool-4',
+    ]);
+    expect(
+      patches.filter((p) => p.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+  });
+
+  // #1532 — agy error_message steps are diagnostics, not turn boundaries
+  it('surfaces an agy error_message step without terminalizing the turn', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'quota probe' });
+
+    child.serverWrite({
+      event: 'step_update',
+      step_update: {
+        conversation_id: '7b6b76fd-d4d5-4863-911c-5b21efad715e',
+        step_index: 2,
+        state: 'DONE',
+        step_type: 'error_message',
+        message: 'Individual quota reached.',
+      },
+    });
+
+    const diagnostic = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension' &&
+        (p.item as any).payload?.kind === 'errorMessage'
+    );
+    expect(diagnostic).toBeTruthy();
+    expect((diagnostic as any).item.payload.message).toBe(
+      'Individual quota reached.'
+    );
+    // agy keeps working after an error_message; only `result` ends the turn.
+    expect(patches.some((p) => p.type === 'agent-error-v2')).toBe(false);
+    expect(patches.some((p) => p.type === 'agent-turn-completed-v2')).toBe(
+      false
+    );
+    expect(
+      patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension' &&
+          (p.item as any).payload?.kind === 'unmappedStep'
+      )
+    ).toBe(false);
   });
 });

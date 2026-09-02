@@ -78,6 +78,13 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
 const QUEUE_ABANDONED_MESSAGE =
   'Antigravity session ended before this queued message was sent.';
 
+/**
+ * One assistant item per TURN, never per `agent_response` step (#1532).
+ */
+function assistantItemId(turnId: string): string {
+  return `${turnId}-assistant`;
+}
+
 const DEFAULT_CRASH_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RESPAWNS = 3;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -111,6 +118,8 @@ export class AntigravityProtocolAdapter
   private turnUsage: AgentUsageV2 | undefined;
   private lastJetskiStderrLine: string | null = null;
   private assistantEmittedThisTurn = false;
+  /** Last `agent_response` step folded into this turn's assistant item (#1532). */
+  private assistantStepIndex: number | null = null;
   private providerExtensionSequence = 0;
   private queueAdvanceInFlight = false;
   private readonly items = new Map<string, AgentItemV2>();
@@ -269,6 +278,7 @@ export class AntigravityProtocolAdapter
     this.items.clear();
     this.lastJetskiStderrLine = null;
     this.assistantEmittedThisTurn = false;
+    this.assistantStepIndex = null;
     this.guardrails.noteTurnStart();
 
     const timestamp = nowIso();
@@ -385,6 +395,7 @@ export class AntigravityProtocolAdapter
     this.turnUsage = undefined;
     this.lastJetskiStderrLine = null;
     this.assistantEmittedThisTurn = false;
+    this.assistantStepIndex = null;
     this.guardrails.noteTurnEnd();
 
     this.emitLive({
@@ -861,6 +872,11 @@ export class AntigravityProtocolAdapter
       return;
     }
 
+    if (stepType === 'error_message') {
+      if (state === 'DONE') this.handleErrorMessageStep(step, stepIndex);
+      return;
+    }
+
     if (stepType === 'system_message' && state === 'DONE') {
       this.emitProviderExtension(
         {
@@ -896,6 +912,18 @@ export class AntigravityProtocolAdapter
     );
   }
 
+  /**
+   * ADAPTER QUIRK (#1532). `agy` opens a NEW `agent_response` step for every
+   * burst of narration between tool calls, each with its own `step_index` and
+   * its own ACTIVE/DONE pair. Keying the assistant item on the step index
+   * therefore produced one channel row per narration burst — around thirty per
+   * multi-tool turn, most of them empty because a step can go ACTIVE (or DONE)
+   * carrying no text at all. A turn is ONE assistant reply, so the item is
+   * keyed on the turn and its text accumulates across every step; the item is
+   * created lazily on the first non-empty delta so a text-free step can never
+   * materialize an empty row, and it stays `running` until the turn's own
+   * terminal boundary (`result`) completes it exactly once.
+   */
   private handleAgentResponseStep(
     step: Record<string, unknown>,
     state: string | undefined,
@@ -903,47 +931,12 @@ export class AntigravityProtocolAdapter
     turnId: string
   ): void {
     const textDelta = stringField(step.text_delta);
-    const itemId = `${turnId}-assistant-${stepIndex}`;
 
-    if (state === 'ACTIVE' && textDelta !== undefined) {
-      this.ensureItem(itemId, {
-        type: 'assistantMessage',
-        id: itemId,
-        text: '',
-        phase: 'answer',
-        status: 'running',
-      });
-      this.emitDelta(itemId, { text: textDelta });
-      this.assistantEmittedThisTurn = true;
-      return;
-    }
-
-    if (state === 'DONE') {
-      if (textDelta !== undefined) {
-        this.ensureItem(itemId, {
-          type: 'assistantMessage',
-          id: itemId,
-          text: '',
-          phase: 'answer',
-          status: 'running',
-        });
-        this.emitDelta(itemId, { text: textDelta });
-        const item = this.items.get(itemId);
-        this.emitItemUpdated({
-          ...(item ?? {
-            type: 'assistantMessage',
-            id: itemId,
-            text: textDelta,
-            phase: 'answer',
-          }),
-          status: 'completed',
-          completedAt: nowIso(),
-        });
-        this.assistantEmittedThisTurn = true;
-      }
-      const usage = objectField(step.usage);
-      if (usage) {
-        this.accumulateUsage(usage);
+    if (state === 'ACTIVE' || state === 'DONE') {
+      if (textDelta) this.appendAssistantText(turnId, stepIndex, textDelta);
+      if (state === 'DONE') {
+        const usage = objectField(step.usage);
+        if (usage) this.accumulateUsage(usage);
       }
       return;
     }
@@ -951,6 +944,73 @@ export class AntigravityProtocolAdapter
     this.emitProviderExtension(
       { kind: 'unmappedStep', stepType: 'agent_response', state, stepIndex },
       'debug'
+    );
+  }
+
+  /**
+   * Fold one `agent_response` step's text into this turn's single assistant
+   * item. Text from two different steps is separated by a blank line: agy's
+   * per-step deltas are a self-contained paragraph and would otherwise run
+   * into the previous step's last word.
+   */
+  private appendAssistantText(
+    turnId: string,
+    stepIndex: number,
+    textDelta: string
+  ): void {
+    const itemId = assistantItemId(turnId);
+    const existing = this.items.get(itemId);
+    if (!existing) {
+      this.ensureItem(itemId, {
+        type: 'assistantMessage',
+        id: itemId,
+        text: '',
+        phase: 'answer',
+        status: 'running',
+      });
+    }
+    let text = textDelta;
+    if (
+      this.assistantStepIndex !== null &&
+      this.assistantStepIndex !== stepIndex
+    ) {
+      const accumulated = this.items.get(itemId);
+      const sofar =
+        accumulated && accumulated.type === 'assistantMessage'
+          ? accumulated.text
+          : '';
+      if (sofar && !sofar.endsWith('\n')) text = `\n\n${textDelta}`;
+    }
+    this.assistantStepIndex = stepIndex;
+    this.emitDelta(itemId, { text });
+    this.assistantEmittedThisTurn = true;
+  }
+
+  /**
+   * ADAPTER QUIRK (#1532). `agy` reports a turn-level failure as an
+   * `error_message` step whose text lives in the terminal `result.error`, not
+   * on the step itself. Surface it as a visible diagnostic rather than
+   * dropping it, but never as `agent-error-v2`: that patch is a TERMINAL
+   * boundary for the bridge and the binder, and agy keeps working after one of
+   * these (it emitted three while retrying a quota error). The turn's own
+   * `result` owns the terminal status.
+   */
+  private handleErrorMessageStep(
+    step: Record<string, unknown>,
+    stepIndex: number
+  ): void {
+    const message =
+      stringField(step.message) ??
+      stringField(step.text) ??
+      stringField(step.text_delta) ??
+      stringField(step.error);
+    this.emitProviderExtension(
+      {
+        kind: 'errorMessage',
+        stepIndex,
+        ...(message ? { message } : {}),
+      },
+      'normal'
     );
   }
 
