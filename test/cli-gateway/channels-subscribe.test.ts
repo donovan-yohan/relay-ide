@@ -364,4 +364,294 @@ describe('channels.subscribe CLI gateway command', () => {
       server.close();
     }
   });
+
+  it('transparently resumes from durableSeq on retryable closed frame, emitting resumed frame and reconnecting', async () => {
+    const urls: string[] = [];
+    const server = http.createServer((req, res) => {
+      urls.push(req.url ?? '');
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      if (urls.length === 1) {
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 4 })}\n`
+        );
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 5, payload: { type: 'channel-message-created-v1' } })}\n`
+        );
+        res.end(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 5, reason: 'backpressure', retryable: true })}\n`
+        );
+      } else {
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 5 })}\n`
+        );
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:03.000Z', durableSeq: 6, payload: { type: 'channel-message-completed-v1' } })}\n`
+        );
+        res.end(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:04.000Z', durableSeq: 6, reason: 'normal', retryable: false })}\n`
+        );
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    try {
+      const stdout = await runCli(
+        [
+          'v1',
+          'channels',
+          'subscribe',
+          '--channel-id',
+          'topic:test',
+          '--after-seq',
+          '4',
+          '--json',
+        ],
+        {
+          ...process.env,
+          RELAY_IDE_PORT: String(address.port),
+          RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+          RELAY_IDE_BROWSER_TOKEN: '',
+        }
+      );
+      const frames = stdout
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).data);
+
+      expect(frames.map((f) => f.frame)).toEqual([
+        'open',
+        'event',
+        'resumed',
+        'open',
+        'event',
+        'closed',
+      ]);
+      expect(frames[2]).toMatchObject({
+        schemaVersion: 1,
+        frame: 'resumed',
+        channelId: 'topic:test',
+        fromSeq: 5,
+        durableSeq: 5,
+      });
+      expect(urls).toHaveLength(2);
+      expect(urls[0]).toBe('/channels/topic%3Atest/subscribe?afterSeq=4');
+      expect(urls[1]).toBe('/channels/topic%3Atest/subscribe?afterSeq=5');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('honors --max-events budget across transparent reconnects', async () => {
+    let requests = 0;
+    const server = http.createServer((_req, res) => {
+      requests += 1;
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      if (requests === 1) {
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 0 })}\n`
+        );
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 1, payload: { type: 'channel-message-created-v1' } })}\n`
+        );
+        res.end(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 1, reason: 'backpressure', retryable: true })}\n`
+        );
+      } else {
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 1 })}\n`
+        );
+        res.write(
+          `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:03.000Z', durableSeq: 2, payload: { type: 'channel-message-completed-v1' } })}\n`
+        );
+        // Do not close immediately; client must terminate cleanly at maxEvents
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    try {
+      const stdout = await runCli(
+        [
+          'v1',
+          'channels',
+          'subscribe',
+          '--channel-id',
+          'topic:test',
+          '--max-events',
+          '2',
+          '--json',
+        ],
+        {
+          ...process.env,
+          RELAY_IDE_PORT: String(address.port),
+          RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+          RELAY_IDE_BROWSER_TOKEN: '',
+        }
+      );
+      const frames = stdout
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).data);
+
+      expect(frames.map((f) => f.frame)).toEqual([
+        'open',
+        'event',
+        'resumed',
+        'open',
+        'event',
+      ]);
+      const dataEvents = frames.filter((f) => f.frame === 'event');
+      expect(dataEvents).toHaveLength(2);
+      expect(requests).toBe(2);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('excludes heartbeat and resync control events from --max-events budget', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 0 })}\n`
+      );
+      // Heartbeat event: should not count towards maxEvents
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 0, payload: { type: 'channel-heartbeat-v1' } })}\n`
+      );
+      // Resync required event: should not count towards maxEvents
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 0, payload: { type: 'channel-resync-required-v1', channelId: 'topic:test', timestamp: '2026-08-11T00:00:02.000Z', latestSeq: 0 } })}\n`
+      );
+      // Substantive message event 1: counts
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 3, occurredAt: '2026-08-11T00:00:03.000Z', durableSeq: 1, payload: { type: 'channel-message-created-v1' } })}\n`
+      );
+      // Substantive message event 2: counts and completes budget of 2
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 4, occurredAt: '2026-08-11T00:00:04.000Z', durableSeq: 2, payload: { type: 'channel-message-completed-v1' } })}\n`
+      );
+      // Extra message event: should not be consumed
+      res.write(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 5, occurredAt: '2026-08-11T00:00:05.000Z', durableSeq: 3, payload: { type: 'channel-message-created-v1' } })}\n`
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    try {
+      const stdout = await runCli(
+        [
+          'v1',
+          'channels',
+          'subscribe',
+          '--channel-id',
+          'topic:test',
+          '--max-events',
+          '2',
+          '--json',
+        ],
+        {
+          ...process.env,
+          RELAY_IDE_PORT: String(address.port),
+          RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+          RELAY_IDE_BROWSER_TOKEN: '',
+        }
+      );
+      const frames = stdout
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).data);
+
+      expect(frames.map((f) => f.frame)).toEqual([
+        'open',
+        'event',
+        'event',
+        'event',
+        'event',
+      ]);
+      const eventTypes = frames
+        .filter((f) => f.frame === 'event')
+        .map((f) => f.payload?.type);
+      expect(eventTypes).toEqual([
+        'channel-heartbeat-v1',
+        'channel-resync-required-v1',
+        'channel-message-created-v1',
+        'channel-message-completed-v1',
+      ]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('restores process signal listeners to baseline after subscribe command exits', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.end(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 0 })}\n${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 0, reason: 'normal', retryable: false })}\n`
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    try {
+      const checkScript = `
+        import { spawn } from 'node:child_process';
+        const port = '${address.port}';
+        const initialSigint = process.listenerCount('SIGINT');
+        const initialSigterm = process.listenerCount('SIGTERM');
+        const child = spawn(process.execPath, [
+          '${RELAY_BIN}',
+          'v1',
+          'channels',
+          'subscribe',
+          '--channel-id',
+          'topic:test',
+          '--json'
+        ], {
+          env: {
+            ...process.env,
+            RELAY_IDE_PORT: port,
+            RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+            RELAY_IDE_BROWSER_TOKEN: '',
+          },
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        child.on('close', (code) => {
+          const finalSigint = process.listenerCount('SIGINT');
+          const finalSigterm = process.listenerCount('SIGTERM');
+          if (code === 0 && finalSigint === initialSigint && finalSigterm === initialSigterm) {
+            process.stdout.write('CLEAN_SIGNALS');
+          } else {
+            process.exit(1);
+          }
+        });
+      `;
+      const out = await new Promise<string>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          ['--input-type=module', '-e', checkScript],
+          (err, stdout) => {
+            if (err) reject(err);
+            else resolve(stdout);
+          }
+        );
+      });
+      expect(out).toBe('CLEAN_SIGNALS');
+    } finally {
+      server.close();
+    }
+  });
 });

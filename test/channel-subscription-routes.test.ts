@@ -39,6 +39,9 @@ async function listen(input: {
   onUnsubscribe?: () => void;
   heartbeatMs?: number;
   drainTimeoutMs?: number;
+  writableSoftLimitBytes?: number;
+  writableLowWatermarkBytes?: number;
+  writableHardLimitBytes?: number;
   writeResponse?: (res: express.Response, data: string) => boolean;
   hub?: ChannelHub;
   /** #1455 membership oracle. Defaults to "everyone is a member" so the
@@ -84,6 +87,15 @@ async function listen(input: {
       heartbeatMs: input.heartbeatMs ?? 60_000,
       ...(input.drainTimeoutMs !== undefined
         ? { drainTimeoutMs: input.drainTimeoutMs }
+        : {}),
+      ...(input.writableSoftLimitBytes !== undefined
+        ? { writableSoftLimitBytes: input.writableSoftLimitBytes }
+        : {}),
+      ...(input.writableLowWatermarkBytes !== undefined
+        ? { writableLowWatermarkBytes: input.writableLowWatermarkBytes }
+        : {}),
+      ...(input.writableHardLimitBytes !== undefined
+        ? { writableHardLimitBytes: input.writableHardLimitBytes }
         : {}),
       ...(input.writeResponse ? { writeResponse: input.writeResponse } : {}),
       ...(input.isStillAuthorized
@@ -338,9 +350,7 @@ describe('channel subscription route', () => {
       frames[1].payload.messages.every(
         (message: ChannelMessage) => message.seq > 4
       )
-    ).toBe(
-      true
-    );
+    ).toBe(true);
   });
 
   it('treats explicit false booleans as the exact unfiltered stream', async () => {
@@ -832,7 +842,10 @@ describe('channel subscription route', () => {
           messages: [{ id: 'chm:fresh', seq: 5 } as unknown as ChannelMessage],
           stateReplacements: [
             {
-              message: { id: 'chm:resync', seq: 3 } as unknown as ChannelMessage,
+              message: {
+                id: 'chm:resync',
+                seq: 3,
+              } as unknown as ChannelMessage,
               inFlight: { messageId: 'chm:resync', deltaIndex: 1 },
             },
           ],
@@ -1115,6 +1128,359 @@ describe('channel subscription route', () => {
     expect(frames).toMatchObject([
       {
         schemaVersion: 1,
+        frame: 'closed',
+        reason: 'backpressure',
+        retryable: true,
+      },
+    ]);
+  });
+
+  it('drops ephemeral deltas when send queue exceeds soft limit, keeps durable frames, and emits channel-resync-required on drain', async () => {
+    let fakeBuffered = 0;
+    const port = await listen({
+      channelIds: ['topic:a'],
+      writableSoftLimitBytes: 100,
+      writableLowWatermarkBytes: 50,
+      writableHardLimitBytes: 1000,
+      writeResponse: (res, data) => {
+        Object.defineProperty(res, 'writableLength', {
+          get: () => fakeBuffered,
+          configurable: true,
+        });
+        return res.write(data);
+      },
+      subscribe: (sink) => {
+        // Initial durable created event
+        sink.send({
+          type: 'channel-message-created-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:00.000Z',
+          message: {
+            schemaVersion: 1,
+            channelId: 'topic:a',
+            id: 'chm:1',
+            seq: 1,
+            kind: 'message',
+            status: 'streaming',
+            sender: { kind: 'agent', id: 'agent:one' },
+            body: { text: 'start', format: 'markdown' },
+            threadId: null,
+            parentMessageId: null,
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:00.000Z',
+          } as ChannelMessage,
+        });
+
+        // Push send buffer above soft limit (100)
+        fakeBuffered = 150;
+
+        // Ephemeral deltas while over soft limit -> dropped!
+        sink.send({
+          type: 'channel-message-delta-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:01.000Z',
+          messageId: 'chm:1',
+          deltaIndex: 1,
+          delta: { text: 'delta-1-dropped' },
+        });
+        sink.send({
+          type: 'channel-message-delta-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:02.000Z',
+          messageId: 'chm:1',
+          deltaIndex: 2,
+          delta: { text: 'delta-2-dropped' },
+        });
+
+        // Durable completed frame -> NOT dropped!
+        sink.send({
+          type: 'channel-message-completed-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:03.000Z',
+          message: {
+            schemaVersion: 1,
+            channelId: 'topic:a',
+            id: 'chm:1',
+            seq: 1,
+            kind: 'message',
+            status: 'complete',
+            sender: { kind: 'agent', id: 'agent:one' },
+            body: { text: 'completed message text', format: 'markdown' },
+            threadId: null,
+            parentMessageId: null,
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:03.000Z',
+          } as ChannelMessage,
+        });
+
+        // Drain below low watermark (50)
+        fakeBuffered = 10;
+
+        // Next event triggers resync emission before sending
+        sink.send({
+          type: 'channel-message-created-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:04.000Z',
+          message: {
+            schemaVersion: 1,
+            channelId: 'topic:a',
+            id: 'chm:2',
+            seq: 2,
+            kind: 'message',
+            status: 'complete',
+            sender: { kind: 'agent', id: 'agent:one' },
+            body: { text: 'next', format: 'markdown' },
+            threadId: null,
+            parentMessageId: null,
+            createdAt: '2026-08-11T00:00:04.000Z',
+            updatedAt: '2026-08-11T00:00:04.000Z',
+          } as ChannelMessage,
+        });
+
+        sink.close({ code: 'transport-closed' });
+      },
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    const eventTypes = frames
+      .filter((f) => f.frame === 'event')
+      .map((f) => f.payload.type);
+
+    expect(eventTypes).toEqual([
+      'channel-message-created-v1',
+      'channel-message-completed-v1',
+      'channel-resync-required-v1',
+      'channel-message-created-v1',
+    ]);
+    expect(
+      frames.some((f) => f.payload?.type === 'channel-message-delta-v1')
+    ).toBe(false);
+    expect(JSON.stringify(frames)).not.toContain('delta-1-dropped');
+    expect(JSON.stringify(frames)).not.toContain('delta-2-dropped');
+  });
+
+  it('closes with backpressure when durable frames alone exceed the hard limit', async () => {
+    let fakeBuffered = 0;
+    const port = await listen({
+      channelIds: ['topic:a'],
+      writableSoftLimitBytes: 100,
+      writableHardLimitBytes: 500,
+      writeResponse: (res, data) => {
+        Object.defineProperty(res, 'writableLength', {
+          get: () => fakeBuffered,
+          configurable: true,
+        });
+        return res.write(data);
+      },
+      subscribe: (sink) => {
+        fakeBuffered = 600; // Above hard limit
+        sink.send({
+          type: 'channel-message-created-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:00.000Z',
+          message: {
+            schemaVersion: 1,
+            channelId: 'topic:a',
+            id: 'chm:1',
+            seq: 1,
+            kind: 'message',
+            status: 'complete',
+            sender: { kind: 'human', id: 'human:one' },
+            body: { text: 'overflow', format: 'markdown' },
+            threadId: null,
+            parentMessageId: null,
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:00.000Z',
+          } as ChannelMessage,
+        });
+      },
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    expect(frames).toMatchObject([
+      { frame: 'open' },
+      {
+        frame: 'closed',
+        reason: 'backpressure',
+        retryable: true,
+      },
+    ]);
+  });
+
+  it('suppresses heartbeats while the stream is above soft limit or lagging', async () => {
+    let fakeBuffered = 0;
+    let registeredSink: ChannelEventSink | undefined;
+    const port = await listen({
+      channelIds: ['topic:a'],
+      heartbeatMs: 20,
+      writableSoftLimitBytes: 100,
+      writableLowWatermarkBytes: 50,
+      writableHardLimitBytes: 500,
+      writeResponse: (res, data) => {
+        Object.defineProperty(res, 'writableLength', {
+          get: () => fakeBuffered,
+          configurable: true,
+        });
+        return res.write(data);
+      },
+      subscribe: (sink) => {
+        registeredSink = sink;
+      },
+    });
+
+    const abortController = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      {
+        headers: { 'x-relay-cli-gateway': 'v1' },
+        signal: abortController.signal,
+      }
+    );
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('missing reader');
+    const decoder = new TextDecoder();
+
+    // Read open frame
+    const first = await reader.read();
+    expect(decoder.decode(first.value)).toContain('"frame":"open"');
+
+    // Simulate soft-limit exceeded & lagging
+    fakeBuffered = 150;
+    registeredSink?.send({
+      type: 'channel-message-delta-v1',
+      channelId: 'topic:a',
+      timestamp: '2026-08-11T00:00:01.000Z',
+      messageId: 'chm:1',
+      deltaIndex: 0,
+      delta: { text: 'dropped' },
+    });
+
+    // Wait for what would have been several heartbeats (20ms each)
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Drain below low watermark
+    fakeBuffered = 20;
+
+    // Send next message to trigger resync and complete
+    registeredSink?.send({
+      type: 'channel-message-created-v1',
+      channelId: 'topic:a',
+      timestamp: '2026-08-11T00:00:02.000Z',
+      message: {
+        schemaVersion: 1,
+        channelId: 'topic:a',
+        id: 'chm:2',
+        seq: 2,
+        kind: 'message',
+        status: 'complete',
+        sender: { kind: 'agent', id: 'agent:one' },
+        body: { text: 'after drain', format: 'markdown' },
+        threadId: null,
+        parentMessageId: null,
+        createdAt: '2026-08-11T00:00:02.000Z',
+        updatedAt: '2026-08-11T00:00:02.000Z',
+      } as ChannelMessage,
+    });
+    registeredSink?.close({ code: 'transport-closed' });
+
+    let remaining = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      remaining += decoder.decode(value);
+    }
+
+    const lines = remaining
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const heartbeatFrames = lines.filter(
+      (f) => f.payload?.type === 'channel-heartbeat-v1'
+    );
+    expect(heartbeatFrames).toHaveLength(0);
+    expect(
+      lines.some((f) => f.payload?.type === 'channel-resync-required-v1')
+    ).toBe(true);
+  });
+
+  it('closes with backpressure if channel-resync-required-v1 cannot be delivered after shedding', async () => {
+    let fakeBuffered = 0;
+    const port = await listen({
+      channelIds: ['topic:a'],
+      writableSoftLimitBytes: 100,
+      writableLowWatermarkBytes: 50,
+      writableHardLimitBytes: 300,
+      writeResponse: (res, data) => {
+        Object.defineProperty(res, 'writableLength', {
+          get: () => fakeBuffered,
+          configurable: true,
+        });
+        return res.write(data);
+      },
+      subscribe: (sink) => {
+        fakeBuffered = 150;
+        // Shed delta
+        sink.send({
+          type: 'channel-message-delta-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:01.000Z',
+          messageId: 'chm:1',
+          deltaIndex: 0,
+          delta: { text: 'dropped' },
+        });
+        // Exceed hard limit when resync is attempted
+        fakeBuffered = 400;
+        sink.send({
+          type: 'channel-message-created-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:02.000Z',
+          message: {
+            schemaVersion: 1,
+            channelId: 'topic:a',
+            id: 'chm:2',
+            seq: 2,
+            kind: 'message',
+            status: 'complete',
+            sender: { kind: 'agent', id: 'agent:one' },
+            body: { text: 'hard limit hit', format: 'markdown' },
+            threadId: null,
+            parentMessageId: null,
+            createdAt: '2026-08-11T00:00:02.000Z',
+            updatedAt: '2026-08-11T00:00:02.000Z',
+          } as ChannelMessage,
+        });
+      },
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    expect(frames).toMatchObject([
+      { frame: 'open' },
+      {
         frame: 'closed',
         reason: 'backpressure',
         retryable: true,
