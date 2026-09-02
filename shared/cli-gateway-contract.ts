@@ -3792,6 +3792,7 @@ const channelDeliveryReceiptSchema: RelayJsonSchema = {
         'runtime_unavailable',
         'binding_failed',
         'watchdog_force_drain',
+        'turn_ceiling',
         'send_rejected',
         'send_error',
         'runtime_ended',

@@ -1443,6 +1443,8 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
   };
   readonly sendCalls: string[] = [];
   readonly sendInputs: AgentSendMessageInputV2[] = [];
+  /** Recorded, never terminalized: a real interrupt is an async round-trip. */
+  readonly interruptCalls: string[] = [];
   private _status: AdapterStatus = 'disconnected';
   private sid = 'scripted';
   private rejected = false;
@@ -1466,7 +1468,9 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
   }
   async reconnect(): Promise<void> {}
   async resumeSession(): Promise<void> {}
-  async interrupt(_input: AgentInterruptInputV2): Promise<void> {}
+  async interrupt(input: AgentInterruptInputV2): Promise<void> {
+    this.interruptCalls.push(input.turnId ?? this.lastTurnId ?? '');
+  }
   async respondToApproval(): Promise<void> {}
   async respondToInput(): Promise<void> {}
 
@@ -1762,6 +1766,137 @@ class ApprovalAdapter extends BaseProtocolAdapterV2 {
     });
     this.activeTurn = null;
     this.pendingApprovalId = null;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'completed',
+    });
+  }
+}
+
+// ── heartbeat adapter (#1541 inactivity watchdog) ────────────────────────────
+// Models a long implementation turn: the runtime keeps emitting tool items and
+// deltas for as long as the work takes, then finishes. Nothing here is "stuck",
+// so a watchdog that measured turn wall-clock killed it and one that measures
+// silence must not. `complete()` ends the turn the way a real provider does.
+class HeartbeatAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    queue: false,
+    interrupt: true,
+    approvals: true,
+    streaming: true,
+  };
+  readonly sendCalls: string[] = [];
+  readonly interruptCalls: string[] = [];
+  beats = 0;
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'heartbeat';
+  private activeTurn: string | null = null;
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(
+    readonly agentType: string,
+    private readonly beatMs: number
+  ) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this.stopBeating();
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async interrupt(input: AgentInterruptInputV2): Promise<void> {
+    this.interruptCalls.push(input.turnId ?? this.activeTurn ?? '');
+  }
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    this.activeTurn = input.turnId;
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `u-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: { type: 'assistantMessage', id: `a-${input.turnId}`, text: '' },
+    });
+    this.timer = setInterval(() => this.beat(), this.beatMs);
+    this.timer.unref?.();
+  }
+
+  private beat(): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.beats += 1;
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId: `a-${turnId}`,
+      delta: { text: '.' },
+    });
+  }
+
+  private stopBeating(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** Emit a delta labelled with ANY turn id — used to replay a finished turn. */
+  emitDeltaFor(turnId: string): void {
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId: `a-${turnId}`,
+      delta: { text: 'stale' },
+    });
+  }
+
+  complete(text = 'long job done'): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.stopBeating();
+    this.activeTurn = null;
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: `a-${turnId}`,
+        text,
+        status: 'completed',
+      },
+    });
     this.emitPatch({
       type: 'agent-turn-completed-v2',
       sessionId: this.sid,
@@ -2490,6 +2625,7 @@ function makeBinder(cfg: {
   knownProviderIds: string[];
   topicStore?: WorkspaceTopicStore | null;
   watchdogMs?: number;
+  turnCeilingMs?: number;
   presenceSweepMs?: number;
   throwOnCreate?: boolean;
   createError?: unknown;
@@ -2530,6 +2666,9 @@ function makeBinder(cfg: {
     port: 0,
     configDir: '/tmp',
     ...(cfg.watchdogMs !== undefined ? { watchdogMs: cfg.watchdogMs } : {}),
+    ...(cfg.turnCeilingMs !== undefined
+      ? { turnCeilingMs: cfg.turnCeilingMs }
+      : {}),
     ...(cfg.presenceSweepMs !== undefined
       ? { presenceSweepMs: cfg.presenceSweepMs }
       : {}),
@@ -5908,6 +6047,141 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     expect(adapter.sendCalls).toHaveLength(2);
   });
 
+  it('never drains a turn that keeps emitting, however long it runs (#1541)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 10),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock long job', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    // Four full inactivity windows of steady activity. The old wall-clock
+    // watchdog force-drained this turn at the first one and flipped the run to
+    // `failed` while the provider carried on working (#1541).
+    await waitFor(() => adapter.beats >= 24, 4000);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(false);
+    expect(adapter.interruptCalls).toEqual([]);
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('working');
+
+    adapter.complete();
+    await waitFor(() => store.getAsyncRun(run.id)?.state === 'completed', 4000);
+    expect(store.getAsyncRun(run.id)).toMatchObject({
+      state: 'completed',
+      targets: [
+        { targetId: builtInAgentProfileId('mock'), state: 'completed' },
+      ],
+    });
+  });
+
+  it('drains a SILENT turn with an interrupt and a system row (#1541)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new ScriptedAdapter(t, { mode: 'stall' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 25,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock stuck', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    await waitFor(
+      () =>
+        systemRows(store).some((m) => m.body.text.includes('force-drained')),
+      4000
+    );
+    // The runtime is stopped, not abandoned: the drain interrupts the turn it
+    // is about to call failed, so the run state cannot outrun the provider.
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    const drainRow = systemRows(store).find((m) =>
+      m.body.text.includes('force-drained')
+    )!;
+    expect(drainRow.body.text).toContain('sent nothing for 25 ms');
+    const wd = collectReceipts(hub, CH).find(
+      (r) => r.state === 'expired_watchdog'
+    )!;
+    expect(wd.reasonCode).toBe('watchdog_force_drain');
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('failed');
+  });
+
+  it('a stale patch from a FINISHED turn never extends a silent turn (#1541)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000), // never beats on its own
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    post(store, binder, '@mock first', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.complete('first done');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const finishedTurnId = adapter.sendCalls[0]!;
+
+    // A second turn opens and then says nothing at all, while the runtime keeps
+    // echoing the FINISHED turn (a real provider replays late items, and the
+    // exact-turn tombstone keeps that id resolvable for a minute). Liveness on
+    // a turn that already ended is not liveness on this one.
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() => adapter.sendCalls.length === 2);
+    const stale = setInterval(() => adapter.emitDeltaFor(finishedTurnId), 15);
+    try {
+      await waitFor(
+        () =>
+          systemRows(store).some((m) => m.body.text.includes('force-drained')),
+        4000
+      );
+    } finally {
+      clearInterval(stale);
+    }
+    // The drain hit the SILENT second turn, on schedule.
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[1]]);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
+  });
+
+  it('interrupts a busy turn that reaches the hard ceiling (#1541)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 5),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      // The turn never goes quiet, so the inactivity watchdog never fires: the
+      // ceiling is the only bound left, which is exactly why it exists.
+      watchdogMs: 10_000,
+      turnCeilingMs: 60,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock forever', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    await waitFor(
+      () => systemRows(store).some((m) => m.body.text.includes('turn limit')),
+      4000
+    );
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    const ceiling = collectReceipts(hub, CH).find(
+      (r) => r.reasonCode === 'turn_ceiling'
+    )!;
+    expect(ceiling.state).toBe('expired_watchdog');
+    // Relay cancelled this turn; the provider did not fail it.
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('cancelled');
+    adapter.complete(); // stop the heartbeat
+  });
+
   it('cross-node topics fail visibly and never spawn a local stand-in', async () => {
     const topicStore = {
       get: () => ({
@@ -6354,7 +6628,7 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
 
   it('the watchdog is PAUSED while waitingOn is set (turn not force-drained) and resumes on approval', async () => {
     const built: ApprovalAdapter[] = [];
-    const { binder, store } = makeBinder({
+    const { binder, store, hub } = makeBinder({
       build: (t) => {
         const a = new ApprovalAdapter(t);
         built.push(a);
@@ -6374,6 +6648,15 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     // Well past the 25ms watchdog: a fired watchdog would finishTurn → pump → T2.
     await new Promise((r) => setTimeout(r, 90));
     expect(a.sendCalls).toHaveLength(1); // PAUSED: T2 not pumped
+    // A pause, not a quiet drain (#1541): no watchdog receipt, no drain row,
+    // and the parked turn was never interrupted out from under the approval.
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(false);
+    expect(
+      systemRows(store).some((m) => m.body.text.includes('force-drained'))
+    ).toBe(false);
+    expect(a.interruptCalls).toEqual([]);
 
     const requestId = `appr-chturn-${t1msg.id}-${builtInAgentProfileId('mock')}`;
     await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });

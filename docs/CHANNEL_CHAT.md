@@ -587,8 +587,16 @@ may produce an at-least-once external dispatch on recovery. Consumed rows retain
 bounded idempotency history while unresolved parent/child ancestry is preserved.
 
 - Completed, failed, interrupted, unexpected-disconnect, safe-idle fallback,
-  and watchdog terminalization can satisfy an edge. A watchdog with no prose
-  response explicitly carries `no-terminal-message`.
+  watchdog, and turn-ceiling terminalization can satisfy an edge. A watchdog
+  with no prose response explicitly carries `no-terminal-message`.
+- The watchdog measures INACTIVITY, not turn wall-clock (#1541): every runtime
+  patch for the active turn refreshes its silence budget, so a turn that keeps
+  streaming is never force-drained, and the pause while `waitingOn != null`
+  still holds. A separate hard ceiling bounds one turn's total wall-clock. Both
+  drains interrupt the runtime through the adapter and post a system row before
+  terminalizing, so a run never reports a terminal state while its provider is
+  still working. Defaults are 5 min of silence and a 60 min ceiling, overridable
+  with `RELAY_IDE_CHANNEL_TURN_IDLE_MS` / `RELAY_IDE_CHANNEL_TURN_CEILING_MS`.
 - A raw provider `idle` is not enough. Approval/waiting state keeps the edge
   pending until Relay's guarded terminal lifecycle observes a real boundary.
 - Relay sends a typed internal completion trigger that references the delegatee

@@ -56,6 +56,7 @@ import {
   CHANNEL_RETRY_OF_META_KEY,
   type ChannelAsyncRunApprovalState,
   type ChannelAsyncRunTargetState,
+  type ChannelDeliveryReceiptReasonCode,
   type ChannelDeliveryReceiptState,
   type ChannelDeliveryReceiptV1,
   type ChannelMention,
@@ -167,8 +168,26 @@ function gatewayBindingExtra(
 
 /** Per-binding FIFO turn queue cap; overflow → system row, message dropped. */
 const QUEUE_CAP = 8;
-/** Force-drain a genuinely-stuck turn after this long (paused while waitingOn != null). */
+/**
+ * Force-drain a turn that has been SILENT this long (paused while
+ * waitingOn != null).
+ *
+ * Inactivity, never turn wall-clock (#1541). A turn that is still emitting —
+ * deltas, tool items, live-state — is by definition not stuck, and measuring
+ * this from turn start instead killed every long implementation turn at five
+ * minutes flat: the run flipped to `failed` and the completion callback fired
+ * `failed` while the provider carried on editing files.
+ */
 const DEFAULT_WATCHDOG_MS = 5 * 60 * 1000;
+/**
+ * Hard ceiling on ONE turn's total wall-clock (#1541).
+ *
+ * The inactivity watchdog above cannot bound a runtime that streams forever, so
+ * this is the last bound on a turn. Deliberately generous — it exists to stop a
+ * runaway, not to bound normal work — and armed once at turn start: activity
+ * never re-arms it. Overridable per hub via `turnCeilingMs`.
+ */
+const DEFAULT_TURN_CEILING_MS = 60 * 60 * 1000;
 /**
  * Presence liveness sweep (#1307). `onRuntimeEnd` is the binder's ONLY teardown
  * signal and it fires from exactly one place — an explicit `runtimes.destroy` —
@@ -298,7 +317,10 @@ export interface ChannelAgentBinderDeps {
   port: number;
   configDir: string;
   localNodeId?: string;
+  /** Silence (not wall-clock) after which a turn is force-drained (#1541). */
   watchdogMs?: number;
+  /** Hard bound on one turn's total wall-clock, activity notwithstanding (#1541). */
+  turnCeilingMs?: number;
   /** Interval of the dead-runtime presence sweep (#1307); tests shorten it. */
   presenceSweepMs?: number;
   yolo?: boolean;
@@ -529,6 +551,13 @@ export interface LiveBinding {
   emittedSteeringCount: number;
   emittedSteerSupported: boolean;
   watchdog: NodeJS.Timeout | null;
+  /** Hard turn-wall-clock timer, armed at turn start and never re-armed (#1541). */
+  turnCeiling: NodeJS.Timeout | null;
+  /**
+   * When the runtime last emitted ANYTHING for the active turn (#1541). The
+   * inactivity watchdog measures from here, so a working turn is never drained.
+   */
+  lastActivityAt: number;
   retriedTurns: Set<string>;
   announcedApprovals: Set<string>;
 }
@@ -714,6 +743,7 @@ export function createChannelAgentBinder(
   const { store, hub, topicStore } = deps;
   const localNodeId = deps.localNodeId ?? DEFAULT_LOCAL_NODE_ID;
   const watchdogMs = deps.watchdogMs ?? DEFAULT_WATCHDOG_MS;
+  const turnCeilingMs = deps.turnCeilingMs ?? DEFAULT_TURN_CEILING_MS;
   const presenceSweepMs = deps.presenceSweepMs ?? DEFAULT_PRESENCE_SWEEP_MS;
   const yolo = deps.yolo ?? CHANNEL_BINDING_YOLO_DEFAULT;
   const now = deps.now ?? (() => Date.now());
@@ -852,20 +882,9 @@ export function createChannelAgentBinder(
     trigger: ChannelMessage;
     targetProfileId: string;
     state: ChannelDeliveryReceiptState;
-    reasonCode?:
-      | 'queue_cap'
-      | 'steering_queue_cap'
-      | 'superseded_by_newer'
-      | 'runtime_unavailable'
-      | 'binding_failed'
-      | 'watchdog_force_drain'
-      | 'send_rejected'
-      | 'send_error'
-      | 'runtime_ended'
-      | 'agent_busy'
-      | 'profile_missing'
-      | 'provider_unavailable'
-      | 'mention_chain_paused';
+    // The protocol's own union, not a copy of it: a second hand-maintained
+    // list here is a drift trap (it silently rejected a new reason code).
+    reasonCode?: ChannelDeliveryReceiptReasonCode;
     threadId?: string | null;
   }): void {
     const threadId =
@@ -1619,20 +1638,96 @@ export function createChannelAgentBinder(
 
   // ── watchdog ────────────────────────────────────────────────────────────────
 
+  /**
+   * Record that the runtime is alive FOR THE ACTIVE TURN (#1541).
+   *
+   * Turn-scoped on purpose. A late patch echoing a turn that already ended, or
+   * a bare live-state heartbeat naming no turn at all, says nothing about the
+   * turn the watchdog is bounding — counting either would let a stale echo (or
+   * a periodic status ping from an otherwise wedged runtime) hold a genuinely
+   * stuck turn open forever, which is the failure the watchdog exists for. Only
+   * a patch whose turn id IS the active turn (directly, or through the same
+   * `parentKeyForTurn` resolution the rest of the binder uses for exact
+   * provider turn ids) refreshes the silence budget.
+   *
+   * Deliberately cheap — one timestamp write, no timer churn — because this
+   * runs on every streamed token; the watchdog re-arms itself from this
+   * timestamp when it fires.
+   */
+  function noteRuntimeActivity(
+    binding: LiveBinding,
+    patch: AgentPatchV2
+  ): void {
+    const activeTurnId = binding.activeTurnId;
+    if (activeTurnId === null) return;
+    const turnId = patchTurnId(patch);
+    if (turnId === undefined) return;
+    if (
+      turnId !== activeTurnId &&
+      parentKeyForTurn(binding, turnId) !== activeTurnId
+    ) {
+      return;
+    }
+    binding.lastActivityAt = now();
+  }
+
+  /**
+   * The turn a patch claims, or `undefined` when it names none: session
+   * updates/snapshots, and live-state patches that carry no `activeTurnId`
+   * (a bare `waitingOn` or `status` heartbeat).
+   */
+  function patchTurnId(patch: AgentPatchV2): string | undefined {
+    switch (patch.type) {
+      case 'agent-turn-started-v2':
+        return patch.turn.id;
+      case 'agent-item-started-v2':
+      case 'agent-item-delta-v2':
+      case 'agent-item-updated-v2':
+      case 'agent-turn-completed-v2':
+        return patch.turnId;
+      case 'agent-error-v2':
+        return patch.turnId;
+      case 'agent-live-state-updated-v2':
+        return patch.live.activeTurnId ?? undefined;
+      default:
+        return undefined;
+    }
+  }
+
   function armWatchdog(binding: LiveBinding): void {
     disarmWatchdog(binding);
+    // Arming IS activity: turn start and an approval resolving both hand the
+    // turn a fresh silence budget rather than inheriting a stale timestamp.
+    binding.lastActivityAt = now();
+    scheduleWatchdog(binding, watchdogMs);
+  }
+
+  function scheduleWatchdog(binding: LiveBinding, delayMs: number): void {
     binding.watchdog = setTimeout(() => {
       binding.watchdog = null;
       // Never force-drain a turn parked on a human approval (§3 / Amendment 2):
       // that would abandon the approval and release a concurrent send.
       if (binding.activeTurnId === null || binding.waitingOn !== null) return;
+      const idleMs = now() - binding.lastActivityAt;
+      if (idleMs < watchdogMs) {
+        // The runtime emitted since this timer was armed, so the turn is
+        // working, not stuck (#1541): re-arm for the remainder of the silence
+        // window instead of draining a live turn.
+        scheduleWatchdog(binding, Math.max(1, watchdogMs - idleMs));
+        return;
+      }
       logger.warn('channel binder watchdog force-drained a stuck turn', {
         channelId: binding.channelId,
         framework: binding.framework,
         turnId: binding.activeTurnId,
+        idleMs,
       });
-      finishTurn(binding, 'watchdog');
-    }, watchdogMs);
+      drainBoundedTurn(
+        binding,
+        'watchdog',
+        `@${binding.displayName} sent nothing for ${describeMs(watchdogMs)} and was interrupted; the turn was force-drained.`
+      );
+    }, delayMs);
     binding.watchdog.unref?.();
   }
 
@@ -1641,6 +1736,94 @@ export function createChannelAgentBinder(
       clearTimeout(binding.watchdog);
       binding.watchdog = null;
     }
+  }
+
+  /**
+   * Arm the hard turn ceiling (#1541). Unlike the watchdog this is armed ONCE
+   * per turn and is never re-armed by activity or paused by `waitingOn`: it is
+   * the bound that still holds when a runtime streams forever, or when a turn
+   * parks on an approval nobody will ever answer.
+   */
+  function armTurnCeiling(binding: LiveBinding): void {
+    disarmTurnCeiling(binding);
+    binding.turnCeiling = setTimeout(() => {
+      binding.turnCeiling = null;
+      if (binding.activeTurnId === null) return;
+      logger.warn('channel binder turn ceiling reached', {
+        channelId: binding.channelId,
+        framework: binding.framework,
+        turnId: binding.activeTurnId,
+        turnCeilingMs,
+      });
+      drainBoundedTurn(
+        binding,
+        'turn-ceiling',
+        `@${binding.displayName} reached the ${describeMs(turnCeilingMs)} turn limit and was interrupted.`
+      );
+    }, turnCeilingMs);
+    binding.turnCeiling.unref?.();
+  }
+
+  function disarmTurnCeiling(binding: LiveBinding): void {
+    if (binding.turnCeiling) {
+      clearTimeout(binding.turnCeiling);
+      binding.turnCeiling = null;
+    }
+  }
+
+  /**
+   * End a turn Relay gave up on, visibly and honestly (#1541).
+   *
+   * Interrupt FIRST: the run/target row is about to say this turn is over, and
+   * that is only true if the runtime is actually being stopped. The old
+   * watchdog just flipped the run to `failed` and left the provider running —
+   * the channel showed a failed run while the agent kept editing files.
+   *
+   * The interrupt is fire-and-forget (an adapter that refuses must not wedge
+   * the queue) and precedes `finishTurn` because `finishTurn` pumps the next
+   * queued turn into the SAME adapter — a late interrupt would cancel that
+   * successor instead. An adapter whose interrupt terminalizes synchronously
+   * has already finished this turn by the time control returns, which is why
+   * the finish below re-checks the turn is still active.
+   */
+  function drainBoundedTurn(
+    binding: LiveBinding,
+    reason: Extract<
+      ChannelCompletionCallbackTerminalReason,
+      'watchdog' | 'turn-ceiling'
+    >,
+    text: string
+  ): void {
+    const turnId = binding.activeTurnId;
+    if (turnId === null) return;
+    const adapter = binding.adapter;
+    postSystemRow(binding.channelId, text, {
+      parentMessageId: parentForTurn(binding, turnId),
+    });
+    if (adapter) {
+      void adapter.interrupt({ turnId }).catch((err) => {
+        if (closed) return;
+        logger.warn(`channel binder ${reason} interrupt failed:`, err);
+      });
+    }
+    if (binding.activeTurnId === turnId) finishTurn(binding, reason);
+  }
+
+  /** Short operator-facing duration for a drain row ("5 min", "1 h", "800 ms"). */
+  function describeMs(ms: number): string {
+    if (ms >= 60 * 60 * 1000) {
+      const hours = ms / (60 * 60 * 1000);
+      return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} h`;
+    }
+    if (ms >= 60 * 1000) {
+      const minutes = ms / (60 * 1000);
+      return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} min`;
+    }
+    if (ms >= 1000) {
+      const seconds = ms / 1000;
+      return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+    }
+    return `${ms} ms`;
   }
 
   // ── binding lifecycle ───────────────────────────────────────────────────────
@@ -1687,6 +1870,8 @@ export function createChannelAgentBinder(
       emittedSteeringCount: 0,
       emittedSteerSupported: false,
       watchdog: null,
+      turnCeiling: null,
+      lastActivityAt: now(),
       retriedTurns: new Set(),
       announcedApprovals: new Set(),
     };
@@ -2859,6 +3044,7 @@ export function createChannelAgentBinder(
       state: 'turn_started',
     });
     armWatchdog(binding);
+    armTurnCeiling(binding);
     deliver(
       binding,
       adapter,
@@ -3115,6 +3301,7 @@ export function createChannelAgentBinder(
         binding.waitingOn = null;
         binding.sawStream = false;
         disarmWatchdog(binding);
+        disarmTurnCeiling(binding);
         setStatus(binding, 'idle');
         emitAgentStatus(binding);
         pump(binding);
@@ -3283,6 +3470,7 @@ export function createChannelAgentBinder(
     binding.sawStream = false;
     binding.announcedApprovals.clear();
     disarmWatchdog(binding);
+    disarmTurnCeiling(binding);
     dropQueuedTurns(binding);
     setStatus(binding, 'idle');
     // The binding may already have BEEN idle (a spawn that never completed), so
@@ -3301,7 +3489,10 @@ export function createChannelAgentBinder(
       terminalTurnId,
       terminalReason === 'completed' || terminalReason === 'safe-idle'
         ? 'completed'
-        : terminalReason === 'interrupt'
+        : // A ceiling drain is Relay cancelling the turn, not the provider
+          // failing it (#1541) — and by here the runtime has been interrupted,
+          // so no target claims a terminal state while its runtime works on.
+          terminalReason === 'interrupt' || terminalReason === 'turn-ceiling'
           ? 'cancelled'
           : 'failed'
     );
@@ -3312,12 +3503,17 @@ export function createChannelAgentBinder(
       binding.requestMessageIdByTurn.get(terminalTurnId) ??
       binding.parentMessageIdByTurn.get(terminalTurnId);
     if (requestMessageId && store.getMessage(requestMessageId)) {
-      if (terminalReason === 'watchdog') {
+      if (terminalReason === 'watchdog' || terminalReason === 'turn-ceiling') {
+        // Both bounds are Relay-side timer expiries, so they share the receipt
+        // STATE; the reason code says which bound ended the turn (#1541).
         emitReceipt({
           trigger: { ...store.getMessage(requestMessageId)! },
           targetProfileId: binding.profileActorId,
           state: 'expired_watchdog',
-          reasonCode: 'watchdog_force_drain',
+          reasonCode:
+            terminalReason === 'watchdog'
+              ? 'watchdog_force_drain'
+              : 'turn_ceiling',
         });
       } else if (
         terminalReason === 'completed' ||
@@ -3356,6 +3552,7 @@ export function createChannelAgentBinder(
     binding.waitingOn = null;
     binding.sawStream = false;
     disarmWatchdog(binding);
+    disarmTurnCeiling(binding);
     setStatus(binding, 'idle');
     // If the provider completed before later safe-boundary requests were
     // accepted, preserve FIFO by falling back to ordinary next-turn delivery.
@@ -3379,6 +3576,10 @@ export function createChannelAgentBinder(
   }
 
   function handleBindingPatch(binding: LiveBinding, patch: AgentPatchV2): void {
+    // Liveness before interpretation (#1541): a patch that belongs to the
+    // active turn proves that turn is still producing, whatever it turns out
+    // to mean below.
+    noteRuntimeActivity(binding, patch);
     switch (patch.type) {
       case 'agent-session-updated-v2':
         if (patch.providerSession) {
@@ -4381,6 +4582,7 @@ export function createChannelAgentBinder(
     binding.unbind?.(); // bridge finalizes any open stream 'interrupted'
     binding.patchUnlisten?.();
     disarmWatchdog(binding);
+    disarmTurnCeiling(binding);
     // No-op when `markDeadRuntimeIdle` already drained on the `disconnected`
     // patch, so a death that fires both paths posts one row per trigger.
     dropQueuedTurns(binding);
@@ -5110,6 +5312,7 @@ export function createChannelAgentBinder(
       unsubRuntimeEnd();
       for (const binding of live.values()) {
         disarmWatchdog(binding);
+        disarmTurnCeiling(binding);
         binding.unbind?.();
         binding.patchUnlisten?.();
         binding.parentMessageIdByTurn.clear();
