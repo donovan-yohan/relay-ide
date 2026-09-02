@@ -356,4 +356,55 @@ describe('PrimeAgentRpcClient', () => {
       'prompt timed out'
     );
   });
+
+  it('keeps a bounded diagnostic tail of stderr and pre-readiness stdout text', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    const protocolErrors: Error[] = [];
+    client.on('protocolError', (err) => protocolErrors.push(err));
+
+    const starting = client.start();
+    child.stdout.write('Session found in different project: /x\n');
+    child.stderr.write("Error: No session found matching 'p1'\n");
+    child.emit('close', 1);
+
+    await expect(starting).rejects.toThrow(/No session found matching/);
+    expect(client.diagnosticTail).toContain(
+      'Session found in different project: /x'
+    );
+    expect(client.diagnosticTail).toContain(
+      "Error: No session found matching 'p1'"
+    );
+    expect(protocolErrors).toHaveLength(0);
+  });
+
+  it('treats non-JSON stdout after readiness as a protocol error', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    child.stdin.once('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string };
+      child.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: 'get_state',
+          success: true,
+        }) + '\n'
+      );
+    });
+    await client.start();
+
+    const protocolErrors: Error[] = [];
+    client.on('protocolError', (err) => protocolErrors.push(err));
+    child.stdout.write('not valid json\n');
+
+    expect(protocolErrors).toHaveLength(1);
+    expect(protocolErrors[0]!.message).toContain(
+      'Invalid prime-agent RPC JSON'
+    );
+  });
 });

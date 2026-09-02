@@ -1222,4 +1222,54 @@ describe('PrimeAgentProtocolAdapter', () => {
       ])
     );
   });
+
+  it('maps a missing-model exit to a login hint', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'No models available. Run /login…'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => client);
+
+    await expect(adapter.connect(config)).rejects.toThrow(
+      /^prime-agent has no model available/
+    );
+  });
+
+  it('does not fall back when the session lease is held', async () => {
+    let factoryCalls = 0;
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'Error: Session is already active in worker-1: /p.jsonl'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => {
+      factoryCalls += 1;
+      return client;
+    });
+
+    await expect(
+      adapter.connect({ ...config, resumeSessionId: 'p1' })
+    ).rejects.toThrow(/open in another prime-agent process/);
+    expect(factoryCalls).toBe(1);
+  });
+
+  it('appends the diagnostic tail to an unexpected close', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'worker crashed unexpectedly with SIGSEGV'
+    );
+    client.emit('close', 1);
+
+    const errorPatch = patches.find((patch) => patch.type === 'agent-error-v2');
+    expect(errorPatch).toBeDefined();
+    expect((errorPatch as { message: string }).message).toContain(
+      'worker crashed unexpectedly with SIGSEGV'
+    );
+  });
 });

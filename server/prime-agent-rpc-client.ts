@@ -36,6 +36,7 @@ export interface PrimeAgentRpcClientOptions {
   maxBufferBytes?: number;
   maxRecordBytes?: number;
   stopTimeoutMs?: number;
+  diagnosticRingSize?: number;
   spawn?: (
     command: string,
     args: string[],
@@ -61,9 +62,13 @@ export class PrimeAgentRpcClient extends EventEmitter {
   private draining = false;
   private detachChildListeners: (() => void) | null = null;
   private detachDrainListener: (() => void) | null = null;
+  private readonly diagnosticRing: string[] = [];
+  private readonly diagnosticRingSize: number;
+  private ready = false;
 
   constructor(private readonly options: PrimeAgentRpcClientOptions = {}) {
     super();
+    this.diagnosticRingSize = options.diagnosticRingSize ?? 40;
     const maxRecordBytes = options.maxRecordBytes ?? 8 * 1024 * 1024;
     const maxBufferBytes = options.maxBufferBytes ?? 16 * 1024 * 1024;
     this.framer = new LineFramer({
@@ -89,7 +94,9 @@ export class PrimeAgentRpcClient extends EventEmitter {
         void this.stop().catch((stopError: unknown) =>
           this.emit(
             'error',
-            stopError instanceof Error ? stopError : new Error(String(stopError))
+            stopError instanceof Error
+              ? stopError
+              : new Error(String(stopError))
           )
         );
       },
@@ -97,6 +104,22 @@ export class PrimeAgentRpcClient extends EventEmitter {
     // An EventEmitter `error` without a listener terminates Node. Transport
     // errors are still observable, but are safe during early process startup.
     this.on('error', () => undefined);
+  }
+
+  /** Newest-last stderr and pre-readiness diagnostic lines, newline-joined. */
+  get diagnosticTail(): string {
+    return this.diagnosticRing.join('\n');
+  }
+
+  private recordDiagnostic(text: string): void {
+    for (const line of text.split('\n')) {
+      const trimmed = line.replace(/\s+$/, '');
+      if (trimmed.trim().length === 0) continue;
+      this.diagnosticRing.push(trimmed);
+      while (this.diagnosticRing.length > this.diagnosticRingSize) {
+        this.diagnosticRing.shift();
+      }
+    }
   }
 
   async start(): Promise<PrimeAgentRpcMessage> {
@@ -115,22 +138,30 @@ export class PrimeAgentRpcClient extends EventEmitter {
     this.child = child;
     this.framer.reset();
     const onStdoutData = (chunk: Buffer | string) => this.consume(chunk);
-    const onStderrData = (chunk: Buffer | string) =>
-      this.emit('stderr', String(chunk));
+    const onStderrData = (chunk: Buffer | string) => {
+      const text = String(chunk);
+      this.recordDiagnostic(text);
+      this.emit('stderr', text);
+    };
     const onStreamError = (error: Error) => this.emit('error', error);
     const onChildError = (error: Error) => {
       this.rejectPending(error);
       this.emit('error', error);
     };
     const onClose = (code: number | null) => {
+      const lastLine =
+        this.diagnosticRing.length > 0
+          ? this.diagnosticRing[this.diagnosticRing.length - 1]
+          : undefined;
+      const exitMsg = lastLine
+        ? `prime-agent rpc exited (code=${String(code)}): ${lastLine}`
+        : `prime-agent rpc exited (code=${String(code)})`;
+      const error = new Error(exitMsg);
       if (this.child === child) {
         this.child = null;
-        this.resetTransportState(
-          new Error(`prime-agent rpc exited (code=${String(code)})`)
-        );
+        this.resetTransportState(error);
         this.removeChildListeners();
       }
-      const error = new Error(`prime-agent rpc exited (code=${String(code)})`);
       this.rejectPending(error);
       this.emit('close', code);
     };
@@ -154,11 +185,13 @@ export class PrimeAgentRpcClient extends EventEmitter {
     // RPC has no initialize handshake. A correlated get_state response is the
     // readiness barrier and supplies durable session identity.
     try {
-      return await this.callWithTimeout(
+      const response = await this.callWithTimeout(
         'get_state',
         {},
         this.options.readinessTimeoutMs ?? 10_000
       );
+      this.ready = true;
+      return response;
     } catch (error) {
       // A failed readiness barrier must not leave a live child, drain handler,
       // or unsent request behind for a later start attempt.
@@ -275,6 +308,10 @@ export class PrimeAgentRpcClient extends EventEmitter {
     try {
       value = JSON.parse(line);
     } catch (error) {
+      if (!this.ready) {
+        this.recordDiagnostic(line);
+        return;
+      }
       this.emit(
         'protocolError',
         new Error(
@@ -284,6 +321,10 @@ export class PrimeAgentRpcClient extends EventEmitter {
       return;
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      if (!this.ready) {
+        this.recordDiagnostic(line);
+        return;
+      }
       this.emit(
         'protocolError',
         new Error('Invalid prime-agent RPC record: expected object')
@@ -309,7 +350,9 @@ export class PrimeAgentRpcClient extends EventEmitter {
           )
         );
       } else if (message.success !== true) {
-        pending.reject(new PrimeAgentRpcResponseError(pending.command, message));
+        pending.reject(
+          new PrimeAgentRpcResponseError(pending.command, message)
+        );
       } else {
         pending.resolve(message);
       }
@@ -363,6 +406,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
   }
 
   private resetTransportState(error: Error): void {
+    this.ready = false;
     this.rejectPending(error);
     this.framer.reset();
     this.writes.length = 0;

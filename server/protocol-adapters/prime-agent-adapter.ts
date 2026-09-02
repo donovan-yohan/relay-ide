@@ -50,12 +50,86 @@ import type {
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { primeAgentControlDefinitions } from '../../shared/agent-command-catalog.js';
+import { createLogger } from '../logger.js';
 import {
   PrimeAgentRpcClient,
   PrimeAgentRpcResponseError,
   type PrimeAgentRpcClientOptions,
   type PrimeAgentRpcMessage,
 } from '../prime-agent-rpc-client.js';
+
+const logger = createLogger('prime-agent-adapter');
+
+export interface PrimeLaunchFailureClassification {
+  kind:
+    | 'auth'
+    | 'stale-session'
+    | 'cwd-missing'
+    | 'cwd-mismatch'
+    | 'lease-held'
+    | 'timeout'
+    | 'unknown';
+  message: string;
+}
+
+export function classifyPrimeLaunchFailure(
+  error: unknown,
+  tail: string,
+  resumeSessionId?: string
+): PrimeLaunchFailureClassification {
+  const errText = error instanceof Error ? error.message : String(error);
+  const combined = tail ? `${errText}\n${tail}` : errText;
+
+  if (
+    /^No models available/m.test(combined) ||
+    /No models available/i.test(combined)
+  ) {
+    return {
+      kind: 'auth',
+      message:
+        'prime-agent has no model available (not logged in or no provider configured). Run `prime-agent` and complete /login, then mention @<profile> again.',
+    };
+  }
+  if (/No session found matching/i.test(combined)) {
+    return {
+      kind: 'stale-session',
+      message: tail || errText,
+    };
+  }
+  if (/MissingSessionCwd|session.*working directory/i.test(combined)) {
+    return {
+      kind: 'cwd-missing',
+      message: tail || errText,
+    };
+  }
+  if (/Session found in different project/i.test(combined)) {
+    return {
+      kind: 'cwd-mismatch',
+      message: tail || errText,
+    };
+  }
+  if (/Session is already active/i.test(combined)) {
+    const sessionPrefix = resumeSessionId
+      ? `Prime session ${resumeSessionId}`
+      : 'Prime session';
+    return {
+      kind: 'lease-held',
+      message: `${sessionPrefix} is open in another prime-agent process. Close it (prime-agent stop/attach) or restart this agent to start a fresh session.`,
+    };
+  }
+  if (/timed?\s*out/i.test(errText)) {
+    const detail = tail && !errText.includes(tail) ? `: ${tail}` : '';
+    return {
+      kind: 'timeout',
+      message: `prime-agent did not answer get_state within 10s${detail}`,
+    };
+  }
+  const detail = tail && !errText.includes(tail) ? `: ${tail}` : '';
+  return {
+    kind: 'unknown',
+    message: `${errText}${detail}`,
+  };
+}
 
 const CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -243,7 +317,16 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         this.clearControlDiscovery();
         await client.stop().catch(() => undefined);
       }
-      throw error;
+      const classified = classifyPrimeLaunchFailure(
+        error,
+        client.diagnosticTail,
+        config.resumeSessionId
+      );
+      logger.warn('prime-agent launch failed', {
+        kind: classified.kind,
+        message: classified.message,
+      });
+      throw new Error(classified.message, { cause: error });
     }
   }
 
@@ -1152,7 +1235,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
   private handleTransportClose(error: Error): void {
     if (this._status === 'disconnected') return;
-    if (this.activeTurnId) this.completeTurn('failed', error.message);
+    const tail = this.client?.diagnosticTail;
+    const message =
+      tail && !error.message.includes(tail)
+        ? `${error.message}: ${tail}`
+        : error.message;
+    if (this.activeTurnId) this.completeTurn('failed', message);
     this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this._status = 'disconnected';
@@ -1161,12 +1249,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.clientGeneration += 1;
     this.clearControlDiscovery();
     void client?.stop().catch(() => undefined);
-    this.emitError(error.message);
+    this.emitError(message);
     this.emitLive({
       status: 'disconnected',
       activeTurnId: null,
       queueLength: 0,
-      error: error.message,
+      error: message,
     });
   }
   private readImages(
