@@ -6,17 +6,24 @@ import {
   type AcpPeerRequest,
 } from '../../../../../server/acp-client.js';
 
-export const CURSOR_SESSION_ID = 'conf-cursor-session-1';
+export const CURSOR_SESSION_ID = '91d58156-4230-4c0a-a171-bcc28c95873c';
 
 export const CURSOR_INITIALIZE_RESULT = {
   protocolVersion: 1,
-  agentInfo: { name: 'cursor-agent', version: '2026.08.31' },
   agentCapabilities: {
-    mcpCapabilities: { http: true },
-    promptCapabilities: { image: false, audio: false, embeddedContext: false },
-    sessionCapabilities: { close: {}, list: {}, load: {} },
+    loadSession: true,
+    mcpCapabilities: { http: true, sse: true },
+    promptCapabilities: { audio: false, embeddedContext: false, image: true },
+    sessionCapabilities: { list: {} },
   },
-  authMethods: [{ methodId: 'cursor_login' }],
+  authMethods: [
+    {
+      id: 'cursor_login',
+      name: 'Cursor Login',
+      description:
+        "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in.",
+    },
+  ],
 };
 
 export interface CursorAcpRequest {

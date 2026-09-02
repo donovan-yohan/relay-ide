@@ -801,44 +801,73 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!this.activeTurnId) return;
     const id = string(update.toolCallId);
     if (!id || this.items.has(id)) return;
-    const name = string(update.title, 'tool');
+    const kind = string(update.kind);
+    const title = string(update.title, 'tool');
     const args = isRecord(update.rawInput) ? update.rawInput : {};
+    const locations = Array.isArray(update.locations) ? update.locations : [];
+    const hasDiffContent =
+      Array.isArray(update.content) &&
+      update.content.some((c) => isRecord(c) && c.type === 'diff');
+
     let item: AgentItemV2;
-    if (COMMAND_TOOL_NAMES.has(name))
+    if (
+      kind === 'execute' ||
+      typeof args.command === 'string' ||
+      (!kind && COMMAND_TOOL_NAMES.has(title))
+    ) {
+      const command = string(args.command) || stripBackticks(title);
       item = {
         type: 'commandExecution',
         id,
-        command: string(args.command, JSON.stringify(args)),
+        command,
         ...(string(args.cwd) ? { cwd: string(args.cwd) } : {}),
         output: '',
         status: 'running',
         startedAt: nowIso(),
       };
-    else if (FILE_TOOL_NAMES.has(name) && string(args.file_path ?? args.path))
+    } else if (
+      kind === 'edit' ||
+      kind === 'delete' ||
+      kind === 'move' ||
+      hasDiffContent ||
+      typeof args.path === 'string' ||
+      typeof args.file_path === 'string' ||
+      locations.length > 0 ||
+      (!kind && FILE_TOOL_NAMES.has(title))
+    ) {
+      const targetPath =
+        string(args.path ?? args.file_path) ||
+        (isRecord(locations[0]) ? string(locations[0].path) : '') ||
+        extractFilePathFromTitle(title);
       item = {
         type: 'fileChange',
         id,
         paths: [
           {
-            path: string(args.file_path ?? args.path),
+            path: targetPath,
             status:
-              name === 'write' || name === 'create_file' ? 'added' : 'edited',
+              kind === 'delete'
+                ? 'deleted'
+                : kind === 'edit' || title.toLowerCase().startsWith('edit')
+                  ? 'edited'
+                  : 'modified',
           },
         ],
         applyStatus: 'pending',
         status: 'running',
         startedAt: nowIso(),
       };
-    else
+    } else {
       item = {
         type: 'dynamicToolCall',
         id,
         namespace: 'cursor',
-        tool: name,
+        tool: title,
         arguments: args,
         status: 'running',
         startedAt: nowIso(),
       };
+    }
     this.ensureItem(id, item);
   }
 
@@ -850,31 +879,55 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     const acpStatus = string(update.status);
     if (acpStatus === 'pending' || acpStatus === 'in_progress') return;
     const failed = acpStatus === 'failed';
-    const text = toolContentText(update.content);
+
+    let rawOutputText = '';
+    let realExitCode: number | null | undefined;
+    if (isRecord(update.rawOutput)) {
+      if (typeof update.rawOutput.exitCode === 'number') {
+        realExitCode = update.rawOutput.exitCode;
+      }
+      const stdout = string(update.rawOutput.stdout);
+      const stderr = string(update.rawOutput.stderr);
+      rawOutputText = stdout + (stderr ? (stdout ? '\n' : '') + stderr : '');
+    }
+
+    const textContent = toolContentText(update.content);
+    const diffContent = renderDiffContent(update.content);
+
     let updated: AgentItemV2;
-    if (item.type === 'commandExecution')
+    if (item.type === 'commandExecution') {
+      const output = rawOutputText || textContent;
+      const exitCode = realExitCode ?? (failed ? 1 : 0);
+      const isFailed =
+        failed || (typeof exitCode === 'number' && exitCode !== 0);
       updated = {
         ...item,
-        output: text,
-        exitCode: failed ? 1 : 0,
-        status: failed ? 'failed' : 'completed',
+        output,
+        exitCode,
+        status: isFailed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
-    else if (item.type === 'fileChange')
+    } else if (item.type === 'fileChange') {
+      const patch = diffContent || (textContent ? textContent : undefined);
       updated = {
         ...item,
+        ...(patch ? { patch } : {}),
         applyStatus: failed ? 'failed' : 'applied',
         status: failed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
-    else if (item.type === 'dynamicToolCall')
+    } else if (item.type === 'dynamicToolCall') {
+      const result =
+        rawOutputText ||
+        textContent ||
+        (isRecord(update.rawOutput) ? update.rawOutput : undefined);
       updated = {
         ...item,
-        result: text,
+        result,
         status: failed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
-    else return;
+    } else return;
     this.items.set(id, updated);
     this.emitItemUpdated(updated);
   }
@@ -1217,15 +1270,53 @@ function stopReasonMessage(stopReason: string): string {
   return `cursor ended the turn: ${stopReason}`;
 }
 
+function stripBackticks(str: string): string {
+  const trimmed = str.trim();
+  if (trimmed.startsWith('`') && trimmed.endsWith('`') && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function extractFilePathFromTitle(title: string): string {
+  const backtickMatch = title.match(/`([^`]+)`/);
+  if (backtickMatch && backtickMatch[1]) return backtickMatch[1];
+  return title;
+}
+
+function renderDiffContent(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  const diffs: string[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (entry.type === 'diff') {
+      const p = string(entry.path);
+      const oldT = string(entry.oldText);
+      const newT = string(entry.newText);
+      if (oldT.startsWith('-- ') && newT.startsWith('++ ')) {
+        diffs.push(`${oldT}\n${newT}`);
+      } else {
+        diffs.push(
+          `--- ${p || 'a'}\n+++ ${p || 'b'}\n${oldT ? `- ${oldT}\n` : ''}${newT ? `+ ${newT}\n` : ''}`
+        );
+      }
+    }
+  }
+  return diffs.join('\n');
+}
+
 function toolContentText(value: unknown): string {
   if (!Array.isArray(value)) return '';
   return value
     .map((entry) => {
       if (!isRecord(entry)) return '';
+      if (entry.type === 'text' && typeof entry.text === 'string')
+        return entry.text;
       const content = entry.content;
-      return isRecord(content) && typeof content.text === 'string'
-        ? content.text
-        : '';
+      if (typeof content === 'string') return content;
+      if (isRecord(content) && typeof content.text === 'string')
+        return content.text;
+      return '';
     })
     .join('');
 }

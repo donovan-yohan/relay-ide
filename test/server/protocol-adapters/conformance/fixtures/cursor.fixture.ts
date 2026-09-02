@@ -1,7 +1,9 @@
 /**
  * Conformance fixture for the `cursor` adapter (Cursor CLI ACP stdio lane).
  *
- * Transcribed from real Cursor Agent ACP interactions on stdio.
+ * Transcribed from real Cursor Agent ACP wire captures:
+ * - test/fixtures/cursor/acp-turn-capture.redacted.ndjson
+ * - test/fixtures/cursor/acp-resume-capture.redacted.ndjson
  */
 import { CursorProtocolAdapter } from '../../../../../server/protocol-adapters/cursor-adapter.js';
 import type {
@@ -39,16 +41,9 @@ function settle(stopReason: string, label: string): FixtureFeedStep {
   };
 }
 
-const BASH_CALL_ID = 'call_c480662a7758c60e63ff787b01b3ac60';
-const WRITE_CALL_ID = 'call_fe4cde6217019bba8c1a45d8034732e4';
-
-function updateKind(step: FixtureFeedStep): string | undefined {
-  if (step.kind !== 'native') return undefined;
-  const notification = step.event as AcpNotification;
-  if (notification.method !== 'session/update') return undefined;
-  const body = notification.params.update as { sessionUpdate?: string };
-  return body.sessionUpdate;
-}
+const EXEC_CALL_ID =
+  'call-43505e8d-57f2-465c-8b98-90ccb69d7a29-0\nfc_72f1634d-bd62-9da8-8795-1bacc0114f7d_0';
+const EDIT_CALL_ID = 'replay-0-2';
 
 const fixture: AdapterConformanceFixture = {
   adapterId: 'cursor',
@@ -101,83 +96,78 @@ const fixture: AdapterConformanceFixture = {
       update(
         {
           sessionUpdate: 'agent_thought_chunk',
-          messageId: '5ab4b814-9b85-46d1-b2ab-afb1a83a9b2f',
           content: {
             type: 'text',
-            text: 'Run the command and reply with exactly CURSOR_LIVE_OK.',
+            text: 'Running `echo CURSOR_LIVE_OK` and replying with exactly that text.',
           },
         },
         'committed thought'
       ),
       update(
-        { sessionUpdate: 'usage_update', used: 9432, size: 1000000 },
-        'context occupancy after the first model call'
+        {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Running that now.' },
+        },
+        'initial message stream'
       ),
       update(
         {
           sessionUpdate: 'tool_call',
-          toolCallId: BASH_CALL_ID,
-          title: 'bash',
-          status: 'in_progress',
-          rawInput: {
-            command: 'echo relay-acp',
-            description: 'Echo the string relay-acp',
-          },
+          toolCallId: EXEC_CALL_ID,
+          title: '`echo CURSOR_LIVE_OK`',
+          kind: 'execute',
+          status: 'pending',
+          rawInput: { command: 'echo CURSOR_LIVE_OK' },
         },
-        'bash tool opens'
+        'execute tool opens'
       ),
       update(
         {
           sessionUpdate: 'tool_call_update',
-          toolCallId: BASH_CALL_ID,
+          toolCallId: EXEC_CALL_ID,
           status: 'completed',
-          content: [
-            { type: 'content', content: { type: 'text', text: 'relay-acp\n' } },
-          ],
+          rawOutput: {
+            exitCode: 0,
+            stdout: 'CURSOR_LIVE_OK\n',
+            stderr: '',
+          },
         },
-        'bash tool completes'
+        'execute tool completes with exit code and stdout'
       ),
       update(
         {
           sessionUpdate: 'tool_call',
-          toolCallId: WRITE_CALL_ID,
-          title: 'write',
-          status: 'in_progress',
-          rawInput: {
-            file_path: '/workspace/cursor-note.txt',
-            content: 'done',
-          },
+          toolCallId: EDIT_CALL_ID,
+          title: 'Edit `/workspace/cursor-note.txt`',
+          kind: 'edit',
+          status: 'pending',
+          rawInput: { path: '/workspace/cursor-note.txt' },
+          locations: [{ path: '/workspace/cursor-note.txt' }],
         },
-        'file editor opens'
+        'file edit tool opens'
       ),
       update(
         {
           sessionUpdate: 'tool_call_update',
-          toolCallId: WRITE_CALL_ID,
+          toolCallId: EDIT_CALL_ID,
           status: 'completed',
           content: [
             {
-              type: 'content',
-              content: {
-                type: 'text',
-                text: 'done',
-              },
+              type: 'diff',
+              path: '/workspace/cursor-note.txt',
+              oldText: '-- /dev/null',
+              newText: '++ b//workspace/cursor-note.txt\nrelay-cursor-proof',
             },
           ],
         },
-        'file editor completes'
+        'file edit completes with unified diff content'
       ),
       update(
         {
           sessionUpdate: 'agent_message_chunk',
-          messageId: '44378f44-df27-4f8b-9621-b3a5663f412c',
           content: { type: 'text', text: 'CURSOR_LIVE_OK' },
         },
         'committed answer'
-      ),
-      update(
-        { sessionUpdate: 'usage_update', used: 9238, size: 1000000 },
-        'context occupancy after the final model call'
       ),
       settle('end_turn', 'session/prompt answers — the Relay turn boundary'),
     ],
@@ -192,7 +182,7 @@ const fixture: AdapterConformanceFixture = {
       ],
       textIncludes: [
         'CURSOR_LIVE_OK',
-        'Run the command and reply with exactly CURSOR_LIVE_OK.',
+        'Running `echo CURSOR_LIVE_OK` and replying with exactly that text.',
       ],
     },
   },
@@ -202,7 +192,6 @@ const fixture: AdapterConformanceFixture = {
       update(
         {
           sessionUpdate: 'agent_message_chunk',
-          messageId: 'b556d5f4-ab82-4d52-a680-62e2dbebaa73',
           content: { type: 'text', text: 'partial answer before the stop' },
         },
         'partial answer before the interrupt'
@@ -225,10 +214,11 @@ const fixture: AdapterConformanceFixture = {
       update(
         {
           sessionUpdate: 'tool_call',
-          toolCallId: BASH_CALL_ID,
-          title: 'bash',
-          status: 'in_progress',
-          rawInput: { command: 'echo relay-acp' },
+          toolCallId: EXEC_CALL_ID,
+          title: '`echo CURSOR_LIVE_OK`',
+          kind: 'execute',
+          status: 'pending',
+          rawInput: { command: 'echo CURSOR_LIVE_OK' },
         },
         'tool still running when the turn ends badly'
       ),
@@ -249,10 +239,11 @@ const fixture: AdapterConformanceFixture = {
       update(
         {
           sessionUpdate: 'tool_call',
-          toolCallId: BASH_CALL_ID,
-          title: 'bash',
-          status: 'in_progress',
-          rawInput: { command: 'echo relay-acp' },
+          toolCallId: EXEC_CALL_ID,
+          title: '`echo CURSOR_LIVE_OK`',
+          kind: 'execute',
+          status: 'pending',
+          rawInput: { command: 'echo CURSOR_LIVE_OK' },
         },
         'the tool the permission request is about'
       ),
@@ -262,10 +253,34 @@ const fixture: AdapterConformanceFixture = {
         method: 'session/request_permission',
         params: {
           sessionId: CURSOR_SESSION_ID,
-          toolCall: { toolCallId: BASH_CALL_ID },
+          toolCall: {
+            toolCallId: EXEC_CALL_ID,
+            title: '`echo CURSOR_LIVE_OK`',
+            kind: 'execute',
+            status: 'pending',
+            content: [
+              {
+                type: 'content',
+                content: { type: 'text', text: 'Not in allowlist: echo' },
+              },
+            ],
+          },
           options: [
-            { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
-            { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+            {
+              optionId: 'allow-once',
+              name: 'Allow once',
+              kind: 'allow_once',
+            },
+            {
+              optionId: 'allow-always',
+              name: 'Allow always',
+              kind: 'allow_always',
+            },
+            {
+              optionId: 'reject-once',
+              name: 'Reject',
+              kind: 'reject_once',
+            },
           ],
         },
         label: 'server asks the client for permission and blocks',
@@ -276,19 +291,20 @@ const fixture: AdapterConformanceFixture = {
       update(
         {
           sessionUpdate: 'tool_call_update',
-          toolCallId: BASH_CALL_ID,
+          toolCallId: EXEC_CALL_ID,
           status: 'completed',
-          content: [
-            { type: 'content', content: { type: 'text', text: 'relay-acp\n' } },
-          ],
+          rawOutput: {
+            exitCode: 0,
+            stdout: 'CURSOR_LIVE_OK\n',
+            stderr: '',
+          },
         },
         'the approved tool runs'
       ),
       update(
         {
           sessionUpdate: 'agent_message_chunk',
-          messageId: '1fe7c4cb-033e-453b-9db7-fb82cf97192c',
-          content: { type: 'text', text: 'read' },
+          content: { type: 'text', text: 'CURSOR_LIVE_OK' },
         },
         'answer after the approval'
       ),
@@ -304,28 +320,26 @@ const fixture: AdapterConformanceFixture = {
     },
   },
 
-  allowedSilentEvents: [
-    {
-      match: (step) => updateKind(step) === 'usage_update',
-      reason:
-        'usage_update reports context OCCUPANCY, not per-turn tokens; it is folded into the turn total and published once on agent-turn-completed-v2.',
-    },
-  ],
+  allowedSilentEvents: [],
 
   exercised: [
     'reasoning',
     'commandExecution',
     'fileChanges',
     'streaming',
-    'telemetry',
     'approvals',
   ],
 
   unexercisable: [
     {
+      capability: 'telemetry',
+      reason:
+        'Cursor ACP stdio lane in 2026.08.31 does not emit usage_update notifications; telemetry is handled when present.',
+    },
+    {
       capability: 'tools',
       reason:
-        'the `tools` detector looks for mcpToolCall/dynamicToolCall, but the simpleTurn uses `bash` (mapped to commandExecution) and `write` (mapped to fileChange). Dynamic tool calls are deep-tested in cursor-adapter.test.ts',
+        'the `tools` detector looks for dynamicToolCall, but the simpleTurn uses `execute` (mapped to commandExecution) and `edit` (mapped to fileChange). Dynamic tool calls are deep-tested in cursor-adapter.test.ts',
     },
     {
       capability: 'questions',

@@ -8,9 +8,10 @@ import { CursorProtocolAdapter } from '../../../server/protocol-adapters/cursor-
 type SendInput = Parameters<CursorProtocolAdapter['sendMessage']>[0];
 type Patch = Record<string, unknown>;
 
-const SESSION_ID = '4fbf9dfa-08d2-412b-8381-b47623132936';
-const BASH_CALL_ID = 'call_c480662a7758c60e63ff787b01b3ac60';
-const WRITE_CALL_ID = 'call_fe4cde6217019bba8c1a45d8034732e4';
+const SESSION_ID = '91d58156-4230-4c0a-a171-bcc28c95873c';
+const EXEC_CALL_ID =
+  'call-43505e8d-57f2-465c-8b98-90ccb69d7a29-0\nfc_72f1634d-bd62-9da8-8795-1bacc0114f7d_0';
+const EDIT_CALL_ID = 'replay-0-2';
 
 const config = {
   cwd: '/repo',
@@ -22,13 +23,20 @@ const config = {
 
 const INITIALIZE_RESULT = {
   protocolVersion: 1,
-  agentInfo: { name: 'cursor-agent', version: '2026.08.31' },
   agentCapabilities: {
-    mcpCapabilities: { http: true },
-    promptCapabilities: { image: false, audio: false, embeddedContext: false },
-    sessionCapabilities: { close: {}, list: {}, load: {} },
+    loadSession: true,
+    mcpCapabilities: { http: true, sse: true },
+    promptCapabilities: { audio: false, embeddedContext: false, image: true },
+    sessionCapabilities: { list: {} },
   },
-  authMethods: [{ methodId: 'cursor_login' }],
+  authMethods: [
+    {
+      id: 'cursor_login',
+      name: 'Cursor Login',
+      description:
+        "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in.",
+    },
+  ],
 };
 
 function queueSend(
@@ -236,40 +244,62 @@ describe('CursorProtocolAdapter', () => {
     // Thought chunk
     h.update({
       sessionUpdate: 'agent_thought_chunk',
-      messageId: 'th-1',
-      content: { type: 'text', text: 'Planning the command...' },
+      content: {
+        type: 'text',
+        text: 'Running `echo CURSOR_LIVE_OK` and replying with exactly that text.',
+      },
     });
 
-    // Tool call (bash)
+    // Tool call (execute)
     h.update({
       sessionUpdate: 'tool_call',
-      toolCallId: BASH_CALL_ID,
-      title: 'bash',
-      rawInput: { command: 'echo hello' },
+      toolCallId: EXEC_CALL_ID,
+      title: '`echo CURSOR_LIVE_OK`',
+      kind: 'execute',
+      rawInput: { command: 'echo CURSOR_LIVE_OK' },
     });
 
     // Tool completion
     h.update({
       sessionUpdate: 'tool_call_update',
-      toolCallId: BASH_CALL_ID,
+      toolCallId: EXEC_CALL_ID,
+      status: 'completed',
+      rawOutput: {
+        exitCode: 0,
+        stdout: 'CURSOR_LIVE_OK\n',
+        stderr: '',
+      },
+    });
+
+    // Tool call (file edit with diff)
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: EDIT_CALL_ID,
+      title: 'Edit `/workspace/cursor-note.txt`',
+      kind: 'edit',
+      rawInput: { path: '/workspace/cursor-note.txt' },
+      locations: [{ path: '/workspace/cursor-note.txt' }],
+    });
+
+    // File edit completion
+    h.update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: EDIT_CALL_ID,
       status: 'completed',
       content: [
-        { type: 'content', content: { type: 'text', text: 'hello\n' } },
+        {
+          type: 'diff',
+          path: '/workspace/cursor-note.txt',
+          oldText: '-- /dev/null',
+          newText: '++ b//workspace/cursor-note.txt\nrelay-cursor-proof',
+        },
       ],
     });
 
     // Message chunk
     h.update({
       sessionUpdate: 'agent_message_chunk',
-      messageId: 'msg-1',
-      content: { type: 'text', text: 'OK' },
-    });
-
-    // Usage update
-    h.update({
-      sessionUpdate: 'usage_update',
-      used: 1200,
-      size: 100000,
+      content: { type: 'text', text: 'CURSOR_LIVE_OK' },
     });
 
     h.settlePrompt('end_turn');
@@ -285,8 +315,24 @@ describe('CursorProtocolAdapter', () => {
     expect(completedPatch).toMatchObject({
       status: 'completed',
       turnId: 'turn-1',
-      usage: { totalTokens: 1200, contextWindowSize: 100000 },
     });
+
+    const commandPatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).type === 'commandExecution'
+    );
+    expect(commandPatch).toBeDefined();
+    expect((commandPatch?.item as any).output).toBe('CURSOR_LIVE_OK\n');
+    expect((commandPatch?.item as any).exitCode).toBe(0);
+
+    const filePatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).type === 'fileChange'
+    );
+    expect(filePatch).toBeDefined();
+    expect((filePatch?.item as any).patch).toContain('relay-cursor-proof');
   });
 
   it('handles permission requests with allow-once, allow-always, and reject-once', async () => {
@@ -294,21 +340,38 @@ describe('CursorProtocolAdapter', () => {
     await h.adapter.connect(config);
     await h.adapter.sendMessage({
       turnId: 'turn-perm',
-      content: 'Do file write',
+      content: 'Do command execution',
     });
 
     h.update({
       sessionUpdate: 'tool_call',
-      toolCallId: WRITE_CALL_ID,
-      title: 'write',
-      rawInput: { file_path: '/repo/test.txt', content: 'abc' },
+      toolCallId: EXEC_CALL_ID,
+      title: '`echo CURSOR_LIVE_OK`',
+      kind: 'execute',
+      rawInput: { command: 'echo CURSOR_LIVE_OK' },
     });
 
     h.peerRequest(42, 'session/request_permission', {
       sessionId: SESSION_ID,
-      toolCall: { toolCallId: WRITE_CALL_ID },
+      toolCall: {
+        toolCallId: EXEC_CALL_ID,
+        title: '`echo CURSOR_LIVE_OK`',
+        kind: 'execute',
+        status: 'pending',
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'Not in allowlist: echo' },
+          },
+        ],
+      },
       options: [
         { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        {
+          optionId: 'allow-always',
+          name: 'Allow always',
+          kind: 'allow_always',
+        },
         { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
       ],
     });
