@@ -169,7 +169,8 @@ Three of the trues deserve their reason stated:
 - **Resume is a real resume.** `session/resume` reopens a closed session by id
   with its history intact, so `resumeStateKey` is `dshSessionId` and a
   transport reconnect continues the same conversation.
-- **Approvals are real.** A permission request becomes a pending approval card;
+- **Approvals are real, but off under the yolo default** (see the permission
+  paragraph below). A permission request becomes a pending approval card;
   `respondToApproval` answers it with the harness's own `allow-once` /
   `reject-once` option ids. Only the `once` scope is advertised, because the
   harness offers one-shot choices and infers no durable grant. An approval left
@@ -183,7 +184,15 @@ and output tokens, so Relay publishes the LAST reading as `totalTokens` plus
 The adapter states `DSH_PERMISSION_MODE` on the child env — the ACP composition
 derives BOTH its sandbox mode and its approval policy from that one variable —
 translating Relay's `permissionMode` (`danger-full-access` is the yolo word) and
-letting a named profile override it outright. Credentials are env-only:
+letting a named profile override it outright. **In practice that means approvals
+are off by default:** channel bindings spawn in yolo mode hub-wide
+(`CHANNEL_BINDING_YOLO_DEFAULT` in `server/channel-agent-binder.ts`), so dsh
+starts in `danger-full-access`, whose approval policy is `never` — the ACP
+server auto-approves every tool itself and Relay blocks nothing, because no
+`session/request_permission` is ever sent. An operator who wants the cards sets
+`DSH_PERMISSION_MODE` to `workspace-write` (or `read-only`) in the dsh agent
+profile's `envVars`, which wins over the yolo mode and flips the server's policy
+back to `ask`. Credentials are env-only:
 `DEEPSEEK_API_KEY` and `DEEPSEEK_BASE_URL` on the agent profile's `envVars`. A
 missing key is not caught by preflight; it surfaces as a failed turn with the
 provider's own message.
