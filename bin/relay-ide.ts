@@ -7343,28 +7343,40 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   });
 }
 
-async function runGatewayChannelsSubscribe(input: {
-  channelId: string;
-  afterSeq?: number;
-  maxEvents?: number;
-  idleTimeoutMs?: number;
-  filter?: ChannelSubscriptionFilter;
-}): Promise<void> {
-  const commandName = 'channels.subscribe' as const;
-  const token = gatewayRequiredToken(commandName);
-  const actorToken = await gatewayActorToken(commandName);
+const MAX_SUBSCRIBE_RECONNECT_ATTEMPTS = 10;
+const INITIAL_RECONNECT_BACKOFF_MS = 50;
+const MAX_RECONNECT_BACKOFF_MS = 1000;
+
+function subscribeReconnectBackoffMs(attempt: number): number {
+  return Math.min(
+    MAX_RECONNECT_BACKOFF_MS,
+    INITIAL_RECONNECT_BACKOFF_MS * Math.pow(2, Math.max(0, attempt - 1))
+  );
+}
+
+async function fetchGatewayChannelsSubscribe(
+  input: {
+    channelId: string;
+    afterSeq?: number | undefined;
+    filter?: ChannelSubscriptionFilter | undefined;
+  },
+  token: string,
+  actorToken: string,
+  signal: AbortSignal
+): Promise<
+  | { ok: true; body: ReadableStream<Uint8Array> }
+  | { ok: false; errorEnvelope: RelayCliGatewayEnvelope; retryable: boolean }
+> {
   const query = new URLSearchParams();
-  if (input.afterSeq !== undefined)
+  if (input.afterSeq !== undefined) {
     query.set('afterSeq', String(input.afterSeq));
+  }
   if (input.filter) {
     for (const [key, value] of Object.entries(input.filter)) {
       query.set(key, String(value));
     }
   }
-  const controller = new AbortController();
-  const stop = (): void => controller.abort();
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+
   let res: Response;
   try {
     res = await fetch(
@@ -7378,27 +7390,29 @@ async function runGatewayChannelsSubscribe(input: {
           ...(actorToken
             ? {
                 'x-relay-cli-actor-token': 'v1',
-                'x-relay-cli-command': commandName,
+                'x-relay-cli-command': 'channels.subscribe',
               }
             : {}),
           ...(gatewayCorrelationId()
             ? { 'x-relay-correlation-id': gatewayCorrelationId()! }
             : {}),
         },
-        signal: controller.signal,
+        signal,
       }
     );
   } catch (error) {
-    printGatewayEnvelope(
-      gatewayError(commandName, {
+    return {
+      ok: false,
+      retryable: true,
+      errorEnvelope: gatewayError('channels.subscribe', {
         code: 'SERVER_UNAVAILABLE',
         message: `could not connect to Relay hub: ${error instanceof Error ? error.message : String(error)}`,
         retryable: true,
         details: { channelId: input.channelId },
       }),
-      1
-    );
+    };
   }
+
   if (!res.ok) {
     const raw = await res.text().catch(() => '');
     let upstream: Record<string, unknown> | undefined;
@@ -7409,44 +7423,97 @@ async function runGatewayChannelsSubscribe(input: {
     } catch {
       upstream = raw ? { raw } : undefined;
     }
-    printGatewayEnvelope(
-      gatewayError(commandName, {
+    const retryable = gatewayErrorRetryable(res.status, upstream);
+    return {
+      ok: false,
+      retryable,
+      errorEnvelope: gatewayError('channels.subscribe', {
         code: normalizeGatewayErrorCode(res.status, upstream),
         message: gatewayErrorMessage(res.status, upstream),
-        retryable: gatewayErrorRetryable(res.status, upstream),
+        retryable,
         details: {
           ...sanitizedGatewayErrorDetails(res.status, upstream),
           channelId: input.channelId,
         },
       }),
-      1
-    );
+    };
   }
+
   if (!res.body) {
-    printGatewayEnvelope(
-      gatewayError(commandName, {
+    return {
+      ok: false,
+      retryable: true,
+      errorEnvelope: gatewayError('channels.subscribe', {
         code: 'UPSTREAM_ERROR',
         message: 'hub channel subscription response had no body stream',
         retryable: true,
       }),
-      1
-    );
+    };
   }
+
+  return { ok: true, body: res.body };
+}
+
+async function streamNdjsonLines(
+  body: ReadableStream<Uint8Array>,
+  onLine: (line: string) => Promise<boolean>
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
   let buffer = '';
+  let keepReading = true;
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        keepReading = await onLine(buffer.slice(0, newline).trim());
+        buffer = buffer.slice(newline + 1);
+        if (!keepReading) break;
+        newline = buffer.indexOf('\n');
+      }
+    }
+    if (keepReading) {
+      buffer += decoder.decode();
+      await onLine(buffer.trim());
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function runGatewayChannelsSubscribe(input: {
+  channelId: string;
+  afterSeq?: number;
+  maxEvents?: number;
+  idleTimeoutMs?: number;
+  filter?: ChannelSubscriptionFilter;
+}): Promise<void> {
+  const commandName = 'channels.subscribe' as const;
+  const token = gatewayRequiredToken(commandName);
+  const actorToken = await gatewayActorToken(commandName);
+
+  const controller = new AbortController();
+  const stop = (): void => controller.abort();
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+
+  let currentAfterSeq: number | undefined = input.afterSeq;
+  let lastDurableSeq: number = input.afterSeq ?? 0;
   let events = 0;
   let idleTimer: NodeJS.Timeout | undefined;
   let normalClose = false;
   let stdoutWriteError: Error | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  const cancelStream = (): void => {
-    controller.abort();
-    void reader?.cancel().catch(() => {
-      /* AbortController already closes the fetch body; cancellation is best effort. */
-    });
-  };
-  // `Writable` can emit EPIPE after its individual write callback ran. Keep a
-  // subscription-scoped listener until teardown so an early downstream close
-  // never becomes an unhandled process error between frames.
+  let reconnectAttempts = 0;
+
+  const cancelStream = (): void => controller.abort();
+
   const onStdoutError = (error: Error): void => {
     if ((error as NodeJS.ErrnoException).code === 'EPIPE') {
       normalClose = true;
@@ -7457,59 +7524,147 @@ async function runGatewayChannelsSubscribe(input: {
     cancelStream();
   };
   process.stdout.on('error', onStdoutError);
+
   const resetIdle = (): void => {
     if (idleTimer) clearTimeout(idleTimer);
     if (input.idleTimeoutMs !== undefined) {
-      idleTimer = setTimeout(cancelStream, input.idleTimeoutMs);
+      idleTimer = setTimeout(() => {
+        normalClose = true;
+        cancelStream();
+      }, input.idleTimeoutMs);
       idleTimer.unref?.();
     }
   };
-  const emit = async (line: string): Promise<boolean> => {
-    if (!line) return true;
-    let frame: Record<string, unknown>;
-    try {
-      frame = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return true;
-    }
-    if (frame['frame'] === 'event') events += 1;
-    if (frame['frame'] === 'closed') normalClose = frame['retryable'] !== true;
-    const written = await writeGatewayNdjsonDrained(
-      gatewayOk(commandName, frame)
-    );
-    if (!written) {
-      normalClose = true;
-      cancelStream();
-      return false;
-    }
-    resetIdle();
-    if (input.maxEvents !== undefined && events >= input.maxEvents) {
-      normalClose = true;
-      cancelStream();
-      return false;
-    }
-    return true;
-  };
+
   resetIdle();
+
   try {
-    reader = (res.body as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-    let keepReading = true;
-    while (keepReading) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf('\n');
-      while (newline >= 0) {
-        keepReading = await emit(buffer.slice(0, newline).trim());
-        buffer = buffer.slice(newline + 1);
-        if (!keepReading) break;
-        newline = buffer.indexOf('\n');
+    while (!controller.signal.aborted && !normalClose) {
+      if (input.maxEvents !== undefined && events >= input.maxEvents) {
+        normalClose = true;
+        break;
       }
-    }
-    if (keepReading) {
-      buffer += decoder.decode();
-      await emit(buffer.trim());
+
+      const connection = await fetchGatewayChannelsSubscribe(
+        {
+          channelId: input.channelId,
+          afterSeq: currentAfterSeq,
+          filter: input.filter,
+        },
+        token,
+        actorToken,
+        controller.signal
+      );
+
+      if (!connection.ok) {
+        if (controller.signal.aborted) break;
+        if (
+          connection.retryable &&
+          reconnectAttempts < MAX_SUBSCRIBE_RECONNECT_ATTEMPTS
+        ) {
+          reconnectAttempts += 1;
+          await new Promise((resolve) =>
+            setTimeout(resolve, subscribeReconnectBackoffMs(reconnectAttempts))
+          );
+          continue;
+        }
+        printGatewayEnvelope(connection.errorEnvelope, 1);
+        return;
+      }
+
+      let shouldResume = false;
+      let lastClosedFrame: Record<string, unknown> | undefined;
+
+      const onLine = async (line: string): Promise<boolean> => {
+        if (!line) return true;
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          return true;
+        }
+        if (typeof frame['durableSeq'] === 'number') {
+          lastDurableSeq = frame['durableSeq'];
+        }
+        if (frame['frame'] === 'event') {
+          events += 1;
+        }
+        if (frame['frame'] === 'closed') {
+          const isRetryable = frame['retryable'] === true;
+          if (
+            isRetryable &&
+            reconnectAttempts < MAX_SUBSCRIBE_RECONNECT_ATTEMPTS
+          ) {
+            shouldResume = true;
+            lastClosedFrame = frame;
+            return false;
+          }
+          normalClose = !isRetryable;
+        }
+
+        const written = await writeGatewayNdjsonDrained(
+          gatewayOk(commandName, frame)
+        );
+        if (!written) {
+          normalClose = true;
+          cancelStream();
+          return false;
+        }
+        resetIdle();
+        if (input.maxEvents !== undefined && events >= input.maxEvents) {
+          normalClose = true;
+          cancelStream();
+          return false;
+        }
+        return true;
+      };
+
+      try {
+        await streamNdjsonLines(connection.body, onLine);
+      } catch (streamError) {
+        if (controller.signal.aborted) break;
+        if (reconnectAttempts < MAX_SUBSCRIBE_RECONNECT_ATTEMPTS) {
+          shouldResume = true;
+        } else {
+          throw streamError;
+        }
+      }
+
+      if (shouldResume && !controller.signal.aborted && !normalClose) {
+        if (input.maxEvents !== undefined && events >= input.maxEvents) {
+          normalClose = true;
+          break;
+        }
+        reconnectAttempts += 1;
+        currentAfterSeq = lastDurableSeq;
+        const resumedFrame = {
+          schemaVersion: 1,
+          frame: 'resumed',
+          channelId: input.channelId,
+          fromSeq: lastDurableSeq,
+          sequence:
+            typeof lastClosedFrame?.['sequence'] === 'number'
+              ? (lastClosedFrame['sequence'] as number) + 1
+              : 0,
+          occurredAt: new Date().toISOString(),
+          durableSeq: lastDurableSeq,
+          attempt: reconnectAttempts,
+        };
+        const written = await writeGatewayNdjsonDrained(
+          gatewayOk(commandName, resumedFrame)
+        );
+        if (!written) {
+          normalClose = true;
+          break;
+        }
+        resetIdle();
+        await new Promise((resolve) =>
+          setTimeout(resolve, subscribeReconnectBackoffMs(reconnectAttempts))
+        );
+        continue;
+      }
+
+      break;
     }
   } catch (error) {
     if (!controller.signal.aborted) {

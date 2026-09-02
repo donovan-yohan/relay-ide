@@ -442,6 +442,7 @@ describe('CLI gateway contract', () => {
           oneOf: [
             { properties: { frame: { const: 'open' } } },
             { properties: { frame: { const: 'event' } } },
+            { properties: { frame: { const: 'resumed' } } },
             { properties: { frame: { const: 'closed' } } },
           ],
         },
@@ -455,6 +456,17 @@ describe('CLI gateway contract', () => {
         sequence: 0,
         occurredAt: '2026-08-11T00:00:00.000Z',
         durableSeq: 0,
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'resumed',
+        channelId: 'channel-1',
+        fromSeq: 4,
+        sequence: 3,
+        occurredAt: '2026-08-11T00:00:03.000Z',
+        durableSeq: 4,
       })
     ).toBe(true);
     // Lifecycle is durable state, but carries no message sequence: consumers
