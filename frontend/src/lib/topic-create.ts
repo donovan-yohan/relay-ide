@@ -60,6 +60,7 @@ export const FALLBACK_PROVIDER_IDS = [
   'prime-agent',
   'pi',
   'antigravity',
+  'dsh',
 ];
 
 export type TopicProviderOption = {

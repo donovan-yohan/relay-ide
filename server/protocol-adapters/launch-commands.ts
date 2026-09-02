@@ -9,3 +9,9 @@ export const PRIME_AGENT_CHANNEL_COMMAND = 'prime-agent';
 export const PI_AGENT_CHANNEL_COMMAND = 'pi';
 export const OPENCODE_CHANNEL_COMMAND = 'opencode';
 export const ANTIGRAVITY_CHANNEL_COMMAND = 'agy';
+/**
+ * The DeepSeek Harness product CLI. The channel adapter boots its ACP stdio
+ * server with `--profile acp`; the profile itself is an adapter constant, so
+ * this stays the plain executable name a PATH probe can resolve.
+ */
+export const DSH_CHANNEL_COMMAND = 'dsh';

@@ -45,6 +45,7 @@
   --sender-prime-agent: var(--color-purple);
   --sender-pi: var(--color-purple);
   --sender-antigravity: var(--color-lime);
+  --sender-dsh: var(--color-blue);
   --sender-system: var(--text-muted);
 
   /* Typography */
