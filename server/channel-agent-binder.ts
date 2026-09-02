@@ -67,6 +67,7 @@ import {
 import type {
   AgentApprovalDecisionV2,
   AgentApprovalItemV2,
+  AgentItemV2,
   AgentLiveStateUpdatedPatchV2,
   AgentPatchV2,
   AgentSlashCommandV2,
@@ -188,6 +189,25 @@ const DEFAULT_WATCHDOG_MS = 5 * 60 * 1000;
  * never re-arms it. Overridable per hub via `turnCeilingMs`.
  */
 const DEFAULT_TURN_CEILING_MS = 60 * 60 * 1000;
+/**
+ * Item types that represent work happening OUTSIDE Relay — a shell command, an
+ * edit being applied, a tool the provider is waiting on. These are the only
+ * items whose in-flight state says anything about whether a SILENT turn is
+ * stuck (#1548); an assistant message or a reasoning block that stops
+ * mid-stream is exactly the wedge the watchdog exists to catch.
+ */
+const TOOL_ITEM_TYPES: ReadonlySet<AgentItemV2['type']> = new Set([
+  'commandExecution',
+  'fileChange',
+  'mcpToolCall',
+  'dynamicToolCall',
+]);
+
+function isTerminalItemStatus(status: AgentItemV2['status']): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'cancelled'
+  );
+}
 /**
  * Presence liveness sweep (#1307). `onRuntimeEnd` is the binder's ONLY teardown
  * signal and it fires from exactly one place — an explicit `runtimes.destroy` —
@@ -558,6 +578,16 @@ export interface LiveBinding {
    * inactivity watchdog measures from here, so a working turn is never drained.
    */
   lastActivityAt: number;
+  /**
+   * Item ids of tool calls the runtime OPENED for the active turn and has not
+   * closed (#1548). A turn sitting inside one of these is busy, not idle: a
+   * `npm run check` or a long vitest run emits nothing at all between the tool
+   * item starting and its terminal update, and the inactivity watchdog used to
+   * force-drain the turn mid-command. Scoped to the active turn and cleared on
+   * every turn boundary and teardown, so a leaked entry can never outlive the
+   * turn that opened it.
+   */
+  openToolItems: Set<string>;
   retriedTurns: Set<string>;
   announcedApprovals: Set<string>;
 }
@@ -1658,17 +1688,69 @@ export function createChannelAgentBinder(
     binding: LiveBinding,
     patch: AgentPatchV2
   ): void {
-    const activeTurnId = binding.activeTurnId;
-    if (activeTurnId === null) return;
-    const turnId = patchTurnId(patch);
-    if (turnId === undefined) return;
-    if (
-      turnId !== activeTurnId &&
-      parentKeyForTurn(binding, turnId) !== activeTurnId
-    ) {
-      return;
-    }
+    if (!isActiveTurnPatch(binding, patch)) return;
     binding.lastActivityAt = now();
+  }
+
+  /** Does this patch belong to the turn the watchdog is currently bounding? */
+  function isActiveTurnPatch(
+    binding: LiveBinding,
+    patch: AgentPatchV2
+  ): boolean {
+    const activeTurnId = binding.activeTurnId;
+    if (activeTurnId === null) return false;
+    const turnId = patchTurnId(patch);
+    if (turnId === undefined) return false;
+    return (
+      turnId === activeTurnId ||
+      parentKeyForTurn(binding, turnId) === activeTurnId
+    );
+  }
+
+  /**
+   * Track the active turn's open tool calls (#1548).
+   *
+   * Turn-scoped for the same reason `noteRuntimeActivity` is: an item echoing a
+   * turn that already ended must never open a hole in the watchdog for the turn
+   * running now. An item that arrives already terminal (adapters that emit
+   * start+done together) opens nothing.
+   */
+  function noteToolItemLifecycle(
+    binding: LiveBinding,
+    patch: AgentPatchV2
+  ): void {
+    if (!isActiveTurnPatch(binding, patch)) return;
+    switch (patch.type) {
+      case 'agent-item-started-v2':
+      case 'agent-item-updated-v2': {
+        if (!TOOL_ITEM_TYPES.has(patch.item.type)) return;
+        if (isTerminalItemStatus(patch.item.status)) {
+          closeToolItem(binding, patch.item.id);
+        } else {
+          binding.openToolItems.add(patch.item.id);
+        }
+        return;
+      }
+      case 'agent-item-delta-v2': {
+        // Adapters that stream a tool to completion carry the terminal status
+        // on the delta rather than a final item snapshot.
+        if (!isTerminalItemStatus(patch.delta.status)) return;
+        closeToolItem(binding, patch.itemId);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Close one open tool item. When it was the LAST one the silence budget
+   * restarts from this moment: the turn only just stopped being busy, so it
+   * gets a full idle window to produce its next thing.
+   */
+  function closeToolItem(binding: LiveBinding, itemId: string): void {
+    if (!binding.openToolItems.delete(itemId)) return;
+    if (binding.openToolItems.size === 0) binding.lastActivityAt = now();
   }
 
   /**
@@ -1708,6 +1790,21 @@ export function createChannelAgentBinder(
       // Never force-drain a turn parked on a human approval (§3 / Amendment 2):
       // that would abandon the approval and release a concurrent send.
       if (binding.activeTurnId === null || binding.waitingOn !== null) return;
+      if (binding.openToolItems.size > 0) {
+        // The runtime is inside a tool call it opened and never closed (#1548):
+        // a multi-minute `npm run check` or vitest run emits NOTHING between
+        // the tool item starting and its terminal update, and draining here
+        // interrupted turns that were working perfectly. Re-arm a full window
+        // and re-check; the hard ceiling below still bounds a runaway.
+        logger.debug('channel binder watchdog deferred to an open tool call', {
+          channelId: binding.channelId,
+          framework: binding.framework,
+          turnId: binding.activeTurnId,
+          openToolItems: binding.openToolItems.size,
+        });
+        scheduleWatchdog(binding, watchdogMs);
+        return;
+      }
       const idleMs = now() - binding.lastActivityAt;
       if (idleMs < watchdogMs) {
         // The runtime emitted since this timer was armed, so the turn is
@@ -1872,6 +1969,7 @@ export function createChannelAgentBinder(
       watchdog: null,
       turnCeiling: null,
       lastActivityAt: now(),
+      openToolItems: new Set(),
       retriedTurns: new Set(),
       announcedApprovals: new Set(),
     };
@@ -3034,6 +3132,7 @@ export function createChannelAgentBinder(
       binding.completionCallbackByTurn.set(turnId, completionCallback);
     }
     binding.sawStream = false;
+    binding.openToolItems.clear();
     binding.waitingOn = null;
     binding.activeContent = packet.content;
     binding.activeAttachments = packet.attachments;
@@ -3300,6 +3399,7 @@ export function createChannelAgentBinder(
         binding.activeAttachments = [];
         binding.waitingOn = null;
         binding.sawStream = false;
+        binding.openToolItems.clear();
         disarmWatchdog(binding);
         disarmTurnCeiling(binding);
         setStatus(binding, 'idle');
@@ -3469,6 +3569,7 @@ export function createChannelAgentBinder(
     binding.waitingOn = null;
     binding.sawStream = false;
     binding.announcedApprovals.clear();
+    binding.openToolItems.clear();
     disarmWatchdog(binding);
     disarmTurnCeiling(binding);
     dropQueuedTurns(binding);
@@ -3551,6 +3652,7 @@ export function createChannelAgentBinder(
     binding.activeAttachments = [];
     binding.waitingOn = null;
     binding.sawStream = false;
+    binding.openToolItems.clear();
     disarmWatchdog(binding);
     disarmTurnCeiling(binding);
     setStatus(binding, 'idle');
@@ -3580,6 +3682,7 @@ export function createChannelAgentBinder(
     // active turn proves that turn is still producing, whatever it turns out
     // to mean below.
     noteRuntimeActivity(binding, patch);
+    noteToolItemLifecycle(binding, patch);
     switch (patch.type) {
       case 'agent-session-updated-v2':
         if (patch.providerSession) {
@@ -4590,6 +4693,7 @@ export function createChannelAgentBinder(
     binding.unbind = null;
     binding.patchUnlisten = null;
     binding.activeTurnId = null;
+    binding.openToolItems.clear();
     binding.parentMessageIdByTurn.clear();
     binding.requestMessageIdByTurn.clear();
     binding.exactTurnTombstones.clear();
@@ -5332,6 +5436,7 @@ export function createChannelAgentBinder(
         binding.steeringInFlight = false;
         binding.steeringAcceptedCount = 0;
         binding.activeTurnId = null;
+        binding.openToolItems.clear();
         binding.waitingOn = null;
         binding.status = 'idle';
         try {

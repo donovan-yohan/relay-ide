@@ -59,6 +59,13 @@ workflow.
 
 #### Fixed
 
+- An agent turn is no longer interrupted while it sits inside one long, silent
+  command. `npm run check`, a full test run, or any tool call that takes minutes
+  and prints nothing looks identical to a wedged agent to a watchdog that only
+  measures silence, and turns were being force-drained mid-command. A turn with
+  a tool call still open is now treated as working, and the silence budget
+  restarts when the last tool call finishes; the hard one-hour turn ceiling
+  still bounds a runaway (#1548)
 - A long agent turn is no longer killed after five minutes while it is visibly
   working. The binder's turn watchdog now measures silence, not elapsed time, so
   a turn that keeps streaming text and tool calls runs as long as the work takes

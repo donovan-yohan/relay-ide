@@ -927,11 +927,23 @@ export class AntigravityProtocolAdapter
       return;
     }
 
-    logger.warn(
+    // ADAPTER QUIRK (#1548). Every `step_update` names the turn agy is working
+    // on, so a step type this adapter has no mapping for is still PROOF the
+    // runtime is alive on that turn. agy emits `checkpoint` steps around long
+    // tool calls, and dropping them with a warn told the operator a keep-alive
+    // had been discarded while the channel binder's inactivity watchdog was
+    // deciding whether to force-drain the turn. A live-state patch naming the
+    // active turn is the cheapest activity signal in the protocol: no
+    // transcript item, no row, no reducer side effect (a bare `activeTurnId`
+    // sets no status and no `waitingOn`). The step is still unmapped, which is
+    // a debug-level fact about this adapter's coverage, not a warning about
+    // the run.
+    logger.debug(
       'Antigravity unmapped step_update: %s state=%s',
       stepType,
       state
     );
+    this.emitLive({ activeTurnId: turnId });
     this.emitProviderExtension(
       { kind: 'unmappedStep', stepType, state, stepIndex },
       'debug'

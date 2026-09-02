@@ -692,7 +692,15 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     const id = string(update.toolCallId);
     const item = this.items.get(id);
     if (!item) return;
-    const failed = string(update.status) === 'failed';
+    // ACP streams tool PROGRESS through the same `tool_call_update` it uses to
+    // report the result, distinguished only by `status`. Terminalizing the item
+    // on a progress update told the channel binder the tool had finished while
+    // it was still running, which (#1548) reopens the inactivity watchdog on a
+    // turn that is busy. The result update that follows carries the full output
+    // anyway, so nothing is lost by ignoring the progress ones.
+    const acpStatus = string(update.status);
+    if (acpStatus === 'pending' || acpStatus === 'in_progress') return;
+    const failed = acpStatus === 'failed';
     const text = toolContentText(update.content);
     let updated: AgentItemV2;
     if (item.type === 'commandExecution')

@@ -1868,6 +1868,49 @@ class HeartbeatAdapter extends BaseProtocolAdapterV2 {
     this.timer = null;
   }
 
+  /**
+   * Open a tool call for the active turn and emit NOTHING further (#1548).
+   * Models `npm run check`: the item starts, the command runs for minutes, and
+   * no delta, live-state, or step update lands until it is done.
+   */
+  startTool(itemId = 'tool-1', command = 'npm run check'): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'commandExecution',
+        id: itemId,
+        command,
+        output: '',
+        status: 'running',
+      },
+    });
+  }
+
+  /** Terminal update for a tool opened by `startTool`. */
+  finishTool(itemId = 'tool-1', command = 'npm run check'): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'commandExecution',
+        id: itemId,
+        command,
+        output: 'ok',
+        exitCode: 0,
+        status: 'completed',
+      },
+    });
+  }
+
   /** Emit a delta labelled with ANY turn id — used to replay a finished turn. */
   emitDeltaFor(turnId: string): void {
     this.emitPatch({
@@ -6180,6 +6223,104 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     // Relay cancelled this turn; the provider did not fail it.
     expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('cancelled');
     adapter.complete(); // stop the heartbeat
+  });
+
+  it('never drains a turn sitting inside an OPEN tool call (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000), // never beats on its own
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 40,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock check', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // One long command: the tool item opens and the runtime says NOTHING for
+    // three full inactivity windows, which is exactly what `npm run check`
+    // looks like on the wire.
+    adapter.startTool();
+    await new Promise((r) => setTimeout(r, 40 * 3 + 40));
+    expect(
+      systemRows(store).some((m) => m.body.text.includes('force-drained'))
+    ).toBe(false);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(false);
+    expect(adapter.interruptCalls).toEqual([]);
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('working');
+
+    adapter.finishTool();
+    adapter.complete('check passed');
+    await waitFor(() => store.getAsyncRun(run.id)?.state === 'completed', 4000);
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('completed');
+  });
+
+  it('an open tool call still hits the hard ceiling (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      // The open tool call disarms the inactivity drain entirely, so the
+      // ceiling is the only bound left — which is the point of having one.
+      watchdogMs: 10_000,
+      turnCeilingMs: 60,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock forever', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.startTool('tool-forever', 'sleep infinity');
+    await waitFor(
+      () => systemRows(store).some((m) => m.body.text.includes('turn limit')),
+      4000
+    );
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    const ceiling = collectReceipts(hub, CH).find(
+      (r) => r.reasonCode === 'turn_ceiling'
+    )!;
+    expect(ceiling.state).toBe('expired_watchdog');
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('cancelled');
+  });
+
+  it('restarts the idle window when the last tool call closes (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    postWithAsyncRun(store, binder, '@mock check', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.startTool();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(
+      systemRows(store).some((m) => m.body.text.includes('force-drained'))
+    ).toBe(false);
+
+    // The tool ends and the runtime then wedges: the silence budget restarts
+    // from the completion, and a full window later the drain fires.
+    adapter.finishTool();
+    const closedAt = Date.now();
+    await waitFor(
+      () =>
+        systemRows(store).some((m) => m.body.text.includes('force-drained')),
+      4000
+    );
+    expect(Date.now() - closedAt).toBeGreaterThanOrEqual(45);
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
   });
 
   it('cross-node topics fail visibly and never spawn a local stand-in', async () => {
