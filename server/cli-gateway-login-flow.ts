@@ -67,7 +67,8 @@ export type CliGatewayLoginFlowErrorCode =
   | 'flow_not_pending'
   | 'too_many_pending'
   | 'invalid_capabilities'
-  | 'invalid_input';
+  | 'invalid_input'
+  | 'issue_failed';
 
 export class CliGatewayLoginFlowError extends Error {
   constructor(
@@ -408,15 +409,13 @@ export function createCliGatewayLoginRouter(
         );
       return;
     }
-    res
-      .type('html')
-      .send(
-        renderApprovalPage({
-          heading: 'Authorize CLI login',
-          detail: null,
-          flow,
-        })
-      );
+    res.type('html').send(
+      renderApprovalPage({
+        heading: 'Authorize CLI login',
+        detail: null,
+        flow,
+      })
+    );
   });
 
   router.post('/:flowId/approve', async (req, res) => {
@@ -459,7 +458,8 @@ export function createCliGatewayLoginRouter(
         .send(
           renderApprovalPage({
             heading: 'Invalid PIN',
-            detail: 'The PIN did not match. Try again or run `relay-ide login` for a fresh link.',
+            detail:
+              'The PIN did not match. Try again or run `relay-ide login` for a fresh link.',
             flow: options.flows.get(flowId) ?? null,
           })
         );

@@ -33,8 +33,11 @@ describe('server shutdown store closing contract', () => {
     expect(gracefulShutdownSource).toContain(
       'channelAttachmentStore?.close();'
     );
+    expect(gracefulShutdownSource).toContain(
+      'scopedActorCredentialStore?.close();'
+    );
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+scopedActorCredentialStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
@@ -66,8 +69,11 @@ describe('server shutdown store closing contract', () => {
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
     expect(updateRestartSource).toContain('workspaceSurfaceStore?.close();');
     expect(updateRestartSource).toContain('channelAttachmentStore?.close();');
+    expect(updateRestartSource).toContain(
+      'scopedActorCredentialStore?.close();'
+    );
     expect(updateRestartSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+scopedActorCredentialStore\?\.close\(\);/
     );
   });
 });

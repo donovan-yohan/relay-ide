@@ -538,7 +538,7 @@ export class ScopedActorCredentialRegistry {
       return this.deny('malformed_credential', undefined, input, []);
     }
     const credential = this.credentials.get(parsed.id);
-    if (!credential || credential.secretHash !== sha256Hex(parsed.secret)) {
+    if (!credential || !sameSecretHash(credential.secretHash, parsed.secret)) {
       return this.deny('malformed_credential', parsed.id, input, []);
     }
     if (!isScopedActorCredentialType(credential.actor.type)) {
@@ -1227,6 +1227,16 @@ function parseScopedActorToken(
   const [, id, secret] = parts;
   if (!id || !secret) return null;
   return { id, secret };
+}
+
+function sameSecretHash(storedHash: string, presentedSecret: string): boolean {
+  const presentedHash = sha256Hex(presentedSecret);
+  const storedBytes = Buffer.from(storedHash, 'hex');
+  const presentedBytes = Buffer.from(presentedHash, 'hex');
+  return (
+    storedBytes.length === presentedBytes.length &&
+    crypto.timingSafeEqual(storedBytes, presentedBytes)
+  );
 }
 
 function publicCredential(
