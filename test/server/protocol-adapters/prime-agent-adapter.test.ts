@@ -290,7 +290,7 @@ describe('PrimeAgentProtocolAdapter', () => {
           type: 'response',
           command: 'set_model',
           success: false,
-          error: 'unknown command: set_model',
+          error: 'Unknown command: set_model',
         });
       }
       return { type: 'response', command: type, success: true };
@@ -1220,6 +1220,584 @@ describe('PrimeAgentProtocolAdapter', () => {
           turnId: 'after-reconnect',
         }),
       ])
+    );
+  });
+
+  it('maps a missing-model exit to a login hint', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'No models available. Run /login…'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => client);
+
+    await expect(adapter.connect(config)).rejects.toThrow(
+      /^prime-agent has no model available/
+    );
+  });
+
+  it('does not fall back when the session lease is held', async () => {
+    let factoryCalls = 0;
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'Error: Session is already active in worker-1: /p.jsonl'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => {
+      factoryCalls += 1;
+      return client;
+    });
+
+    await expect(
+      adapter.connect({ ...config, resumeSessionId: 'p1' })
+    ).rejects.toThrow(/open in another prime-agent process/);
+    expect(factoryCalls).toBe(1);
+  });
+
+  it('appends the diagnostic tail to an unexpected close', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'worker crashed unexpectedly with SIGSEGV'
+    );
+    client.emit('close', 1);
+
+    const errorPatch = patches.find((patch) => patch.type === 'agent-error-v2');
+    expect(errorPatch).toBeDefined();
+    expect((errorPatch as { message: string }).message).toContain(
+      'worker crashed unexpectedly with SIGSEGV'
+    );
+  });
+
+  it('passes --resume and --append-system-prompt on connect', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-1' },
+    });
+    const clientFactoryOptions: PrimeAgentRpcClientOptions[] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      clientFactoryOptions.push(options);
+      return client;
+    });
+    await adapter.connect({
+      ...config,
+      resumeSessionId: 'prime-1',
+      systemPromptAppendix: 'be terse',
+    });
+    expect(clientFactoryOptions[0]?.args).toEqual([
+      '--mode',
+      'rpc',
+      '--no-extensions',
+      '--append-system-prompt',
+      'be terse',
+      '--resume',
+      'prime-1',
+    ]);
+  });
+
+  it('resumeSession respawns with the new id and keeps patch listeners', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-1', sessionFile: '/tmp/prime-1.jsonl' },
+    });
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-2', sessionFile: '/tmp/prime-2.jsonl' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'call').mockResolvedValue({
+      type: 'response',
+      command: 'prompt',
+      success: true,
+    });
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+    const patches: Array<Record<string, unknown>> = [];
+    adapter.onPatch((patch) =>
+      patches.push(patch as unknown as Record<string, unknown>)
+    );
+
+    await adapter.connect(config);
+    await adapter.resumeSession('prime-2');
+
+    expect(clients[0]!.stop).toHaveBeenCalled();
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-2'])
+    );
+    const snapshots = patches.filter(
+      (patch) => patch.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshots[snapshots.length - 1]?.session).toMatchObject({
+      providerSession: {
+        primeAgentSessionId: 'prime-2',
+        primeAgentSessionFile: '/tmp/prime-2.jsonl',
+      },
+    });
+  });
+
+  it('reconnect folds the live provider session id into --resume', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-discovered-id' },
+    });
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-discovered-id' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+
+    await adapter.connect(config);
+    await adapter.reconnect();
+
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-discovered-id'])
+    );
+  });
+
+  it('falls back to a fresh session when the resumed id is unknown', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(clients[0]!, 'diagnosticTail', 'get').mockReturnValue(
+      "Error: No session found matching 'prime-stale'."
+    );
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-fresh' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'call').mockResolvedValue({
+      type: 'response',
+      command: 'prompt',
+      success: true,
+    });
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+    const patches: Array<Record<string, unknown>> = [];
+    adapter.onPatch((patch) =>
+      patches.push(patch as unknown as Record<string, unknown>)
+    );
+
+    await adapter.connect({ ...config, resumeSessionId: 'prime-stale' });
+
+    expect(factoryArgs[0]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-stale'])
+    );
+    expect(factoryArgs[1]).not.toEqual(expect.arrayContaining(['--resume']));
+    expect(adapter.status).toBe('connected');
+
+    await adapter.sendMessage({ turnId: 't1', content: 'hello' });
+    const extensionPatches = patches.filter(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        (patch.item as { type?: string }).type === 'providerExtension'
+    );
+    expect(
+      (extensionPatches[0]?.item as { payload?: unknown })?.payload
+    ).toEqual({
+      kind: 'resumeFallback',
+      reason: 'stale-session',
+      previousSessionId: 'prime-stale',
+    });
+  });
+
+  it('forks instead of resuming when the session belongs to another cwd', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(clients[0]!, 'diagnosticTail', 'get').mockReturnValue(
+      'Session found in different project: /elsewhere'
+    );
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-forked' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+
+    await adapter.connect({ ...config, resumeSessionId: 'prime-1' });
+
+    expect(factoryArgs[0]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-1'])
+    );
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--fork', 'prime-1'])
+    );
+    expect(factoryArgs[1]).not.toEqual(expect.arrayContaining(['--resume']));
+    expect(adapter.status).toBe('connected');
+  });
+
+  it('interrupt ignores a non-matching turn id and resets abort state on failure', async () => {
+    const { adapter, call, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+
+    // Non-matching turnId: does not call abort
+    await adapter.interrupt({ turnId: 'turn-2' });
+    expect(call).not.toHaveBeenCalledWith('abort');
+
+    // Abort failure: resets abortRequested and completes turn as completed on agent_end
+    call.mockImplementation(async (type) => {
+      if (type === 'abort') {
+        throw new Error('abort failed');
+      }
+      return { type: 'response', command: type, success: true };
+    });
+    await expect(adapter.interrupt({ turnId: 'turn-1' })).rejects.toThrow(
+      'abort failed'
+    );
+
+    client.emit('event', { type: 'agent_end' });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 'turn-1',
+          status: 'completed',
+        }),
+      ])
+    );
+  });
+
+  it('terminalizes on message_end stopReason error and aborted', async () => {
+    const errorHarness = harness();
+    await errorHarness.adapter.connect(config);
+    await errorHarness.adapter.sendMessage({ turnId: 't-err', content: 'hi' });
+    errorHarness.client.emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'boom' },
+    });
+    errorHarness.client.emit('event', { type: 'agent_end' });
+    expect(errorHarness.patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't-err',
+          status: 'failed',
+          error: 'boom',
+        }),
+      ])
+    );
+
+    const abortHarness = harness();
+    await abortHarness.adapter.connect(config);
+    await abortHarness.adapter.sendMessage({
+      turnId: 't-abort',
+      content: 'hi',
+    });
+    abortHarness.client.emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'aborted' },
+    });
+    abortHarness.client.emit('event', { type: 'agent_end' });
+    expect(abortHarness.patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't-abort',
+          status: 'interrupted',
+        }),
+      ])
+    );
+  });
+
+  it('maps message_update error deltas', async () => {
+    const errorHarness = harness();
+    await errorHarness.adapter.connect(config);
+    await errorHarness.adapter.sendMessage({ turnId: 't-err', content: 'hi' });
+    errorHarness.client.emit('event', {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'error', error: 'rate limited' },
+    });
+    errorHarness.client.emit('event', { type: 'agent_end' });
+    expect(errorHarness.patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-error-v2',
+          message: 'rate limited',
+        }),
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't-err',
+          status: 'failed',
+          error: 'rate limited',
+        }),
+      ])
+    );
+
+    const abortHarness = harness();
+    await abortHarness.adapter.connect(config);
+    await abortHarness.adapter.sendMessage({
+      turnId: 't-abort',
+      content: 'hi',
+    });
+    abortHarness.client.emit('event', {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'error', reason: 'aborted' },
+    });
+    abortHarness.client.emit('event', { type: 'agent_end' });
+    expect(abortHarness.patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't-abort',
+          status: 'interrupted',
+        }),
+      ])
+    );
+  });
+
+  it('publishes idle when a run observed at connect finishes', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-1', isStreaming: true },
+    });
+    const adapter = new PrimeAgentProtocolAdapter(() => client);
+    const patches: Array<Record<string, unknown>> = [];
+    adapter.onPatch((patch) =>
+      patches.push(patch as unknown as Record<string, unknown>)
+    );
+
+    await adapter.connect(config);
+    const initialLive = patches.find(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    expect((initialLive as { live?: { status?: string } })?.live?.status).toBe(
+      'working'
+    );
+
+    client.emit('event', { type: 'agent_end' });
+    const livePatches = patches.filter(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    expect(
+      (livePatches[livePatches.length - 1] as { live?: { status?: string } })
+        ?.live?.status
+    ).toBe('idle');
+    const turnCompleted = patches.find(
+      (p) => p.type === 'agent-turn-completed-v2'
+    );
+    expect(turnCompleted).toBeUndefined();
+  });
+
+  it('surfaces auto-retry and compaction as provider extensions', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+
+    // Outside a turn: no patch emitted, no throw
+    client.emit('event', {
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 3,
+    });
+    client.emit('event', {
+      type: 'auto_retry_end',
+      success: true,
+      attempt: 1,
+    });
+    client.emit('event', { type: 'compaction_start', reason: 'tokens' });
+    client.emit('event', {
+      type: 'compaction_end',
+      reason: 'tokens',
+      result: { tokensRemoved: 100 },
+    });
+    expect(
+      patches.filter(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as { type?: string })?.type === 'providerExtension'
+      )
+    ).toHaveLength(0);
+
+    // Inside a turn: emit providerExtension items
+    await adapter.sendMessage({ turnId: 't-ext', content: 'run' });
+    client.emit('event', {
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 3,
+      error: 'transient error',
+    });
+    client.emit('event', {
+      type: 'auto_retry_end',
+      success: true,
+      attempt: 1,
+    });
+    client.emit('event', { type: 'compaction_start', reason: 'tokens' });
+    client.emit('event', {
+      type: 'compaction_end',
+      reason: 'tokens',
+      result: { tokensRemoved: 100 },
+    });
+
+    const extensions = patches
+      .filter(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as { type?: string })?.type === 'providerExtension'
+      )
+      .map((p) => (p.item as { payload?: unknown })?.payload);
+
+    expect(extensions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'autoRetry',
+          phase: 'start',
+          attempt: 1,
+          maxAttempts: 3,
+          error: 'transient error',
+        }),
+        expect.objectContaining({
+          kind: 'autoRetry',
+          phase: 'end',
+          success: true,
+          attempt: 1,
+        }),
+        expect.objectContaining({
+          kind: 'contextCompaction',
+          phase: 'start',
+          reason: 'tokens',
+        }),
+        expect.objectContaining({
+          kind: 'contextCompaction',
+          phase: 'end',
+          reason: 'tokens',
+          result: { tokensRemoved: 100 },
+        }),
+      ])
+    );
+  });
+
+  it('interrupts on a blocking extension UI request', async () => {
+    const { adapter, client, call, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-ui', content: 'ui prompt' });
+
+    // Non-dialog method: emits debug providerExtension only
+    client.emit('event', {
+      type: 'extension_ui_request',
+      id: 'notify-1',
+      method: 'notify',
+      title: 'notice',
+      message: 'just info',
+    });
+    const debugExt = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        (p.item as { payload?: { kind?: string; method?: string } })?.payload
+          ?.kind === 'extensionUi'
+    );
+    expect(debugExt).toBeDefined();
+    expect(call).not.toHaveBeenCalledWith('abort');
+
+    // Dialog method: emits error patch and calls interrupt/abort
+    client.emit('event', {
+      type: 'extension_ui_request',
+      id: 'u1',
+      method: 'select',
+      prompt: 'Kernel busy',
+    });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-error-v2',
+          message: expect.stringMatching(
+            /Prime asked a blocking UI question \(select: Kernel busy\)/
+          ),
+        }),
+      ])
+    );
+    expect(call).toHaveBeenCalledWith('abort');
+  });
+
+  it('requires confirmation for destructive controls', async () => {
+    const { adapter } = harness();
+    await adapter.connect(config);
+    // Stub a destructive control in the commandCatalog
+    (
+      adapter as unknown as { commandCatalog: Array<Record<string, unknown>> }
+    ).commandCatalog.push({
+      id: 'relay:prime-agent:wipe',
+      name: 'wipe',
+      description: 'Wipe all state',
+      source: 'builtin',
+      dispatch: 'relay-control',
+      destructive: true,
+    });
+
+    await expect(
+      adapter.executeControlCommand({ command: 'wipe' })
+    ).rejects.toThrow('Prime Agent control command requires confirmation');
+  });
+
+  it('falls through to unknown with the raw diagnostic tail when failure text changes', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'Error: Session locked by daemon lease v2'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => client);
+
+    await expect(
+      adapter.connect({ ...config, resumeSessionId: 'p1' })
+    ).rejects.toThrow(
+      'prime-agent rpc exited (code=1): Error: Session locked by daemon lease v2'
     );
   });
 });

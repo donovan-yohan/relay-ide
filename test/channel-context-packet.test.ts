@@ -213,6 +213,48 @@ describe('buildMentionContextPacket', () => {
     );
   });
 
+  it('delivers image attachments to prime-agent without degradation notes', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'channel-packet-prime-image-')
+    );
+    const payloadPath = path.join(dir, 'prime.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const part = {
+      ...imagePart('cha:prime-image'),
+      alt: 'prime diagram',
+      w: 640,
+      h: 480,
+    };
+    const store = {
+      get: (_id: string): ChannelAttachmentRecord | null => ({
+        part,
+        sha256: 'prime-sha',
+        payloadPath,
+        createdAt: 't',
+      }),
+    } as ChannelAttachmentStore;
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        {
+          content: 'packet text',
+          framework: 'prime-agent',
+          retainedMessageIds: ['chm:trigger'],
+          images: [{ part, messageId: 'chm:trigger', trigger: true }],
+        },
+        store
+      );
+
+      expect(providerDescriptor('prime-agent')?.deliversImages).toBe(true);
+      expect(resolved.attachments).toEqual([
+        { type: 'image', path: payloadPath, mimeType: 'image/png' },
+      ]);
+      expect(resolved.content).toBe('packet text');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('dedupes a chained attachment id in packet priority order', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'packet-image-dedupe-'));
     const payloadPath = path.join(dir, 'shared.png');

@@ -50,12 +50,92 @@ import type {
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { primeAgentControlDefinitions } from '../../shared/agent-command-catalog.js';
+import { createLogger } from '../logger.js';
 import {
   PrimeAgentRpcClient,
   PrimeAgentRpcResponseError,
   type PrimeAgentRpcClientOptions,
   type PrimeAgentRpcMessage,
 } from '../prime-agent-rpc-client.js';
+
+const logger = createLogger('prime-agent-adapter');
+
+export interface PrimeLaunchFailureClassification {
+  kind:
+    | 'auth'
+    | 'stale-session'
+    | 'cwd-missing'
+    | 'cwd-mismatch'
+    | 'lease-held'
+    | 'timeout'
+    | 'unknown';
+  message: string;
+}
+
+export function classifyPrimeLaunchFailure(
+  error: unknown,
+  tail: string,
+  resumeSessionId?: string
+): PrimeLaunchFailureClassification {
+  const errText = error instanceof Error ? error.message : String(error);
+  const combined = tail ? `${errText}\n${tail}` : errText;
+
+  if (
+    /^No models available/m.test(combined) ||
+    /No models available/i.test(combined)
+  ) {
+    return {
+      kind: 'auth',
+      message:
+        'prime-agent has no model available (not logged in or no provider configured). Run `prime-agent` and complete /login, then mention @<profile> again.',
+    };
+  }
+  if (/No session found matching/i.test(combined)) {
+    return {
+      kind: 'stale-session',
+      message: tail || errText,
+    };
+  }
+  if (/MissingSessionCwd|session.*working directory/i.test(combined)) {
+    return {
+      kind: 'cwd-missing',
+      message: tail || errText,
+    };
+  }
+  if (/Session found in different project/i.test(combined)) {
+    return {
+      kind: 'cwd-mismatch',
+      message: tail || errText,
+    };
+  }
+  // Verbatim Prime Agent stderr on concurrent session resume, re-confirmed
+  // unchanged on 0.9.1 (2026-09-02):
+  // "Error: Session is already active in 441b49a29f1d: /tmp/.../<id>.jsonl"
+  // The sibling resume classifications above are 0.9.1-verbatim too:
+  // "Error: No session found matching '<id>'." (stale-session) and
+  // "Session found in different project: <dir>" (cwd-mismatch).
+  if (/Session is already active/i.test(combined)) {
+    const sessionPrefix = resumeSessionId
+      ? `Prime session ${resumeSessionId}`
+      : 'Prime session';
+    return {
+      kind: 'lease-held',
+      message: `${sessionPrefix} is open in another prime-agent process. Close it (prime-agent stop/attach) or restart this agent to start a fresh session.`,
+    };
+  }
+  if (/timed?\s*out/i.test(errText)) {
+    const detail = tail && !errText.includes(tail) ? `: ${tail}` : '';
+    return {
+      kind: 'timeout',
+      message: `prime-agent did not answer get_state within 10s${detail}`,
+    };
+  }
+  const detail = tail && !errText.includes(tail) ? `: ${tail}` : '';
+  return {
+    kind: 'unknown',
+    message: `${errText}${detail}`,
+  };
+}
 
 const CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -157,6 +237,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private nextControlId = 0;
   private controlInFlightId: number | null = null;
 
+  private resumeFallbackNotice: {
+    kind: string;
+    previousSessionId: string;
+  } | null = null;
+
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
       new PrimeAgentRpcClient({ ...options, spawn: nodeSpawn })
@@ -177,10 +262,10 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     }));
   }
 
-  async connect(config: AdapterConfig): Promise<void> {
-    this.config = config;
-    this._status = 'connecting';
-    this.clearControlDiscovery();
+  private launchArgs(
+    config: AdapterConfig,
+    mode: 'resume' | 'fork' | 'fresh'
+  ): string[] {
     const args = ['--mode', 'rpc', '--no-extensions'];
     const provider = string(config.extra?.['provider']);
     const thinking = string(config.extra?.['effort']);
@@ -189,7 +274,26 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (thinking) args.push('--thinking', thinking);
     if (config.systemPromptAppendix)
       args.push('--append-system-prompt', config.systemPromptAppendix);
-    if (config.resumeSessionId) args.push('--resume', config.resumeSessionId);
+    if (config.resumeSessionId && mode === 'resume')
+      args.push('--resume', config.resumeSessionId);
+    else if (config.resumeSessionId && mode === 'fork')
+      args.push('--fork', config.resumeSessionId);
+    return args;
+  }
+
+  async connect(config: AdapterConfig): Promise<void> {
+    this.config = config;
+    this._status = 'connecting';
+    this.clearControlDiscovery();
+    this.resumeFallbackNotice = null;
+    return this.connectOnce(config, 'resume');
+  }
+
+  private async connectOnce(
+    config: AdapterConfig,
+    mode: 'resume' | 'fork' | 'fresh'
+  ): Promise<void> {
+    const args = this.launchArgs(config, mode);
     const env = buildChildEnv({ processEnv: config.processEnv });
     const client = this.clientFactory({
       command: PRIME_AGENT_CHANNEL_COMMAND,
@@ -243,7 +347,49 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         this.clearControlDiscovery();
         await client.stop().catch(() => undefined);
       }
-      throw error;
+      const classified = classifyPrimeLaunchFailure(
+        error,
+        client.diagnosticTail,
+        config.resumeSessionId
+      );
+      if (config.resumeSessionId && mode === 'resume') {
+        if (
+          classified.kind === 'stale-session' ||
+          classified.kind === 'cwd-missing'
+        ) {
+          logger.warn(
+            'prime-agent resume failed, falling back to fresh session',
+            {
+              kind: classified.kind,
+              previousSessionId: config.resumeSessionId,
+            }
+          );
+          this.resumeFallbackNotice = {
+            kind: classified.kind,
+            previousSessionId: config.resumeSessionId,
+          };
+          return await this.connectOnce(config, 'fresh');
+        }
+        if (classified.kind === 'cwd-mismatch') {
+          logger.warn(
+            'prime-agent resume failed due to cwd mismatch, falling back to --fork',
+            {
+              kind: classified.kind,
+              previousSessionId: config.resumeSessionId,
+            }
+          );
+          this.resumeFallbackNotice = {
+            kind: classified.kind,
+            previousSessionId: config.resumeSessionId,
+          };
+          return await this.connectOnce(config, 'fork');
+        }
+      }
+      logger.warn('prime-agent launch failed', {
+        kind: classified.kind,
+        message: classified.message,
+      });
+      throw new Error(classified.message, { cause: error });
     }
   }
 
@@ -425,6 +571,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private handleEvent(event: PrimeAgentRpcMessage): void {
     const type = event.type;
+    if (type === 'agent_start') {
+      logger.debug('prime-agent agent_start', {
+        activeTurnId: this.activeTurnId,
+      });
+      return;
+    }
     if (type === 'turn_start' || type === 'turn_end') return;
     if (type === 'message_start') {
       if (record(event.message).role === 'assistant')
@@ -432,15 +584,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
     if (type === 'agent_end') {
-      this.completeTurn(
-        this.abortRequested
-          ? 'interrupted'
-          : this.turnFailure
-            ? 'failed'
-            : 'completed',
-        this.turnFailure ?? undefined
-      );
-      this.advanceQueuedTurn();
+      this.handleAgentEnd();
       return;
     }
     if (type === 'message_update') {
@@ -448,21 +592,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
     if (type === 'message_end') {
-      const message = record(event.message);
-      if (message.stopReason === 'aborted') this.abortRequested = true;
-      if (message.stopReason === 'error')
-        this.turnFailure = string(
-          message.errorMessage,
-          'Prime Agent generation failed'
-        );
-      this.finishMessageItems(
-        this.abortRequested
-          ? 'cancelled'
-          : this.turnFailure
-            ? 'failed'
-            : 'completed'
-      );
-      this.captureUsage(message);
+      this.handleMessageEnd(event);
       return;
     }
     if (type === 'tool_execution_start') {
@@ -494,14 +624,153 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       );
       return;
     }
-    if (type === 'auto_retry_end' && event.success === false) {
+    if (type === 'auto_retry_start' || type === 'auto_retry_end') {
+      this.handleAutoRetry(event);
+      return;
+    }
+    if (type === 'compaction_start' || type === 'compaction_end') {
+      this.handleCompaction(event);
+      return;
+    }
+    if (type === 'extension_ui_request') {
+      this.handleExtensionUiRequest(event);
+      return;
+    }
+    logger.debug('prime-agent event unmapped', { type });
+  }
+
+  private handleAgentEnd(): void {
+    if (this.activeTurnId) {
+      this.completeTurn(
+        this.abortRequested
+          ? 'interrupted'
+          : this.turnFailure
+            ? 'failed'
+            : 'completed',
+        this.turnFailure ?? undefined
+      );
+      this.advanceQueuedTurn();
+    } else {
+      this.emitLive({
+        status: 'idle',
+        activeTurnId: null,
+        queueLength: this.queued.length,
+      });
+    }
+  }
+
+  private handleMessageEnd(event: PrimeAgentRpcMessage): void {
+    const message = record(event.message);
+    if (message.stopReason === 'aborted') this.abortRequested = true;
+    if (message.stopReason === 'error')
+      this.turnFailure = string(
+        message.errorMessage,
+        'Prime Agent generation failed'
+      );
+    this.finishMessageItems(
+      this.abortRequested
+        ? 'cancelled'
+        : this.turnFailure
+          ? 'failed'
+          : 'completed'
+    );
+    this.captureUsage(message);
+  }
+
+  private handleAutoRetry(event: PrimeAgentRpcMessage): void {
+    if (event.type === 'auto_retry_start') {
+      if (this.activeTurnId) {
+        this.emitProviderExtension(
+          {
+            kind: 'autoRetry',
+            phase: 'start',
+            ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+            ...(event.maxAttempts !== undefined
+              ? { maxAttempts: event.maxAttempts }
+              : {}),
+            ...(event.error ? { error: string(event.error) } : {}),
+          },
+          'normal'
+        );
+      } else {
+        logger.debug('prime-agent auto_retry_start outside active turn');
+      }
+      return;
+    }
+    if (event.success === false) {
       this.turnFailure = string(event.finalError, 'Prime Agent retry failed');
       this.emitError(this.turnFailure);
+    } else if (this.activeTurnId) {
+      this.emitProviderExtension(
+        {
+          kind: 'autoRetry',
+          phase: 'end',
+          success: true,
+          ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+        },
+        'normal'
+      );
+    } else {
+      logger.debug('prime-agent auto_retry_end success outside active turn');
+    }
+  }
+
+  private handleCompaction(event: PrimeAgentRpcMessage): void {
+    if (this.activeTurnId) {
+      this.emitProviderExtension(
+        {
+          kind: 'contextCompaction',
+          phase: event.type === 'compaction_start' ? 'start' : 'end',
+          ...(event.reason ? { reason: string(event.reason) } : {}),
+          ...(event.result ? { result: record(event.result) } : {}),
+        },
+        'normal'
+      );
+    } else {
+      logger.debug('prime-agent compaction outside active turn', {
+        type: event.type,
+      });
+    }
+  }
+
+  private handleExtensionUiRequest(event: PrimeAgentRpcMessage): void {
+    const method = string(event.method);
+    if (
+      method === 'select' ||
+      method === 'confirm' ||
+      method === 'input' ||
+      method === 'editor'
+    ) {
+      const promptText = string(
+        event.prompt,
+        string(event.title, string(event.message, ''))
+      );
+      const promptDetail = promptText ? `: ${promptText.slice(0, 100)}` : '';
+      this.emitError(
+        `Prime asked a blocking UI question (${method}${promptDetail}) that channels cannot answer; interrupting`
+      );
+      void this.interrupt({}).catch(() => undefined);
+    } else {
+      this.emitProviderExtension(
+        {
+          kind: 'extensionUi',
+          method,
+          ...(event.id ? { id: string(event.id) } : {}),
+          ...(event.title ? { title: string(event.title) } : {}),
+          ...(event.message ? { message: string(event.message) } : {}),
+        },
+        'debug'
+      );
     }
   }
 
   private handleMessageUpdate(delta: RpcRecord): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn message_update', {
+        type: delta.type,
+      });
+      return;
+    }
     const kind = string(delta.type);
     const index = Number(delta.contentIndex ?? 0);
     if (kind === 'text_start' || kind === 'text_delta') {
@@ -549,7 +818,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private startTool(event: RpcRecord): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn tool event', {
+        type: event.type,
+        toolCallId: event.toolCallId ?? event.id,
+      });
+      return;
+    }
     const id = this.toolIdForStart(event);
     this.ensureTool(
       id,
@@ -598,7 +873,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn tool event', {
+        type: event.type,
+        toolCallId: event.toolCallId ?? event.id,
+      });
+      return;
+    }
     const id = this.toolIdForUpdate(event);
     this.ensureTool(
       id,
@@ -795,6 +1076,18 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       activeTurnId: input.turnId,
       queueLength: this.queued.length,
     });
+    if (this.resumeFallbackNotice) {
+      const notice = this.resumeFallbackNotice;
+      this.resumeFallbackNotice = null;
+      this.emitProviderExtension(
+        {
+          kind: 'resumeFallback',
+          reason: notice.kind,
+          previousSessionId: notice.previousSessionId,
+        },
+        'normal'
+      );
+    }
   }
 
   private completeTurn(
@@ -1152,7 +1445,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
   private handleTransportClose(error: Error): void {
     if (this._status === 'disconnected') return;
-    if (this.activeTurnId) this.completeTurn('failed', error.message);
+    const tail = this.client?.diagnosticTail;
+    const message =
+      tail && !error.message.includes(tail)
+        ? `${error.message}: ${tail}`
+        : error.message;
+    if (this.activeTurnId) this.completeTurn('failed', message);
     this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this._status = 'disconnected';
@@ -1161,12 +1459,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.clientGeneration += 1;
     this.clearControlDiscovery();
     void client?.stop().catch(() => undefined);
-    this.emitError(error.message);
+    this.emitError(message);
     this.emitLive({
       status: 'disconnected',
       activeTurnId: null,
       queueLength: 0,
-      error: error.message,
+      error: message,
     });
   }
   private readImages(
