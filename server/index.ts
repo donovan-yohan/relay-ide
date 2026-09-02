@@ -434,6 +434,7 @@ import {
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
 import {
+  CliGatewayLoginFlowError,
   CliGatewayLoginFlowRegistry,
   createCliGatewayLoginRouter,
 } from './cli-gateway-login-flow.js';
@@ -2729,10 +2730,14 @@ async function main(): Promise<void> {
       });
       try {
         scopedActorCredentials.recordIssued(issued);
-      } catch (err) {
-        logger.warn(
-          'Failed to persist login-minted scoped actor credential:',
-          err
+      } catch (_persistError) {
+        cliGatewayActorRegistry.revoke(issued.credential.id, {
+          revokedBy: 'hub-persistence-failed',
+          reason: 'failed to persist scoped actor credential',
+        });
+        throw new CliGatewayLoginFlowError(
+          'issue_failed',
+          'failed to persist login-minted scoped actor credential'
         );
       }
       return issued;

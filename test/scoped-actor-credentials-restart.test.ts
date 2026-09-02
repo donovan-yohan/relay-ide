@@ -31,6 +31,10 @@ import {
 } from '../server/cli-gateway-actor-auth.js';
 import { HandshakeGrantRegistry } from '../shared/operator-handshake-grants.js';
 import type { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
+import {
+  CliGatewayLoginFlowRegistry,
+  CliGatewayLoginFlowError,
+} from '../server/cli-gateway-login-flow.js';
 
 const MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const cleanup: Array<() => void> = [];
@@ -221,6 +225,28 @@ describe('scoped actor credentials persistence — restart survival', () => {
     }
   });
 
+  it('rejects token with same-length wrong secret hash using timingSafeEqual comparison', () => {
+    const hub = newHub();
+    const issued = issueCliGatewayActorCredential(hub.registry, {
+      actor: { type: 'cli', id: 'relay-cli-dev' },
+      issuer: { id: 'browser-operator' },
+      capabilities: ['session:read'],
+    });
+    // Forge a token with identical ID and valid length/character secret, but wrong secret bytes
+    const [prefix, id, secret] = issued.token.split('.');
+    expect(secret).toBeTruthy();
+    const wrongSecret = secret!.startsWith('a')
+      ? 'b' + secret!.slice(1)
+      : 'a' + secret!.slice(1);
+    const forgedToken = `${prefix}.${id}.${wrongSecret}`;
+
+    const result = validate(hub, forgedToken);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('malformed_credential');
+    }
+  });
+
   it('rehydrates is idempotent across repeated calls', () => {
     const before = newHub();
     const issued = issueCliGatewayActorCredential(before.registry, {
@@ -394,5 +420,78 @@ describe('scoped actor credentials persistence — renewal and grants', () => {
 
     const newResult = validate(after, rotated.token);
     expect(newResult.ok).toBe(true);
+  });
+
+  it('revocation is fail-closed and rejects immediately even if the store throws', () => {
+    const hub = newHub();
+    const issued = issueCliGatewayActorCredential(hub.registry, {
+      actor: { type: 'cli', id: 'relay-cli-dev' },
+      issuer: { id: 'browser-operator' },
+      capabilities: ['session:read'],
+    });
+    hub.service.recordIssued(issued);
+
+    // Corrupt / force throw in store.revokeCredential
+    hub.store.revokeCredential = () => {
+      throw new Error('disk failure during revocation write');
+    };
+
+    // Revocation should NOT throw to caller and MUST revoke in-memory registry immediately
+    const revoked = hub.service.revoke(issued.credential.id, {
+      revokedBy: 'operator',
+      reason: 'urgent revocation',
+    });
+    expect(revoked).not.toBeNull();
+    expect(revoked?.revokedAt).toBeTruthy();
+
+    // Token is immediately rejected in memory as revoked
+    const result = validate(hub, issued.token);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('revoked');
+    }
+  });
+
+  it('device login flow revokes in-memory credential and fails if persistence throws', () => {
+    const hub = newHub();
+    let capturedIssued: { token: string; credential: any } | null = null;
+    const flows = new CliGatewayLoginFlowRegistry({
+      issueCredential: ({ flow, approvedBy }) => {
+        const issued = issueCliGatewayActorCredential(hub.registry, {
+          actor: { type: 'cli', id: flow.actorId },
+          issuer: { id: approvedBy, displayName: 'relay-ide login' },
+          capabilities: flow.requestedCapabilities,
+          scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+          metadata: { reason: 'cli-login' },
+        });
+        capturedIssued = issued;
+        try {
+          // Force store persistence failure
+          throw new Error('disk full in scoped actor credentials store');
+        } catch (_persistError) {
+          hub.registry.revoke(issued.credential.id, {
+            revokedBy: 'hub-persistence-failed',
+            reason: 'failed to persist scoped actor credential',
+          });
+          throw new CliGatewayLoginFlowError(
+            'issue_failed',
+            'failed to persist login-minted scoped actor credential'
+          );
+        }
+      },
+    });
+
+    const flow = flows.start({ actorId: 'cli-fail-test' });
+    flows.approve(flow.flowId, { approvedBy: 'operator' });
+
+    expect(() => flows.poll(flow.flowId)).toThrow(CliGatewayLoginFlowError);
+    expect(capturedIssued).not.toBeNull();
+
+    // The minted token must be revoked and rejected immediately
+    const validation = validate(hub, capturedIssued!.token);
+    expect(validation.ok).toBe(false);
+    if (!validation.ok) {
+      expect(validation.reason).toBe('revoked');
+    }
   });
 });

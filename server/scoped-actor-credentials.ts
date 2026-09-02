@@ -76,22 +76,40 @@ export function createScopedActorCredentialService(
       credentialId: string,
       input: { revokedBy: string; reason?: string; correlationId?: string }
     ): ScopedActorCredentialRecord | null {
+      const revoked = deps.registry().revoke(credentialId, input);
       const store = deps.store();
       if (store) {
-        store.revokeCredential(credentialId, { ...input, now: now() });
+        try {
+          store.revokeCredential(credentialId, { ...input, now: now() });
+        } catch (error) {
+          logger.error(
+            'Failed to persist revocation for scoped actor credential %s:',
+            credentialId,
+            error
+          );
+        }
       }
-      return deps.registry().revoke(credentialId, input);
+      return revoked;
     },
 
     revokeByGrantId(
       grantId: string,
       input: { revokedBy: string; reason?: string; correlationId?: string }
     ): ScopedActorCredentialRecord[] {
+      const revoked = deps.registry().revokeByGrantId(grantId, input);
       const store = deps.store();
       if (store) {
-        store.revokeCredentialsByGrantId(grantId, { ...input, now: now() });
+        try {
+          store.revokeCredentialsByGrantId(grantId, { ...input, now: now() });
+        } catch (error) {
+          logger.error(
+            'Failed to persist grant-backed revocation for grant %s:',
+            grantId,
+            error
+          );
+        }
       }
-      return deps.registry().revokeByGrantId(grantId, input);
+      return revoked;
     },
 
     rehydrate(): { restored: number; revoked: number; pruned: number } {
