@@ -19,12 +19,14 @@ import {
 import { actorMemberRef } from './channel-chat-router.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
+import { createLogger } from './logger.js';
 import type {
   ChannelEventSink,
   ChannelHub,
   ChannelSubscriptionCloseReason,
 } from './channel-hub.js';
 
+const logger = createLogger('channel-subscription-router');
 const CONTEXT_READ = 'context:read';
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
@@ -406,6 +408,7 @@ export function createChannelSubscriptionRouter(
       let waitingForDrain = false;
       let lagging = false;
       let droppedDeltas = false;
+      let resyncRetryScheduled = false;
       let unsubscribe: (() => void) | undefined;
       let heartbeat: NodeJS.Timeout | undefined;
       let drainDeadline: NodeJS.Timeout | undefined;
@@ -456,16 +459,57 @@ export function createChannelSubscriptionRouter(
         });
       };
 
+      const tryEmitResync = (): void => {
+        if (!droppedDeltas || ended || res.destroyed || res.writableEnded) {
+          return;
+        }
+        const sent = emitResyncRequired();
+        if (sent) {
+          droppedDeltas = false;
+          resyncRetryScheduled = false;
+          return;
+        }
+        if (ended || res.destroyed || res.writableEnded) {
+          return;
+        }
+        if (!resyncRetryScheduled) {
+          resyncRetryScheduled = true;
+          res.once('drain', () => {
+            resyncRetryScheduled = false;
+            if (
+              droppedDeltas &&
+              !ended &&
+              !res.destroyed &&
+              !res.writableEnded
+            ) {
+              const retrySent = emitResyncRequired();
+              if (retrySent) {
+                droppedDeltas = false;
+              } else if (!ended) {
+                logger.warn(
+                  'failed to emit channel-resync-required-v1 after delta shedding for %s; closing subscription for client retry',
+                  channelId
+                );
+                finish('backpressure', undefined, true);
+              }
+            }
+          });
+        } else {
+          logger.warn(
+            'failed to emit channel-resync-required-v1 after delta shedding for %s; closing subscription for client retry',
+            channelId
+          );
+          finish('backpressure', undefined, true);
+        }
+      };
+
       const onDrain = (): void => {
         waitingForDrain = false;
         if (drainDeadline) clearTimeout(drainDeadline);
         drainDeadline = undefined;
         if (res.writableLength < writableLowWatermarkBytes && lagging) {
           lagging = false;
-          if (droppedDeltas) {
-            droppedDeltas = false;
-            emitResyncRequired();
-          }
+          tryEmitResync();
         }
       };
 
@@ -560,10 +604,7 @@ export function createChannelSubscriptionRouter(
           }
           if (lagging && res.writableLength < writableLowWatermarkBytes) {
             lagging = false;
-            if (droppedDeltas) {
-              droppedDeltas = false;
-              emitResyncRequired();
-            }
+            tryEmitResync();
           }
           if (event.type === 'channel-message-delta-v1') {
             if (lagging || res.writableLength > writableSoftLimitBytes) {
@@ -636,8 +677,13 @@ export function createChannelSubscriptionRouter(
         // Heartbeats are disposable liveness signals. Never append them to a
         // response already above its high-water mark; the drain deadline owns
         // bounded termination if the client never resumes reading.
-        if (waitingForDrain || res.writableLength > writableSoftLimitBytes)
+        if (
+          waitingForDrain ||
+          lagging ||
+          res.writableLength > writableSoftLimitBytes
+        ) {
           return;
+        }
         writeFrame({
           frame: 'event',
           schemaVersion: 1,

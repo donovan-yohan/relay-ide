@@ -7501,8 +7501,8 @@ async function runGatewayChannelsSubscribe(input: {
 
   const controller = new AbortController();
   const stop = (): void => controller.abort();
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
 
   let currentAfterSeq: number | undefined = input.afterSeq;
   let lastDurableSeq: number = input.afterSeq ?? 0;
@@ -7587,7 +7587,18 @@ async function runGatewayChannelsSubscribe(input: {
           lastDurableSeq = frame['durableSeq'];
         }
         if (frame['frame'] === 'event') {
-          events += 1;
+          const payload =
+            typeof frame['payload'] === 'object' && frame['payload'] !== null
+              ? (frame['payload'] as Record<string, unknown>)
+              : undefined;
+          const eventType =
+            typeof payload?.['type'] === 'string' ? payload['type'] : '';
+          if (
+            eventType !== 'channel-heartbeat-v1' &&
+            eventType !== 'channel-resync-required-v1'
+          ) {
+            events += 1;
+          }
         }
         if (frame['frame'] === 'closed') {
           const isRetryable = frame['retryable'] === true;
@@ -7680,9 +7691,9 @@ async function runGatewayChannelsSubscribe(input: {
     }
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
-    process.removeListener('SIGINT', stop);
-    process.removeListener('SIGTERM', stop);
-    process.stdout.removeListener('error', onStdoutError);
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+    process.stdout.off('error', onStdoutError);
   }
   process.exitCode = stdoutWriteError
     ? 1

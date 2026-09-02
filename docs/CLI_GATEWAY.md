@@ -164,7 +164,11 @@ supply it on reconnect. Created and
 authoritative full-row update/completion events may advance that cursor.
 Streaming text deltas are ephemeral and never do. One connection can therefore
 observe replies to multiple posted messages without holding one wait per post.
-Use `--max-events` or `--idle-timeout-ms` for bounded automation. On a retryable
+Use `--max-events` or `--idle-timeout-ms` for bounded automation. Control
+frames (`open`, `resumed`, `closed`) and ephemeral control/sync events
+(`channel-heartbeat-v1`, `channel-resync-required-v1`) do not count toward
+`--max-events`; only substantive snapshot, message, and run events decrement
+the event budget. On a retryable
 closed frame (such as backpressure or transient transport drops), the CLI automatically
 resumes from the last known `durableSeq` (up to 10 bounded attempts with backoff),
 emitting a `resumed` frame (`{"frame":"resumed","fromSeq":N}`) on stdout while honoring
