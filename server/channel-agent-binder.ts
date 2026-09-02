@@ -317,6 +317,14 @@ export interface ChannelAgentBinder {
     text: string;
     mentions: ChannelMention[];
   }): string[];
+  /**
+   * THE mention resolver for a channel body (#1503). Resolves `@` tokens
+   * against the same contact catalog (`agentProfileStore.list()`) and provider
+   * roster (`knownProviderIds`) that delivery uses, so the row the router
+   * persists and the mentions the binder routes are one computation. Pure and
+   * synchronous: no runtime, binding, or store write.
+   */
+  resolveMentions(text: string): ChannelMention[];
   handleMessagePosted(
     message: ChannelMessage,
     mentions: ChannelMention[],
@@ -3836,16 +3844,20 @@ export function createChannelAgentBinder(
     return out;
   }
 
+  function resolveMentions(text: string): ChannelMention[] {
+    return parseMentions(
+      text,
+      deps.knownProviderIds,
+      deps.agentProfileStore?.list()
+    );
+  }
+
   function currentProfileMentions(
     message: Pick<ChannelMessage, 'body'>,
     supplied: ChannelMention[]
   ): ChannelMention[] {
     if (!deps.agentProfileStore) return supplied;
-    const reparsed = parseMentions(
-      message.body.text,
-      deps.knownProviderIds,
-      deps.agentProfileStore.list()
-    );
+    const reparsed = resolveMentions(message.body.text);
     const reparsedByRaw = new Map(
       reparsed.map((mention) => [mention.raw.toLowerCase(), mention])
     );
@@ -4204,11 +4216,7 @@ export function createChannelAgentBinder(
     if (closed) return;
     const sourceTurnId = message.source?.turnId;
     if (sourceTurnId) binding.finalMessageByTurn.set(sourceTurnId, message);
-    const mentions = parseMentions(
-      message.body.text,
-      deps.knownProviderIds,
-      deps.agentProfileStore?.list()
-    );
+    const mentions = resolveMentions(message.body.text);
     const profiles = eligibleProfiles(message, mentions);
     const explicitReturnProfiles = new Set<string>();
     if (sourceTurnId && profiles.length > 0) {
@@ -5033,6 +5041,7 @@ export function createChannelAgentBinder(
     isControlMessage,
     recoverCompletionCallbacks,
     resolvePostTargetIds,
+    resolveMentions,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },

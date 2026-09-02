@@ -73,6 +73,7 @@ import {
   isChannelPostSteering,
   parseMentions,
   type ChannelBodyFormat,
+  type ChannelMention,
   type ChannelPostSteering,
   type ChannelMessage,
   type ChannelMessageSearchResponse,
@@ -182,7 +183,7 @@ export interface ChannelChatRouterDeps {
   iaStore?: Pick<IaStore, 'listWorkspaces'> | null;
   /** @-mention routing binder (#1167); roster/interrupt/approval routes 503 without it. */
   binder?: ChannelAgentBinder | null;
-  /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
+  /** framework ids for @-mention resolution for the no-binder fallback only; with a binder wired, the binder's knownProviderIds governs. */
   knownProviderIds?: readonly string[];
   /** Private channel-runtime lookup used to authenticate source attribution. */
   getRuntime?: (runtimeId: string) =>
@@ -1426,6 +1427,32 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const auth = deps.requireAuth ?? passthrough;
   const knownProviderIds = deps.knownProviderIds ?? DEFAULT_KNOWN_PROVIDER_IDS;
 
+  /**
+   * Mentions for a durable row. The binder is THE resolver (#1503): its contact
+   * catalog + provider roster decide routing, so the persisted row must come
+   * from the same computation or `message.mentions` disagrees with delivery.
+   * Without a binder (embedding/tests) fall back to the vendor-only tokenizer
+   * over the router roster plus the topic's default provider, exactly as before.
+   *
+   * The `typeof` guard is NOT redundant even though `resolveMentions` is a
+   * required interface member: test harnesses inject `Partial<ChannelAgentBinder>`
+   * stubs (`test/channel-routes.test.ts` `binder?:` option and `commandBinder`)
+   * that lack it, and those must take the fallback rather than throw. Same
+   * reason `resolvePostTargetIds` is guarded below. Do not remove.
+   */
+  const resolveRowMentions = (
+    text: string,
+    topic: WorkspaceTopic
+  ): ChannelMention[] =>
+    typeof deps.binder?.resolveMentions === 'function'
+      ? deps.binder.resolveMentions(text)
+      : parseMentions(text, [
+          ...knownProviderIds,
+          ...(topic.routingDefaults.providerId
+            ? [topic.routingDefaults.providerId]
+            : []),
+        ]);
+
   const listAuth = deps.requireReadActorAuth?.('channels.list') ?? auth;
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const runGetAuth = deps.requireReadActorAuth?.('channels.run.get') ?? auth;
@@ -2366,13 +2393,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     // swallowing it silently would report an interrupt-and-send that did
     // neither. `steerExisting` applies the cancellation half only, and is a
     // no-op when the addressed binding has no live turn.
-    const providerIds = [
-      ...knownProviderIds,
-      ...(topic.routingDefaults.providerId
-        ? [topic.routingDefaults.providerId]
-        : []),
-    ];
-    const mentions = parseMentions(text, providerIds);
+    const mentions = resolveRowMentions(text, topic);
     // Binder admission is the single target resolver for both persistence and
     // delivery. In particular, an unmentioned human post can durably target a
     // DM default or designated orchestrator before its post+run transaction.
@@ -2501,19 +2522,13 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       );
       return;
     }
-    const providerIds = [
-      ...knownProviderIds,
-      ...(topic.routingDefaults.providerId
-        ? [topic.routingDefaults.providerId]
-        : []),
-    ];
     try {
       const message = store.editMessage({
         channelId: topic.id,
         messageId: req.params['messageId'] ?? '',
         editorId: sender.id,
         text: trimmed,
-        mentions: parseMentions(trimmed, providerIds),
+        mentions: resolveRowMentions(trimmed, topic),
       });
       // Broadcast only — NEVER `postToChannel`/`broadcastCreated`. Editing must
       // not re-run the turn the original text triggered (#1308 S1 non-goal);
