@@ -683,6 +683,15 @@ curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials/<credential
 
 Grant-backed requests are denied before minting when the handle is revoked, expired, replayed, from a different credential lane, scoped to another actor/session/task, asks for another audience, omits scope/TTL, or requests wildcard/unknown/non-allowlisted capabilities. Denial copy must mention stable reason codes, credential/grant ids, and correlation ids only; redact bearer tokens, grant handles, cookies, node credentials, approval secrets, and raw secret-looking reason strings.
 
+### Credential lifetime across hub restarts (#1546)
+
+Scoped CLI actor credentials minted via `POST /cli-gateway/actor-credentials`, approved via `relay-ide login` device authorization, renewed via `POST /cli-gateway/actor-credentials/renew`, or rotated with a handshake grant are persisted hash-only in SQLite (`scoped-actor-credentials.db`, file mode `0600`) within the hub's configuration directory.
+
+- **Restart survival:** Credentials within their valid TTL window survive hub restarts and continue to authorize requests on the gateway without requiring a re-login or re-mint.
+- **Revocations survive:** Credentials revoked prior to restart are restored with their revocation timestamp and actor attribution, and continue to fail closed with the typed `CLI_ACTOR_REVOKED` (401) error rather than a generic malformed credential error.
+- **Expired pruning:** Expired credential records are pruned from the store at boot time and are not restored into memory.
+- **Hash-only at rest:** Only the SHA-256 digest (`secretHash`) of the token secret is persisted alongside the actor, issuer, capabilities, scope, and timestamps. Raw bearer tokens and plaintext secrets are never written to disk.
+
 ### Lane separation
 
 | Lane                         | Credential source                                                                                                  | Valid surfaces                                                                                                                        | Must not satisfy                                                                                                                                  | Audit/redaction promise                                                                                                                                                    |

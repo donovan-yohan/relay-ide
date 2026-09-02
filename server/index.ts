@@ -119,6 +119,10 @@ import {
   type AgentProfileStore,
 } from './agent-profile-store.js';
 import {
+  initScopedActorCredentialStore,
+  type ScopedActorCredentialStore,
+} from './scoped-actor-credential-store.js';
+import {
   initInterventionLog,
   closeInterventionLog,
 } from './intervention-log.js';
@@ -242,6 +246,10 @@ import {
   createAgentProfileCredentialService,
   type AgentProfileCredentialService,
 } from './agent-profile-credentials.js';
+import {
+  createScopedActorCredentialService,
+  type ScopedActorCredentialService,
+} from './scoped-actor-credentials.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initChannelMessageStore,
@@ -1410,6 +1418,11 @@ function initializeHubPersistence(
         initialize: () => initChannelMessageStore(configDir),
       },
       {
+        name: 'scoped-actor-credentials',
+        criticality: 'core',
+        initialize: () => initScopedActorCredentialStore(configDir),
+      },
+      {
         name: 'intervention-log',
         criticality: 'core',
         initialize: () => initInterventionLog(configDir),
@@ -1665,6 +1678,23 @@ async function main(): Promise<void> {
     if (restored.restored > 0 || restored.pruned > 0) {
       logger.info(
         `Agent profile credentials restored: ${restored.restored} (${restored.revoked} revoked), ${restored.pruned} expired rows pruned`
+      );
+    }
+  }
+  const scopedActorCredentialStore =
+    persistenceState.get<ScopedActorCredentialStore>(
+      'scoped-actor-credentials'
+    );
+  const scopedActorCredentials: ScopedActorCredentialService =
+    createScopedActorCredentialService({
+      registry: () => cliGatewayActorRegistry,
+      store: () => scopedActorCredentialStore ?? null,
+    });
+  {
+    const restored = scopedActorCredentials.rehydrate();
+    if (restored.restored > 0 || restored.pruned > 0) {
+      logger.info(
+        `Scoped actor credentials restored: ${restored.restored} (${restored.revoked} revoked), ${restored.pruned} expired rows pruned`
       );
     }
   }
@@ -2697,6 +2727,14 @@ async function main(): Promise<void> {
         scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
         metadata: { reason: 'cli-login' },
       });
+      try {
+        scopedActorCredentials.recordIssued(issued);
+      } catch (err) {
+        logger.warn(
+          'Failed to persist login-minted scoped actor credential:',
+          err
+        );
+      }
       return issued;
     },
   });
@@ -2732,6 +2770,15 @@ async function main(): Promise<void> {
               req.body
             )
           : issueCliGatewayActorCredential(cliGatewayActorRegistry, body);
+      try {
+        scopedActorCredentials.recordIssued(issued);
+      } catch (persistError) {
+        cliGatewayActorRegistry.revoke(issued.credential.id, {
+          revokedBy: 'hub-persistence-failed',
+          reason: 'failed to persist scoped actor credential',
+        });
+        throw persistError;
+      }
       // #1455 slice 1: minting a channel-scoped actor credential on this
       // operator-authenticated route IS the invite, and it is the bridge that
       // keeps already-issued credentials and shipped peer scripts working until
@@ -2816,6 +2863,15 @@ async function main(): Promise<void> {
         validation.credential,
         body
       );
+      try {
+        scopedActorCredentials.recordIssued(issued);
+      } catch (persistError) {
+        cliGatewayActorRegistry.revoke(issued.credential.id, {
+          revokedBy: 'hub-persistence-failed',
+          reason: 'failed to persist renewed scoped actor credential',
+        });
+        throw persistError;
+      }
       res.status(201).json({
         token: issued.token,
         credential: issued.credential,
@@ -2857,7 +2913,7 @@ async function main(): Promise<void> {
       return;
     }
     const body = isRecord(req.body) ? req.body : {};
-    const credential = cliGatewayActorRegistry.revoke(id, {
+    const credential = scopedActorCredentials.revoke(id, {
       revokedBy:
         typeof body['revokedBy'] === 'string'
           ? body['revokedBy']
@@ -2900,6 +2956,13 @@ async function main(): Promise<void> {
         id,
         body
       );
+      scopedActorCredentialStore?.revokeCredential(id, {
+        revokedBy: credential.revokedBy ?? 'grant',
+        ...(credential.revocationReason
+          ? { reason: credential.revocationReason }
+          : {}),
+        correlationId: credential.correlationId,
+      });
       res.json({ credential });
     } catch (error) {
       actorLifecycleError(res, error);
@@ -2926,6 +2989,22 @@ async function main(): Promise<void> {
         id,
         body
       );
+      scopedActorCredentialStore?.revokeCredential(id, {
+        revokedBy: rotated.revoked.revokedBy ?? 'grant',
+        ...(rotated.revoked.revocationReason
+          ? { reason: rotated.revoked.revocationReason }
+          : {}),
+        correlationId: rotated.revoked.correlationId,
+      });
+      try {
+        scopedActorCredentials.recordIssued(rotated);
+      } catch (persistError) {
+        cliGatewayActorRegistry.revoke(rotated.credential.id, {
+          revokedBy: 'hub-persistence-failed',
+          reason: 'failed to persist rotated scoped actor credential',
+        });
+        throw persistError;
+      }
       res.status(201).json(rotated);
     } catch (error) {
       actorLifecycleError(res, error);
@@ -3098,7 +3177,7 @@ async function main(): Promise<void> {
       cliGatewayAuthForActorCommand: requireCliGatewayAuthForActorCommand,
       operatorHandshakeGrants: cliGatewayHandshakeGrantRegistry,
       onOperatorHandshakeGrantRevoked: (input) => {
-        cliGatewayActorRegistry.revokeByGrantId(input.grantId, {
+        scopedActorCredentials.revokeByGrantId(input.grantId, {
           revokedBy: `grant:${input.grantId}`,
           reason: input.reason ?? 'originating operator grant revoked',
           ...(input.correlationId
@@ -6693,6 +6772,7 @@ async function main(): Promise<void> {
         channelHub.close();
         channelMessageStore?.close();
         channelAttachmentStore?.close();
+        scopedActorCredentialStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -6825,6 +6905,7 @@ async function main(): Promise<void> {
     channelHub.close();
     channelMessageStore?.close();
     channelAttachmentStore?.close();
+    scopedActorCredentialStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {

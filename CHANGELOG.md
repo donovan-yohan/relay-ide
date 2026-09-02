@@ -18,6 +18,17 @@ workflow.
 
 ## [Unreleased]
 
+### Scoped CLI actor credentials across hub restart
+
+#### Fixed
+
+- Scoped CLI actor credentials minted via `POST /cli-gateway/actor-credentials`,
+  device login (`relay-ide login`), renewal (`POST /cli-gateway/actor-credentials/renew`),
+  or rotation no longer disappear on hub restart with `CLI_ACTOR_MALFORMED_CREDENTIAL`.
+  Active credentials are now persisted hash-only in SQLite (`scoped-actor-credentials.db`,
+  file mode `0600`) and restored on hub startup; expired credentials are pruned and
+  revocations are maintained as typed `CLI_ACTOR_REVOKED` refusals (#1546)
+
 ### Channel Adapters
 
 #### Fixed
