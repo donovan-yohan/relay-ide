@@ -300,7 +300,7 @@ const fixture: AdapterConformanceFixture = {
     {
       capability: 'resume',
       reason:
-        'resume needs a second scripted client generation (--resume respawn) and is deep-tested in prime-agent-adapter.test.ts; the floor fixture drives one connection',
+        'resume needs a second scripted client generation (--resume respawn) and is deep-tested in prime-agent-adapter.test.ts ("passes --resume and --append-system-prompt on connect", "resumeSession respawns with the new id and keeps patch listeners", "reconnect folds the live provider session id into --resume"); the floor fixture drives one connection',
     },
     {
       capability: 'queue',

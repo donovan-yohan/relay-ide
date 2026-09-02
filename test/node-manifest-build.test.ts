@@ -9,7 +9,9 @@
  *   - Service manager detection on macOS (launchd) vs Linux (systemd) — mocked
  */
 
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildFileRpcStatus,
@@ -245,6 +247,23 @@ describe('probeAgentAuthStatus', () => {
     // It's either 'authed' (if the test runner happens to be authed) or 'unauthed'.
     // We cannot assert 'unauthed' definitively; just assert valid shape.
     expect(['authed', 'unauthed']).toContain(result);
+  });
+
+  it('returns authed for prime-agent when ~/.prime/agent/auth.json exists and unauthed when absent', () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'prime-auth-test-'));
+    try {
+      expect(probeAgentAuthStatus('prime-agent', { homeDir: tmpHome })).toBe(
+        'unauthed'
+      );
+      const authDir = path.join(tmpHome, '.prime', 'agent');
+      fs.mkdirSync(authDir, { recursive: true });
+      fs.writeFileSync(path.join(authDir, 'auth.json'), '{}');
+      expect(probeAgentAuthStatus('prime-agent', { homeDir: tmpHome })).toBe(
+        'authed'
+      );
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 });
 
