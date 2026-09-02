@@ -108,6 +108,8 @@ export function classifyPrimeLaunchFailure(
       message: tail || errText,
     };
   }
+  // Verbatim Prime Agent 0.7.0 stderr on concurrent session resume:
+  // "Error: Session is already active in <workerId>: <sessionPath>"
   if (/Session is already active/i.test(combined)) {
     const sessionPrefix = resumeSessionId
       ? `Prime session ${resumeSessionId}`

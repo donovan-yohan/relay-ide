@@ -1783,4 +1783,21 @@ describe('PrimeAgentProtocolAdapter', () => {
       adapter.executeControlCommand({ command: 'wipe' })
     ).rejects.toThrow('Prime Agent control command requires confirmation');
   });
+
+  it('falls through to unknown with the raw diagnostic tail when failure text changes', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(client, 'diagnosticTail', 'get').mockReturnValue(
+      'Error: Session locked by daemon lease v2'
+    );
+    const adapter = new PrimeAgentProtocolAdapter(() => client);
+
+    await expect(
+      adapter.connect({ ...config, resumeSessionId: 'p1' })
+    ).rejects.toThrow(
+      'prime-agent rpc exited (code=1): Error: Session locked by daemon lease v2'
+    );
+  });
 });

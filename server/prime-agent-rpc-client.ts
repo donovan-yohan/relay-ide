@@ -65,6 +65,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
   private readonly diagnosticRing: string[] = [];
   private readonly diagnosticRingSize: number;
   private ready = false;
+  private tombstones: Array<{ command: string; expiresAt: number }> = [];
 
   constructor(private readonly options: PrimeAgentRpcClientOptions = {}) {
     super();
@@ -222,6 +223,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
     const promise = new Promise<PrimeAgentRpcMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.addTombstone(type);
         reject(
           new Error(`prime-agent RPC ${type} timed out after ${timeoutMs}ms`)
         );
@@ -231,6 +233,15 @@ export class PrimeAgentRpcClient extends EventEmitter {
     });
     this.enqueue({ id, type, ...fields });
     return promise;
+  }
+
+  private addTombstone(command: string): void {
+    const now = Date.now();
+    this.tombstones = this.tombstones.filter((t) => t.expiresAt > now);
+    this.tombstones.push({
+      command,
+      expiresAt: now + 60_000,
+    });
   }
 
   async stop(): Promise<void> {
@@ -364,6 +375,21 @@ export class PrimeAgentRpcClient extends EventEmitter {
     ) {
       // 0.7.0 dialect quirk: prime-agent returns unknown-command errors with id: undefined
       // (rpc-mode.js:371-374: error(undefined, type, "Unknown command: <type>")).
+      // Check if a timed-out call left a tombstone for this command to avoid
+      // attributing a late error response to a newer pending caller.
+      const now = Date.now();
+      this.tombstones = this.tombstones.filter((t) => t.expiresAt > now);
+      const tombstoneIndex = this.tombstones.findIndex(
+        (t) => t.command === message.command
+      );
+      if (tombstoneIndex >= 0) {
+        this.tombstones.splice(tombstoneIndex, 1);
+        this.recordDiagnostic(
+          `late id-less error for timed-out call: ${message.command}`
+        );
+        return;
+      }
+
       // Correlate to the oldest pending call for that command.
       let matchedId: string | undefined;
       let matchedPending: PendingCall | undefined;
@@ -435,6 +461,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
   private resetTransportState(error: Error): void {
     this.ready = false;
     this.rejectPending(error);
+    this.tombstones = [];
     this.framer.reset();
     this.writes.length = 0;
     this.nextId = 1;

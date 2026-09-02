@@ -408,7 +408,7 @@ describe('PrimeAgentRpcClient', () => {
     );
   });
 
-  it('routes an id-less unknown-command response to the oldest pending call with that command', async () => {
+  it('routes an id-less unknown-command response to a single pending call and emits as event when none match', async () => {
     const child = fakeChild();
     const client = new PrimeAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
@@ -451,5 +451,143 @@ describe('PrimeAgentRpcClient', () => {
         error: 'Unknown command: unrelated',
       },
     ]);
+  });
+
+  it('rejects the oldest pending call and leaves subsequent calls pending when multiple concurrent calls share a command', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    const writtenRequests: Array<{ id: string; type: string }> = [];
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string; type: string };
+      writtenRequests.push(request);
+      if (request.type === 'get_state') {
+        child.stdout.write(
+          JSON.stringify({
+            id: request.id,
+            type: 'response',
+            command: 'get_state',
+            success: true,
+          }) + '\n'
+        );
+      }
+    });
+    await client.start();
+
+    const call1 = client.call('set_model', { modelId: 'm1' });
+    const call2 = client.call('set_model', { modelId: 'm2' });
+
+    let call2Settled = false;
+    call2.then(
+      () => {
+        call2Settled = true;
+      },
+      () => {
+        call2Settled = true;
+      }
+    );
+
+    // One id-less unknown-command response arrives: rejects only the oldest call (call1)
+    child.stdout.write(
+      '{"type":"response","command":"set_model","success":false,"error":"Unknown command: set_model"}\n'
+    );
+
+    await expect(call1).rejects.toMatchObject({
+      name: 'PrimeAgentRpcResponseError',
+      command: 'set_model',
+      message: 'Unknown command: set_model',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(call2Settled).toBe(false);
+
+    // Call 2 now receives its own id-bearing response and resolves normally
+    const call2Req = writtenRequests.find(
+      (r) => r.type === 'set_model' && r.id !== writtenRequests[1]?.id
+    );
+    const call2Id = call2Req?.id ?? 'relay-3';
+    child.stdout.write(
+      JSON.stringify({
+        id: call2Id,
+        type: 'response',
+        command: 'set_model',
+        success: true,
+      }) + '\n'
+    );
+    await expect(call2).resolves.toMatchObject({
+      type: 'response',
+      command: 'set_model',
+      success: true,
+    });
+  });
+
+  it('does not reject a newer pending call when a timed-out call receives a late id-less error', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+      requestTimeoutMs: 50,
+    });
+    const writtenRequests: Array<{ id: string; type: string }> = [];
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string; type: string };
+      writtenRequests.push(request);
+      if (request.type === 'get_state') {
+        child.stdout.write(
+          JSON.stringify({
+            id: request.id,
+            type: 'response',
+            command: 'get_state',
+            success: true,
+          }) + '\n'
+        );
+      }
+    });
+    await client.start();
+
+    const call1 = client.call('set_model', { modelId: 'm1' });
+    await expect(call1).rejects.toThrow(
+      'prime-agent RPC set_model timed out after 50ms'
+    );
+
+    // Call 2 starts after Call 1 has timed out
+    const call2 = client.call('set_model', { modelId: 'm2' });
+
+    let call2Settled = false;
+    call2.then(
+      () => {
+        call2Settled = true;
+      },
+      () => {
+        call2Settled = true;
+      }
+    );
+
+    // Late id-less response for Call 1 arrives: swallowed by tombstone, call2 NOT rejected
+    child.stdout.write(
+      '{"type":"response","command":"set_model","success":false,"error":"Unknown command: set_model"}\n'
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(call2Settled).toBe(false);
+
+    // Call 2 completes normally with its own response
+    const call2Req = writtenRequests.find(
+      (r) => r.type === 'set_model' && r.id !== writtenRequests[1]?.id
+    );
+    const call2Id = call2Req?.id ?? 'relay-3';
+    child.stdout.write(
+      JSON.stringify({
+        id: call2Id,
+        type: 'response',
+        command: 'set_model',
+        success: true,
+      }) + '\n'
+    );
+    await expect(call2).resolves.toMatchObject({
+      type: 'response',
+      command: 'set_model',
+      success: true,
+    });
   });
 });
