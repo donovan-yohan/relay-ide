@@ -1639,18 +1639,59 @@ export function createChannelAgentBinder(
   // ── watchdog ────────────────────────────────────────────────────────────────
 
   /**
-   * Record that the runtime is alive for the active turn (#1541).
+   * Record that the runtime is alive FOR THE ACTIVE TURN (#1541).
    *
-   * EVERY patch counts — delta, item started/updated/completed, live-state,
-   * session update. The binder does not need to classify which shapes prove
-   * liveness: a patch arrived on this binding's own adapter subscription, so
-   * the runtime is producing. Deliberately cheap (one timestamp write, no timer
-   * churn) because this runs on every streamed token; the watchdog re-arms
-   * itself from this timestamp when it fires.
+   * Turn-scoped on purpose. A late patch echoing a turn that already ended, or
+   * a bare live-state heartbeat naming no turn at all, says nothing about the
+   * turn the watchdog is bounding — counting either would let a stale echo (or
+   * a periodic status ping from an otherwise wedged runtime) hold a genuinely
+   * stuck turn open forever, which is the failure the watchdog exists for. Only
+   * a patch whose turn id IS the active turn (directly, or through the same
+   * `parentKeyForTurn` resolution the rest of the binder uses for exact
+   * provider turn ids) refreshes the silence budget.
+   *
+   * Deliberately cheap — one timestamp write, no timer churn — because this
+   * runs on every streamed token; the watchdog re-arms itself from this
+   * timestamp when it fires.
    */
-  function noteRuntimeActivity(binding: LiveBinding): void {
-    if (binding.activeTurnId === null) return;
+  function noteRuntimeActivity(
+    binding: LiveBinding,
+    patch: AgentPatchV2
+  ): void {
+    const activeTurnId = binding.activeTurnId;
+    if (activeTurnId === null) return;
+    const turnId = patchTurnId(patch);
+    if (turnId === undefined) return;
+    if (
+      turnId !== activeTurnId &&
+      parentKeyForTurn(binding, turnId) !== activeTurnId
+    ) {
+      return;
+    }
     binding.lastActivityAt = now();
+  }
+
+  /**
+   * The turn a patch claims, or `undefined` when it names none: session
+   * updates/snapshots, and live-state patches that carry no `activeTurnId`
+   * (a bare `waitingOn` or `status` heartbeat).
+   */
+  function patchTurnId(patch: AgentPatchV2): string | undefined {
+    switch (patch.type) {
+      case 'agent-turn-started-v2':
+        return patch.turn.id;
+      case 'agent-item-started-v2':
+      case 'agent-item-delta-v2':
+      case 'agent-item-updated-v2':
+      case 'agent-turn-completed-v2':
+        return patch.turnId;
+      case 'agent-error-v2':
+        return patch.turnId;
+      case 'agent-live-state-updated-v2':
+        return patch.live.activeTurnId ?? undefined;
+      default:
+        return undefined;
+    }
   }
 
   function armWatchdog(binding: LiveBinding): void {
@@ -3535,9 +3576,10 @@ export function createChannelAgentBinder(
   }
 
   function handleBindingPatch(binding: LiveBinding, patch: AgentPatchV2): void {
-    // Liveness before interpretation (#1541): whatever this patch turns out to
-    // mean, the runtime just produced it, so the active turn is not stuck.
-    noteRuntimeActivity(binding);
+    // Liveness before interpretation (#1541): a patch that belongs to the
+    // active turn proves that turn is still producing, whatever it turns out
+    // to mean below.
+    noteRuntimeActivity(binding, patch);
     switch (patch.type) {
       case 'agent-session-updated-v2':
         if (patch.providerSession) {

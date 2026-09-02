@@ -1868,6 +1868,18 @@ class HeartbeatAdapter extends BaseProtocolAdapterV2 {
     this.timer = null;
   }
 
+  /** Emit a delta labelled with ANY turn id — used to replay a finished turn. */
+  emitDeltaFor(turnId: string): void {
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId: `a-${turnId}`,
+      delta: { text: 'stale' },
+    });
+  }
+
   complete(text = 'long job done'): void {
     const turnId = this.activeTurn;
     if (turnId === null) return;
@@ -6098,6 +6110,46 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     )!;
     expect(wd.reasonCode).toBe('watchdog_force_drain');
     expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('failed');
+  });
+
+  it('a stale patch from a FINISHED turn never extends a silent turn (#1541)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000), // never beats on its own
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    post(store, binder, '@mock first', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.complete('first done');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const finishedTurnId = adapter.sendCalls[0]!;
+
+    // A second turn opens and then says nothing at all, while the runtime keeps
+    // echoing the FINISHED turn (a real provider replays late items, and the
+    // exact-turn tombstone keeps that id resolvable for a minute). Liveness on
+    // a turn that already ended is not liveness on this one.
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() => adapter.sendCalls.length === 2);
+    const stale = setInterval(() => adapter.emitDeltaFor(finishedTurnId), 15);
+    try {
+      await waitFor(
+        () =>
+          systemRows(store).some((m) => m.body.text.includes('force-drained')),
+        4000
+      );
+    } finally {
+      clearInterval(stale);
+    }
+    // The drain hit the SILENT second turn, on schedule.
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[1]]);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
   });
 
   it('interrupts a busy turn that reaches the hard ceiling (#1541)', async () => {
