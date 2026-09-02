@@ -89,6 +89,12 @@ workflow.
   now advertises every wired channels verb — `list`, `get`, `history`,
   `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
   which were dispatchable but undiscoverable (#1472)
+- `relay-ide v1 channels post` now accepts ergonomic flags — `--channel-id`,
+  `--text`, `--format`, `--thread-id`, `--parent-message-id`, and
+  `--client-message-id` — mapping one-to-one onto the message body, alongside
+  the existing `--input-json`. The two forms are mutually exclusive; mixing them
+  is rejected with `INVALID_ARGUMENT`, and `--input-json` keeps working
+  unchanged (#1507)
 
 ### Channel mentions
 
