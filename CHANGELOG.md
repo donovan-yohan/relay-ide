@@ -18,6 +18,12 @@ workflow.
 
 ## [Unreleased]
 
+### First-class Cursor CLI channel adapter over ACP (`@cursor`)
+
+#### Added
+
+- First-class Cursor CLI channel adapter over the Agent Client Protocol (`cursor-agent acp`), enabling `@cursor` participation in channels, threads, and DMs with streaming text, reasoning thoughts, command executions, file changes, permission approvals, structured questions, canonical plans, and native session resumes (#1552).
+
 ### Scoped CLI actor credentials across hub restart
 
 #### Fixed

@@ -19,11 +19,11 @@
  */
 import { vi } from 'vitest';
 import {
-  DshAcpClient,
-  type DshAcpClientOptions,
-  type DshAcpNotification,
-  type DshAcpPeerRequest,
-} from '../../../../../server/dsh-acp-client.js';
+  AcpClient,
+  type AcpClientOptions,
+  type AcpNotification,
+  type AcpPeerRequest,
+} from '../../../../../server/acp-client.js';
 
 /**
  * Fixed ACP session identity. The server mints a UUID per `session/new`; the
@@ -51,10 +51,10 @@ export interface DshAcpRequest {
 
 export interface DshAcpClientDouble {
   /** The single client every `clientFactory` invocation hands back. */
-  client: DshAcpClient;
-  factory: (options: DshAcpClientOptions) => DshAcpClient;
+  client: AcpClient;
+  factory: (options: AcpClientOptions) => AcpClient;
   /** Options the adapter built per factory call (command, args, cwd, env). */
-  factoryOptions: DshAcpClientOptions[];
+  factoryOptions: AcpClientOptions[];
   /** Ordered requests: `session/new`, `session/resume`, … */
   requests: DshAcpRequest[];
   /** Ordered `session/prompt` payloads. */
@@ -63,15 +63,15 @@ export interface DshAcpClientDouble {
   notifications: DshAcpRequest[];
   /** Answers the adapter gave to server-to-client requests. */
   responses: Array<{ id: string | number; result: unknown }>;
-  emitNotification(notification: DshAcpNotification): void;
-  emitPeerRequest(request: DshAcpPeerRequest): void;
+  emitNotification(notification: AcpNotification): void;
+  emitPeerRequest(request: AcpPeerRequest): void;
   /** Settle the in-flight prompt, as the ACP server does when a turn ends. */
   settlePrompt(stopReason: string): boolean;
   stopped(): boolean;
 }
 
 export function makeDshAcpClientDouble(): DshAcpClientDouble {
-  const client = new DshAcpClient();
+  const client = new AcpClient();
   // The rig reuses ONE client for the whole transcript, so each `connect`
   // attaches another listener set. Production builds a fresh client per spawn
   // and never accumulates; raise the cap rather than let the rig warn.
@@ -80,7 +80,7 @@ export function makeDshAcpClientDouble(): DshAcpClientDouble {
   const prompts: Record<string, unknown>[] = [];
   const notifications: DshAcpRequest[] = [];
   const responses: Array<{ id: string | number; result: unknown }> = [];
-  const factoryOptions: DshAcpClientOptions[] = [];
+  const factoryOptions: AcpClientOptions[] = [];
   let pendingPrompt: ((value: unknown) => void) | null = null;
   let stopped = false;
 

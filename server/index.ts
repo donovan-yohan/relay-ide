@@ -341,6 +341,7 @@ import {
   AntigravityStateAdapter,
   ClaudeJsonlStateAdapter,
   CodexJsonlStateAdapter,
+  CursorStateAdapter,
   DshStateAdapter,
   PiStateAdapter,
   PrimeAgentStateAdapter,
@@ -5021,6 +5022,7 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new PiStateAdapter());
   nativeSessionRegistry.register(new PrimeAgentStateAdapter());
   nativeSessionRegistry.register(new DshStateAdapter());
+  nativeSessionRegistry.register(new CursorStateAdapter());
   // #1439: agy session store is plaintext JSONL; adapter + live tail are
   // read-only over ~/.gemini/antigravity-cli.
   nativeSessionRegistry.register(new AntigravityStateAdapter());

@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { DSH_CHANNEL_COMMAND } from './launch-commands.js';
+import { CURSOR_CHANNEL_COMMAND } from './launch-commands.js';
 import {
   ABANDONED_APPROVAL_REASON,
   TURN_ENDED_APPROVAL_REASON,
@@ -37,6 +37,8 @@ import type {
   AgentApprovalSupportV2,
   AgentCapabilitySetV2,
   AgentItemV2,
+  AgentPlanItemV2,
+  AgentQuestionItemV2,
   AgentSessionLiveStateV2,
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
@@ -48,22 +50,35 @@ import {
   type AcpPeerRequest,
 } from '../acp-client.js';
 
-const logger = createLogger('dsh-adapter');
+const logger = createLogger('cursor-adapter');
 
 /**
- * Honest capabilities for the DeepSeek Harness ACP lane (`dsh --profile acp`).
+ * Deterministic native-event -> AgentPatchV2 mapping table for Cursor ACP:
  *
- * The `true`s that carry weight, and where they come from on the wire:
- *  - `interrupt`: `session/cancel` is a real cancellation — the in-flight
- *    `session/prompt` settles with `stopReason: 'cancelled'`. Nothing is killed.
- *  - `resume`: `initialize` advertises `sessionCapabilities.resume`, and a
- *    closed session reopened with `session/resume` still remembers its history.
- *  - `approvals`: the server sends `session/request_permission` as a
- *    server-to-client REQUEST and blocks the turn until it is answered.
- *
- * The `false`s are the ACP server's own documented non-surface: it omits or
- * rejects `session/load`, deletion, fork, modes, commands, plans, terminals,
- * client filesystem operations, and elicitation.
+ * Native Event / Method               | Direction | Relay AgentPatchV2 / Item
+ * -----------------------------------|-----------|------------------------------------------
+ * initialize                         | -> Server | (readiness barrier)
+ * authenticate (cursor_login)        | -> Server | (auth handshake)
+ * session/new                        | -> Server | agent-session-snapshot-v2 (providerSession.cursorSessionId)
+ * session/load                       | -> Server | agent-session-snapshot-v2 (history suppressed during replay)
+ * session/prompt                     | -> Server | response stopReason settles turn outcome
+ * session/cancel                     | -> Server | cancels active prompt; completes turn interrupted
+ * session/update (agent_message_chunk)| <- Server | agent-item-started-v2 + agent-item-delta-v2 (assistantMessage)
+ * session/update (agent_thought_chunk)| <- Server | agent-item-started-v2 + agent-item-delta-v2 (reasoning)
+ * session/update (tool_call)         | <- Server | agent-item-started-v2 (commandExecution/fileChange/dynamicToolCall)
+ * session/update (tool_call_update)  | <- Server | agent-item-updated-v2 (completed/failed output)
+ * session/update (usage_update)      | <- Server | folded into turnUsage (totalTokens/contextPercent)
+ * session/request_permission (peer)  | <- Server | agent-item-started-v2 (approval card); -> respond allow-once/reject-once
+ * cursor/ask_question (peer)         | <- Server | agent-item-started-v2 (question item); -> respond answered/cancelled
+ * cursor/create_plan (peer)          | <- Server | agent-item-started-v2 + updated (plan card); -> respond accepted
+ * cursor/update_todos (notif/peer)   | <- Server | agent-provider-extension-v2 (todos); -> respond completed if peer
+ * cursor/task (notif/peer)           | <- Server | agent-provider-extension-v2 (task); -> respond completed if peer
+ * cursor/generate_image (notif/peer) | <- Server | agent-provider-extension-v2 (image); -> respond completed if peer
+ * unknown peer request               | <- Server | -> respondError -32601 (Method not found)
+ */
+
+/**
+ * Honest capabilities for the Cursor CLI ACP lane (`cursor-agent acp`).
  */
 const CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -72,8 +87,8 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   commandExecution: true,
   fileChanges: true,
   approvals: true,
-  questions: false,
-  plans: false,
+  questions: true,
+  plans: true,
   slashCommands: false,
   queue: true,
   steer: false,
@@ -86,80 +101,91 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   telemetry: true,
   rateLimits: false,
   streaming: true,
-  // `Required<...>`: a new protocol capability must be answered here rather than
-  // read as false by omission. See `Fidelity invariants` in AGENTS.md.
 } satisfies Required<AgentCapabilitySetV2>;
 
 const QUEUE_ABANDONED_MESSAGE =
-  'dsh session ended before this queued message was sent.';
+  'cursor session ended before this queued message was sent.';
 
 /** The ACP major version this adapter speaks. */
 const ACP_PROTOCOL_VERSION = 1;
 
-/** Profile that boots the harness's ACP stdio server. */
-const DSH_ACP_PROFILE = 'acp';
+/** Option IDs for Cursor permission requests. */
+const CURSOR_ALLOW_ONCE_ID = 'allow-once';
+const CURSOR_ALLOW_ALWAYS_ID = 'allow-always';
+const CURSOR_REJECT_ONCE_ID = 'reject-once';
 
-/**
- * The permission choices the harness offers, byte for byte
- * (`packages/acp/acp/src/index.ts`, the `approval/request` bridge). It
- * hard-codes exactly these two one-shot options and infers no durable grant, so
- * Relay advertises `once` alone: an `allow-always` decision has nowhere to go.
- */
-const DSH_ALLOW_OPTION_ID = 'allow-once';
-const DSH_REJECT_OPTION_ID = 'reject-once';
-const DSH_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
-  scopes: ['once'],
+const CURSOR_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
+  scopes: ['once', 'session'],
   amendmentTypes: [],
   canCancel: true,
 };
 
 /** Native tool names Relay renders as a command card. */
-const COMMAND_TOOL_NAMES = new Set(['bash', 'pwsh', 'terminal_bash']);
+const COMMAND_TOOL_NAMES = new Set([
+  'bash',
+  'pwsh',
+  'terminal_bash',
+  'shell',
+  'command',
+  'exec',
+]);
+
 /** Native tool names Relay renders as a file-change card. */
 const FILE_TOOL_NAMES = new Set([
   'write',
   'edit',
   'str_replace_editor',
   'str_replace_based_edit_tool',
+  'file_edit',
+  'create_file',
+  'delete_file',
 ]);
 
 type ClientFactory = (options: AcpClientOptions) => AcpClient;
 
 interface PendingApproval {
   turnId: string;
-  /** The JSON-RPC id of the server request still waiting for our answer. */
   peerRequestId: string | number;
   card: AgentApprovalItemV2;
 }
 
-export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
+interface PendingInputRequest {
+  turnId: string;
+  peerRequestId: string | number;
+  card: AgentQuestionItemV2;
+}
+
+export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
   private readonly patchSink = createPatchSink(
     () => this.sessionId,
     (patch) => this.emitPatch(patch)
   );
-  readonly agentType = 'dsh';
+  readonly agentType = 'cursor';
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CAPABILITIES;
-  /** `connect()` consumes `resumeSessionId` via `session/resume`, atomically. */
+  /** `connect()` consumes `resumeSessionId` via `session/load`, atomically. */
   readonly resumesProviderSessionDuringConnect = true;
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
   private client: AcpClient | null = null;
   private clientGeneration = 0;
-  private dshSessionId: string | null = null;
+  private cursorSessionId: string | null = null;
   private activeTurnId: string | null = null;
   private activeStartedMs = 0;
   private abortRequested = false;
   private turnUsage: AgentUsageV2 | undefined;
   private providerExtensionSequence = 0;
   private queueAdvanceInFlight = false;
+  private isReplaying = false;
   private readonly items = new Map<string, AgentItemV2>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly pendingInputRequests = new Map<
+    string,
+    PendingInputRequest
+  >();
   /** Set when a requested resume was refused and a fresh session was opened. */
   private resumeFallbackReason: string | null = null;
-  /** `configOptions` from the last session open, for the debug extension. */
-  private sessionConfigOptions: unknown[] | null = null;
 
   private readonly queued = createTurnQueue<AgentSendMessageInputV2>({
     canDrain: () =>
@@ -191,9 +217,10 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   async connect(config: AdapterConfig): Promise<void> {
     this.config = config;
     this._status = 'connecting';
+    const args = this.buildLaunchArgs(config);
     const client = this.clientFactory({
-      command: DSH_CHANNEL_COMMAND,
-      args: ['--profile', DSH_ACP_PROFILE],
+      command: CURSOR_CHANNEL_COMMAND,
+      args,
       cwd: config.cwd,
       env: this.buildEnv(config),
     });
@@ -217,7 +244,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       if (current() && this._status !== 'disconnected')
         this.handleTransportClose(
           new Error(
-            `dsh ACP transport closed${client.stderrTailText ? `: ${client.stderrTailText}` : ''}`
+            `cursor ACP transport closed${client.stderrTailText ? `: ${client.stderrTailText}` : ''}`
           )
         );
     });
@@ -225,20 +252,29 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       await client.start({
         protocolVersion: ACP_PROTOCOL_VERSION,
-        // Relay owns its own filesystem and terminal surfaces; the agent must
-        // not ask this client to perform them.
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
         },
+        clientInfo: {
+          name: 'relay-ide',
+          version: '0.1.0',
+        },
       });
+
+      // Cursor authentication handshake
+      try {
+        await client.request('authenticate', { methodId: 'cursor_login' });
+      } catch (authError) {
+        logger.debug('[cursor] authenticate step notice', {
+          error:
+            authError instanceof Error ? authError.message : String(authError),
+        });
+      }
+
       const opened = await this.openSession(client, config);
-      // `session/resume` answers without echoing the id it reopened.
-      this.dshSessionId =
+      this.cursorSessionId =
         string(opened.sessionId) || config.resumeSessionId || null;
-      this.sessionConfigOptions = Array.isArray(opened.configOptions)
-        ? opened.configOptions
-        : null;
     } catch (error) {
       this._status = 'disconnected';
       this.client = null;
@@ -261,11 +297,23 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  /**
-   * One ACP session per Relay runtime. `session/resume` reopens the persisted
-   * conversation; `session/new` starts one. Either way the workspace is the
-   * Relay-assigned cwd, which the server validates before publishing.
-   */
+  private buildLaunchArgs(config: AdapterConfig): string[] {
+    const args: string[] = [];
+    if (config.model) {
+      args.push('--model', config.model);
+    }
+    if (
+      config.permissionMode === 'yolo' ||
+      config.permissionMode === 'force' ||
+      config.permissionMode === 'bypassPermissions' ||
+      config.permissionMode === 'danger-full-access'
+    ) {
+      args.push('--yolo');
+    }
+    args.push('acp');
+    return args;
+  }
+
   private async openSession(
     client: AcpClient,
     config: AdapterConfig
@@ -273,53 +321,38 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     const params = { cwd: config.cwd, mcpServers: [] };
     if (!config.resumeSessionId)
       return record(await client.request('session/new', params));
+
     try {
-      return record(
-        await client.request('session/resume', {
+      this.isReplaying = true;
+      const result = record(
+        await client.request('session/load', {
           sessionId: config.resumeSessionId,
           ...params,
         })
       );
+      this.isReplaying = false;
+      return result;
     } catch (error) {
-      // A resume the server refuses (session gone, workspace moved) must not
-      // strand the channel: start a fresh conversation and say so on the
-      // transcript, rather than failing connect and leaving the channel mute.
+      this.isReplaying = false;
       this.resumeFallbackReason =
         error instanceof Error ? error.message : String(error);
-      logger.warn('[dsh] session/resume failed; starting a fresh session', {
+      logger.warn('[cursor] session/load failed; starting a fresh session', {
         message: this.resumeFallbackReason,
       });
       return record(await client.request('session/new', params));
     }
   }
 
-  /**
-   * Adapter-set keys land AFTER `buildChildEnv` so a named profile cannot break
-   * the one the server's own composition reads from the environment.
-   */
   private buildEnv(config: AdapterConfig): Record<string, string> {
-    // No provider extras in the denylist: the harness reads its credentials
-    // from `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`, which a named profile MUST
-    // stay able to set. Only the universal nesting set is stripped.
-    const env = buildChildEnv({ processEnv: config.processEnv });
-    // The ACP composition derives BOTH its sandbox mode and its approval policy
-    // from this one variable. Relay states it rather than inheriting whatever
-    // the hub environment held.
-    env.DSH_PERMISSION_MODE =
-      config.processEnv?.DSH_PERMISSION_MODE ??
-      config.permissionMode ??
-      'workspace-write';
-    return env;
+    return buildChildEnv({ processEnv: config.processEnv });
   }
 
   protected async onDisconnect(): Promise<void> {
     this._status = 'disconnected';
-    // Release the provider on its own wire BEFORE the client goes away, so a
-    // blocked turn is not left waiting on an answer that can never arrive.
-    this.releaseApprovals(ABANDONED_APPROVAL_REASON);
+    this.releasePendingRequests(ABANDONED_APPROVAL_REASON);
     await this.teardownClient();
     this.activeTurnId = null;
-    this.dshSessionId = null;
+    this.cursorSessionId = null;
     this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this.items.clear();
@@ -335,14 +368,14 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   async reconnect(): Promise<void> {
     await reconnectWithStoredConfig({
       config: this.config,
-      // A transport reconnect keeps the SAME dsh conversation: the ACP server
-      // persists it, so the new process resumes rather than starting over.
       transformConfig: (config) => ({
         ...config,
-        ...(this.dshSessionId ? { resumeSessionId: this.dshSessionId } : {}),
+        ...(this.cursorSessionId
+          ? { resumeSessionId: this.cursorSessionId }
+          : {}),
       }),
       disconnect: async () => {
-        this.resetForTransportSwitch('dsh transport reconnected');
+        this.resetForTransportSwitch('cursor transport reconnected');
         this._status = 'disconnected';
         await this.teardownClient();
       },
@@ -353,7 +386,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   async resumeSession(sessionId: string): Promise<void> {
     if (!this.config) throw new Error('Cannot resumeSession before connect');
     const config = { ...this.config, resumeSessionId: sessionId };
-    this.resetForTransportSwitch('dsh session switched');
+    this.resetForTransportSwitch('cursor session switched');
     this._status = 'disconnected';
     await this.teardownClient();
     await this.connect(config);
@@ -361,10 +394,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     const client = this.requireClient();
-    // Rejected BEFORE any turn patch, and before the queue: `initialize`
-    // reported `promptCapabilities.image: false` on this route, so accepting an
-    // attachment would silently drop the user's file. Nothing about that answer
-    // depends on the file, so the caller learns immediately.
     this.assertNoAttachments(input);
     if (this.activeTurnId) return this.queued.enqueue(input);
 
@@ -372,17 +401,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     this.beginPrompt(client, input);
   }
 
-  /**
-   * Issue the prompt and let it settle in the background.
-   *
-   * `sendMessage` deliberately does NOT await it. On this wire the prompt
-   * response is the whole TURN's outcome, not an acceptance receipt, and the
-   * binder treats `sendMessage` resolution as its delivery boundary — awaiting
-   * here would hold every message "undelivered" until its turn finished and
-   * would stall the send queue behind it. A prompt that rejects is ambiguous
-   * (the server may have admitted it), so it takes the transport down rather
-   * than leaving a turn Relay has given up on still streaming.
-   */
   private beginPrompt(client: AcpClient, input: AgentSendMessageInputV2): void {
     void this.runPrompt(client, input).catch((error: unknown) => {
       this.handleTransportClose(
@@ -391,21 +409,13 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  /**
-   * Send one prompt and complete the Relay turn on its RESPONSE.
-   *
-   * `session/prompt` settles only when the whole turn has: the ACP server waits
-   * for agent idle and ordered update delivery before answering, so its
-   * `stopReason` IS the turn outcome. There is no separate settled event to
-   * wait for, and no window in which a completed turn is still streaming.
-   */
   private async runPrompt(
     client: AcpClient,
     input: AgentSendMessageInputV2
   ): Promise<void> {
     const response = record(
       await client.prompt({
-        sessionId: this.dshSessionId,
+        sessionId: this.cursorSessionId,
         prompt: [{ type: 'text', text: input.content }],
       })
     );
@@ -423,26 +433,20 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queued.drain();
   }
 
-  /**
-   * Stop the active turn. `session/cancel` is a real cancellation: the pending
-   * `session/prompt` settles with `stopReason: 'cancelled'`, so nothing is
-   * killed and the conversation survives for the next turn.
-   */
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
     if (!this.activeTurnId) return;
     if (input.turnId && input.turnId !== this.activeTurnId) return;
     const client = this.client;
-    if (!client || !this.dshSessionId) return;
+    if (!client || !this.cursorSessionId) return;
     this.abortRequested = true;
-    // An outstanding approval owns the turn; answering it first releases the
-    // agent so the cancel is not queued behind a question nobody will answer.
-    this.releaseApprovals(TURN_ENDED_APPROVAL_REASON);
-    client.notify('session/cancel', { sessionId: this.dshSessionId });
+    this.releasePendingRequests(TURN_ENDED_APPROVAL_REASON);
+    client.notify('session/cancel', { sessionId: this.cursorSessionId });
   }
 
   async respondToApproval(input: AgentApprovalResponseInputV2): Promise<void> {
     const pending = this.pendingApprovals.get(input.requestId);
-    if (!pending) throw new Error(`Unknown dsh approval: ${input.requestId}`);
+    if (!pending)
+      throw new Error(`Unknown cursor approval: ${input.requestId}`);
     const client = this.requireClient();
     this.pendingApprovals.delete(input.requestId);
     const outcome =
@@ -452,8 +456,11 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
             outcome: 'selected',
             optionId:
               input.decision.kind === 'accept'
-                ? DSH_ALLOW_OPTION_ID
-                : DSH_REJECT_OPTION_ID,
+                ? input.decision.scope === 'session' ||
+                  input.decision.scope === 'permanent'
+                  ? CURSOR_ALLOW_ALWAYS_ID
+                  : CURSOR_ALLOW_ONCE_ID
+                : CURSOR_REJECT_ONCE_ID,
           };
     client.respond(pending.peerRequestId, { outcome });
     const resolved: AgentApprovalItemV2 = {
@@ -465,29 +472,79 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     };
     this.items.set(resolved.id, resolved);
     this.emitItemUpdated(resolved);
-    this.emitLive({
-      status: 'working',
-      waitingOn: this.pendingApprovals.size ? 'approval' : null,
-      activeRequestIds: [...this.pendingApprovals.keys()],
-    });
+    this.emitLiveStateUpdate();
   }
 
-  async respondToInput(_input: AgentInputResponseInputV2): Promise<void> {
-    // The ACP server explicitly does not implement elicitation.
-    throw new Error('dsh ACP questions are not mapped');
+  async respondToInput(input: AgentInputResponseInputV2): Promise<void> {
+    const pending = this.pendingInputRequests.get(input.requestId);
+    if (!pending)
+      throw new Error(`Unknown cursor question: ${input.requestId}`);
+    const client = this.requireClient();
+    this.pendingInputRequests.delete(input.requestId);
+
+    const formattedAnswers = Object.entries(input.answers).map(
+      ([questionId, selectedOptionIds]) => ({
+        questionId,
+        selectedOptionIds,
+      })
+    );
+
+    client.respond(pending.peerRequestId, {
+      outcome: {
+        outcome: 'answered',
+        answers: formattedAnswers,
+      },
+    });
+
+    const resolved: AgentQuestionItemV2 = {
+      ...pending.card,
+      answers: input.answers,
+      status: 'completed',
+      completedAt: nowIso(),
+    };
+    this.items.set(resolved.id, resolved);
+    this.emitItemUpdated(resolved);
+    this.emitLiveStateUpdate();
   }
 
   // ── Wire routing ───────────────────────────────────────────────────────────
 
   private handleNotification(notification: AcpNotification): void {
     const { method, params } = notification;
+    if (this.isReplaying) return;
+
+    if (method === 'cursor/update_todos') {
+      this.emitProviderExtension(
+        { kind: 'todos', todos: params.todos ?? [] },
+        'debug'
+      );
+      return;
+    }
+    if (method === 'cursor/task') {
+      this.emitProviderExtension({ kind: 'task', ...params }, 'debug');
+      return;
+    }
+    if (method === 'cursor/generate_image') {
+      this.emitProviderExtension(
+        { kind: 'generate_image', ...params },
+        'debug'
+      );
+      return;
+    }
+
     if (method !== 'session/update') {
-      logger.debug('[dsh] unmapped native notification', { method });
+      logger.debug('[cursor] unmapped native notification', { method });
       return;
     }
     const sessionId = string(params.sessionId);
-    if (this.dshSessionId && sessionId && sessionId !== this.dshSessionId) {
-      logger.debug('[dsh] ignoring update for another session', { sessionId });
+    if (
+      this.cursorSessionId &&
+      sessionId &&
+      sessionId !== this.cursorSessionId
+    ) {
+      logger.debug('[cursor] ignoring update for another session', {
+        sessionId,
+      });
       return;
     }
     const update = record(params.update);
@@ -508,52 +565,69 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'usage_update':
         this.applyUsage(update);
         return;
-      case 'config_option_update':
-        this.sessionConfigOptions = Array.isArray(update.configOptions)
-          ? update.configOptions
-          : this.sessionConfigOptions;
-        this.emitProviderExtension(
-          { kind: 'configOptions', options: this.sessionConfigOptions ?? [] },
-          'debug'
-        );
-        return;
       default:
-        // A logged gap, never a silent drop.
-        logger.debug('[dsh] unmapped native session update', { kind });
+        logger.debug('[cursor] unmapped native session update', { kind });
     }
   }
 
-  /**
-   * The ACP server is the only stdio harness Relay talks to that can send US a
-   * request. An unanswered one blocks the agent's turn forever, so every branch
-   * here must answer — including the unknown-method one.
-   */
   private handlePeerRequest(request: AcpPeerRequest): void {
     const client = this.client;
     if (!client) return;
-    if (request.method !== 'session/request_permission') {
-      logger.debug('[dsh] unmapped native peer request', {
-        method: request.method,
-      });
-      // JSON-RPC "method not found": the server learns immediately instead of
-      // waiting on an answer this client cannot form.
-      client.respondError(
-        request.id,
-        -32601,
-        `Relay does not implement ${request.method}`
-      );
+
+    if (request.method === 'session/request_permission') {
+      this.handlePermissionRequest(request);
       return;
     }
+    if (request.method === 'cursor/ask_question') {
+      this.handleQuestionRequest(request);
+      return;
+    }
+    if (request.method === 'cursor/create_plan') {
+      this.handlePlanRequest(request);
+      return;
+    }
+    if (request.method === 'cursor/update_todos') {
+      this.emitProviderExtension(
+        { kind: 'todos', todos: request.params.todos ?? [] },
+        'debug'
+      );
+      client.respond(request.id, { outcome: { outcome: 'completed' } });
+      return;
+    }
+    if (request.method === 'cursor/task') {
+      this.emitProviderExtension({ kind: 'task', ...request.params }, 'debug');
+      client.respond(request.id, { outcome: { outcome: 'completed' } });
+      return;
+    }
+    if (request.method === 'cursor/generate_image') {
+      this.emitProviderExtension(
+        { kind: 'generate_image', ...request.params },
+        'debug'
+      );
+      client.respond(request.id, { outcome: { outcome: 'completed' } });
+      return;
+    }
+
+    logger.debug('[cursor] unmapped native peer request', {
+      method: request.method,
+    });
+    client.respondError(
+      request.id,
+      -32601,
+      `Relay does not implement ${request.method}`
+    );
+  }
+
+  private handlePermissionRequest(request: AcpPeerRequest): void {
+    const client = this.client;
+    if (!client) return;
     const turnId = this.activeTurnId;
     if (!turnId) {
-      // No Relay turn owns this request, so there is no card to raise and
-      // nobody to ask. `cancelled` is ACP's own "the client did not choose"
-      // and releases the agent immediately.
       client.respond(request.id, { outcome: { outcome: 'cancelled' } });
       return;
     }
     const toolCallId = string(record(request.params.toolCall).toolCallId);
-    const requestId = `dsh-approval-${String(request.id)}`;
+    const requestId = `cursor-approval-${String(request.id)}`;
     const target = this.approvalTarget(toolCallId);
     const startedAt = nowIso();
     const card: AgentApprovalItemV2 = {
@@ -561,9 +635,9 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       id: `approval-${requestId}`,
       requestId,
       kind: 'permission',
-      description: `dsh wants to run ${target}`,
+      description: `Cursor wants to run ${target}`,
       target,
-      supported: DSH_APPROVAL_SUPPORT,
+      supported: CURSOR_APPROVAL_SUPPORT,
       status: 'pending',
       startedAt,
     };
@@ -580,16 +654,106 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId,
       item: card,
     });
-    this.emitLive({
-      status: 'waiting',
-      activeTurnId: turnId,
-      waitingOn: 'approval',
-      activeRequestIds: [...this.pendingApprovals.keys()],
-      queueLength: this.queued.length,
-    });
+    this.emitLiveStateUpdate();
   }
 
-  /** The best human label for what is being approved: the tool card, or its id. */
+  private handleQuestionRequest(request: AcpPeerRequest): void {
+    const client = this.client;
+    if (!client) return;
+    const turnId = this.activeTurnId;
+    if (!turnId) {
+      client.respond(request.id, { outcome: { outcome: 'cancelled' } });
+      return;
+    }
+
+    const requestId = `cursor-question-${String(request.id)}`;
+    const startedAt = nowIso();
+    const rawQuestions = Array.isArray(request.params.questions)
+      ? (request.params.questions as Array<Record<string, unknown>>)
+      : [];
+    const title = string(request.params.title);
+
+    const questionText =
+      rawQuestions
+        .map((q) => string(q.prompt))
+        .filter(Boolean)
+        .join(' / ') ||
+      title ||
+      'Cursor requires input';
+
+    const card: AgentQuestionItemV2 = {
+      type: 'question',
+      id: `question-${requestId}`,
+      requestId,
+      question: questionText,
+      fields: rawQuestions.map((q) => ({
+        id: string(q.id),
+        prompt: string(q.prompt),
+        options: Array.isArray(q.options) ? q.options : [],
+        allowMultiple: Boolean(q.allowMultiple),
+      })),
+      status: 'running',
+      startedAt,
+    };
+
+    this.pendingInputRequests.set(requestId, {
+      turnId,
+      peerRequestId: request.id,
+      card,
+    });
+    this.items.set(card.id, card);
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turnId,
+      item: card,
+    });
+    this.emitLiveStateUpdate();
+  }
+
+  private handlePlanRequest(request: AcpPeerRequest): void {
+    const client = this.client;
+    if (!client) return;
+    const turnId = this.activeTurnId;
+    const planText =
+      string(request.params.plan) ||
+      string(request.params.overview) ||
+      string(request.params.name) ||
+      'Proposed plan';
+    const toolCallId = string(request.params.toolCallId);
+    const planId = toolCallId || `plan-${String(request.id)}`;
+
+    if (turnId) {
+      const rawTodos = Array.isArray(request.params.todos)
+        ? (request.params.todos as Array<Record<string, unknown>>)
+        : [];
+      const steps = rawTodos.map((todo) => ({
+        step: string(todo.content, string(todo.id, 'Task')),
+        status: (string(todo.status) === 'completed'
+          ? 'completed'
+          : string(todo.status) === 'in_progress'
+            ? 'inProgress'
+            : 'pending') as 'pending' | 'inProgress' | 'completed',
+      }));
+
+      const planItem: AgentPlanItemV2 = {
+        type: 'plan',
+        id: planId,
+        text: planText,
+        ...(steps.length > 0 ? { steps } : {}),
+        status: 'completed',
+        startedAt: nowIso(),
+        completedAt: nowIso(),
+      };
+
+      this.ensureItem(planId, planItem);
+    }
+
+    // Accept the plan so Cursor continues execution without blocking
+    client.respond(request.id, { outcome: { outcome: 'accepted' } });
+  }
+
   private approvalTarget(toolCallId: string): string {
     const item = this.items.get(toolCallId);
     if (item?.type === 'commandExecution') return item.command;
@@ -600,11 +764,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // ── Update mapping ─────────────────────────────────────────────────────────
 
-  /**
-   * ACP chunks carry a native `messageId`, so one assistant message keeps one
-   * card across however many chunks the server commits for it, and a later
-   * message in the same turn opens its own.
-   */
   private appendMessageChunk(
     role: 'assistant' | 'reasoning',
     update: Record<string, unknown>
@@ -643,8 +802,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     const id = string(update.toolCallId);
     if (!id || this.items.has(id)) return;
     const name = string(update.title, 'tool');
-    // `rawInput` is the parsed tool arguments; the server falls back to the raw
-    // string when the model emitted invalid JSON, which is not a record.
     const args = isRecord(update.rawInput) ? update.rawInput : {};
     let item: AgentItemV2;
     if (COMMAND_TOOL_NAMES.has(name))
@@ -664,7 +821,8 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
         paths: [
           {
             path: string(args.file_path ?? args.path),
-            status: name === 'write' ? 'added' : 'edited',
+            status:
+              name === 'write' || name === 'create_file' ? 'added' : 'edited',
           },
         ],
         applyStatus: 'pending',
@@ -675,7 +833,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       item = {
         type: 'dynamicToolCall',
         id,
-        namespace: 'dsh',
+        namespace: 'cursor',
         tool: name,
         arguments: args,
         status: 'running',
@@ -689,12 +847,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     const id = string(update.toolCallId);
     const item = this.items.get(id);
     if (!item) return;
-    // ACP streams tool PROGRESS through the same `tool_call_update` it uses to
-    // report the result, distinguished only by `status`. Terminalizing the item
-    // on a progress update told the channel binder the tool had finished while
-    // it was still running, which (#1548) reopens the inactivity watchdog on a
-    // turn that is busy. The result update that follows carries the full output
-    // anyway, so nothing is lost by ignoring the progress ones.
     const acpStatus = string(update.status);
     if (acpStatus === 'pending' || acpStatus === 'in_progress') return;
     const failed = acpStatus === 'failed';
@@ -727,10 +879,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     this.emitItemUpdated(updated);
   }
 
-  /**
-   * ACP reports context OCCUPANCY (`used` of `size`), not per-turn input and
-   * output tokens, so the turn total is the LAST reading rather than a sum.
-   */
   private applyUsage(update: Record<string, unknown>): void {
     const used = numberOr(update.used, -1);
     const size = numberOr(update.size, -1);
@@ -759,7 +907,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     this.ensureItem(`user-${input.turnId}`, {
       type: 'userMessage',
       id: `user-${input.turnId}`,
-      text: input.content,
+      text: input.content ?? '',
       status: 'completed',
       completedAt: timestamp,
     });
@@ -778,9 +926,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   ): void {
     const turnId = this.activeTurnId;
     if (!turnId) return;
-    // An approval still on screen when the turn ends is answered on the wire
-    // and terminalized, never left actionable.
-    this.releaseApprovals(TURN_ENDED_APPROVAL_REASON);
+    this.releasePendingRequests(TURN_ENDED_APPROVAL_REASON);
     this.terminalizeRunningItems(
       status === 'completed'
         ? 'completed'
@@ -811,12 +957,6 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  /**
-   * Start one queued turn. Attachments are already excluded — `sendMessage`
-   * rejects them before the queue ever sees them — so the only failure left
-   * here is a dead transport, which rejects this entry and lets the queue
-   * reject the rest.
-   */
   private runQueuedTurn(next: AgentSendMessageInputV2): void {
     this.queueAdvanceInFlight = true;
     try {
@@ -831,7 +971,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   private assertNoAttachments(input: AgentSendMessageInputV2): void {
     if (input.attachments && input.attachments.length > 0)
       throw new Error(
-        'dsh channel runtime does not accept attachments on this lane'
+        'cursor channel runtime does not accept attachments on this lane'
       );
   }
 
@@ -863,38 +1003,57 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
 
-  /**
-   * Answer every outstanding permission request on the wire and terminalize its
-   * card. Shared choreography owns the card; the `denyOnWire` hook is the dsh
-   * quirk — the ACP `cancelled` outcome, which is the protocol's own "the
-   * client did not choose".
-   */
-  private releaseApprovals(reason: string): void {
-    if (this.pendingApprovals.size === 0) return;
+  private releasePendingRequests(reason: string): void {
     const client = this.client;
-    const entries = [...this.pendingApprovals.entries()];
-    const approvals: AbandonedApprovalV2[] = entries.map(
-      ([requestId, pending]) => ({
-        requestId,
-        turnId: pending.turnId,
-        card: pending.card,
-      })
-    );
-    const peerIds = new Map(
-      entries.map(([requestId, pending]) => [requestId, pending.peerRequestId])
-    );
-    this.pendingApprovals.clear();
-    resolveAbandonedApprovals({
-      sessionId: this.sessionId,
-      approvals,
-      emitPatch: (patch) => this.emitPatch(patch),
-      denyOnWire: (approval) => {
-        const peerId = peerIds.get(approval.requestId);
-        if (client && peerId !== undefined)
-          client.respond(peerId, { outcome: { outcome: 'cancelled' } });
-      },
-      reason,
-    });
+
+    // Approvals
+    if (this.pendingApprovals.size > 0) {
+      const entries = [...this.pendingApprovals.entries()];
+      const approvals: AbandonedApprovalV2[] = entries.map(
+        ([requestId, pending]) => ({
+          requestId,
+          turnId: pending.turnId,
+          card: pending.card,
+        })
+      );
+      const peerIds = new Map(
+        entries.map(([requestId, pending]) => [
+          requestId,
+          pending.peerRequestId,
+        ])
+      );
+      this.pendingApprovals.clear();
+      resolveAbandonedApprovals({
+        sessionId: this.sessionId,
+        approvals,
+        emitPatch: (patch) => this.emitPatch(patch),
+        denyOnWire: (approval) => {
+          const peerId = peerIds.get(approval.requestId);
+          if (client && peerId !== undefined)
+            client.respond(peerId, { outcome: { outcome: 'cancelled' } });
+        },
+        reason,
+      });
+    }
+
+    // Questions / Inputs
+    if (this.pendingInputRequests.size > 0) {
+      for (const [requestId, pending] of this.pendingInputRequests) {
+        if (client) {
+          client.respond(pending.peerRequestId, {
+            outcome: { outcome: 'cancelled' },
+          });
+        }
+        const updated: AgentQuestionItemV2 = {
+          ...pending.card,
+          status: 'cancelled',
+          completedAt: nowIso(),
+        };
+        this.items.set(requestId, updated);
+        this.emitItemUpdated(updated);
+      }
+      this.pendingInputRequests.clear();
+    }
   }
 
   private ensureItem(id: string, item: AgentItemV2): void {
@@ -953,7 +1112,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!this.activeTurnId) return;
     emitProviderExtensionPatch(this.patchSink, {
       turnId: this.activeTurnId,
-      namespace: 'dsh',
+      namespace: 'cursor',
       seq: ++this.providerExtensionSequence,
       payload,
       visibility,
@@ -964,6 +1123,26 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     emitLiveStatePatch(this.patchSink, live);
   }
 
+  private emitLiveStateUpdate(): void {
+    const activeRequestIds = [
+      ...this.pendingApprovals.keys(),
+      ...this.pendingInputRequests.keys(),
+    ];
+    const waitingOn = this.pendingApprovals.size
+      ? 'approval'
+      : this.pendingInputRequests.size
+        ? 'question'
+        : null;
+
+    this.emitLive({
+      status: waitingOn ? 'waiting' : 'working',
+      activeTurnId: this.activeTurnId,
+      waitingOn,
+      activeRequestIds,
+      queueLength: this.queued.length,
+    });
+  }
+
   private emitSnapshot(): void {
     if (!this.config) return;
     this.emitPatch({
@@ -972,29 +1151,25 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       session: emptyAgentSessionV2({
         id: this.sessionId,
-        provider: 'dsh',
+        provider: 'cursor',
         cwd: this.config.cwd,
         capabilities: this.capabilities,
-        // The persisted ACP session id. This IS the resume key — the descriptor
-        // names it `dshSessionId` and `session/resume` reopens it.
-        providerSession: this.dshSessionId
-          ? { dshSessionId: this.dshSessionId }
+        providerSession: this.cursorSessionId
+          ? { cursorSessionId: this.cursorSessionId }
           : {},
       }),
     });
     if (this.resumeFallbackReason) {
-      // Say it once, on the transcript: the operator asked to continue a
-      // conversation and got a fresh one instead.
       emitErrorPatch(
         this.patchSink,
-        `dsh could not resume the previous session (${this.resumeFallbackReason}); started a new one.`
+        `cursor could not resume the previous session (${this.resumeFallbackReason}); started a new one.`
       );
       this.resumeFallbackReason = null;
     }
   }
 
   private resetForTransportSwitch(reason: string): void {
-    this.releaseApprovals(ABANDONED_APPROVAL_REASON);
+    this.releasePendingRequests(ABANDONED_APPROVAL_REASON);
     if (this.activeTurnId) this.completeTurn('failed', reason);
     this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
@@ -1002,18 +1177,18 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private get sessionId(): string {
-    return this.config?.sessionId ?? 'dsh';
+    return this.config?.sessionId ?? 'cursor';
   }
 
   private requireClient(): AcpClient {
     if (this._status !== 'connected' || !this.client)
-      throw new Error('dsh adapter is not connected');
+      throw new Error('cursor adapter is not connected');
     return this.client;
   }
 
   private handleTransportClose(error: Error): void {
     if (this._status === 'disconnected') return;
-    this.releaseApprovals(ABANDONED_APPROVAL_REASON);
+    this.releasePendingRequests(ABANDONED_APPROVAL_REASON);
     if (this.activeTurnId) this.completeTurn('failed', error.message);
     this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
@@ -1034,16 +1209,14 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
-/** Operator-facing text for the non-`end_turn` ACP stop reasons. */
 function stopReasonMessage(stopReason: string): string {
-  if (stopReason === 'max_tokens') return 'dsh hit its output-token limit';
+  if (stopReason === 'max_tokens') return 'cursor hit its output-token limit';
   if (stopReason === 'max_turn_requests')
-    return 'dsh hit its per-turn request limit';
-  if (stopReason === 'refusal') return 'dsh refused this request';
-  return `dsh ended the turn: ${stopReason}`;
+    return 'cursor hit its per-turn request limit';
+  if (stopReason === 'refusal') return 'cursor refused this request';
+  return `cursor ended the turn: ${stopReason}`;
 }
 
-/** Flatten an ACP `ToolCallContent[]` to its text. */
 function toolContentText(value: unknown): string {
   if (!Array.isArray(value)) return '';
   return value

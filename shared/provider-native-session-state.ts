@@ -14,6 +14,7 @@ export type NativeSessionProvider = Extract<
   | 'pi'
   | 'prime-agent'
   | 'dsh'
+  | 'cursor'
   | 'antigravity'
 >;
 

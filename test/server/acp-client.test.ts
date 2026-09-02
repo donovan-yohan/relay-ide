@@ -1,13 +1,12 @@
 /**
- * Transport-level tests for the dsh ACP stdio client.
+ * Transport-level tests for the provider-neutral ACP stdio client.
  *
- * Everything runs against a fake subprocess (`makeHarness`) — no dsh install,
- * no network. The wire shapes asserted here are transcribed from a real
- * `deepseek-harness-acp` 0.0.1 capture; see `test/fixtures/dsh/README.md`.
+ * Everything runs against a fake subprocess (`makeHarness`) — no real install,
+ * no network. The wire shapes asserted here are transcribed from real ACP captures.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
-import { DshAcpClient } from '../../server/dsh-acp-client.js';
+import { AcpClient } from '../../server/acp-client.js';
 import { makeHarness } from './protocol-adapters/support/claude-child-double.js';
 
 type Harness = ReturnType<typeof makeHarness>;
@@ -15,16 +14,18 @@ type Harness = ReturnType<typeof makeHarness>;
 function makeClient(
   harness: Harness,
   overrides: Partial<{
+    command: string;
+    args: string[];
     readinessTimeoutMs: number;
     requestTimeoutMs: number;
     promptTimeoutMs: number;
     stopTimeoutMs: number;
     maxRecordBytes: number;
   }> = {}
-): DshAcpClient {
-  return new DshAcpClient({
-    command: 'dsh',
-    args: ['--profile', 'acp'],
+): AcpClient {
+  return new AcpClient({
+    command: 'agent',
+    args: ['acp'],
     cwd: '/repo',
     env: { PATH: '/usr/bin' },
     readinessTimeoutMs: 500,
@@ -47,10 +48,9 @@ const INITIALIZE = {
   },
 };
 
-/** The real `initialize` result, transcribed from the capture. */
 const INITIALIZE_RESULT = {
   protocolVersion: 1,
-  agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
+  agentInfo: { name: 'test-acp-server', version: '0.0.1' },
   agentCapabilities: {
     mcpCapabilities: { http: true },
     promptCapabilities: { image: false, audio: false, embeddedContext: false },
@@ -61,28 +61,26 @@ const INITIALIZE_RESULT = {
 
 async function completeStart(
   harness: Harness,
-  client: DshAcpClient
+  client: AcpClient
 ): Promise<void> {
   const started = client.start(INITIALIZE);
   const frames = await harness.latest().child.waitForFrames(1);
-  harness
-    .latest()
-    .child.serverWrite({
-      jsonrpc: '2.0',
-      id: frames[0]!.id,
-      result: INITIALIZE_RESULT,
-    });
+  harness.latest().child.serverWrite({
+    jsonrpc: '2.0',
+    id: frames[0]!.id,
+    result: INITIALIZE_RESULT,
+  });
   await started;
 }
 
-describe('DshAcpClient', () => {
-  it('start spawns the ACP profile and resolves on the correlated initialize', async () => {
+describe('AcpClient', () => {
+  it('start spawns the ACP server and resolves on the correlated initialize', async () => {
     const harness = makeHarness();
-    const client = makeClient(harness);
+    const client = makeClient(harness, { command: 'agent', args: ['acp'] });
     const started = client.start(INITIALIZE);
     const frames = await harness.latest().child.waitForFrames(1);
-    expect(harness.latest().command).toBe('dsh');
-    expect(harness.latest().args).toEqual(['--profile', 'acp']);
+    expect(harness.latest().command).toBe('agent');
+    expect(harness.latest().args).toEqual(['acp']);
     expect(harness.latest().options.cwd).toBe('/repo');
     expect(frames[0]).toEqual({
       jsonrpc: '2.0',
@@ -94,7 +92,7 @@ describe('DshAcpClient', () => {
       .latest()
       .child.serverWrite({ jsonrpc: '2.0', id: 1, result: INITIALIZE_RESULT });
     await expect(started).resolves.toMatchObject({
-      agentInfo: { name: 'deepseek-harness-acp' },
+      agentInfo: { name: 'test-acp-server' },
       agentCapabilities: { sessionCapabilities: { resume: {} } },
     });
     await client.stop();
@@ -114,13 +112,11 @@ describe('DshAcpClient', () => {
     harness
       .latest()
       .child.serverWrite({ jsonrpc: '2.0', id: 3, result: { sessions: [] } });
-    harness
-      .latest()
-      .child.serverWrite({
-        jsonrpc: '2.0',
-        id: 2,
-        result: { sessionId: 's-1' },
-      });
+    harness.latest().child.serverWrite({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { sessionId: 's-1' },
+    });
 
     await expect(second).resolves.toEqual({ sessions: [] });
     await expect(first).resolves.toEqual({ sessionId: 's-1' });
@@ -142,7 +138,7 @@ describe('DshAcpClient', () => {
         update: {
           sessionUpdate: 'agent_message_chunk',
           messageId: 'm-1',
-          content: { type: 'text', text: 'DSH_LIVE_OK' },
+          content: { type: 'text', text: 'HELLO_ACP' },
         },
       },
     });
@@ -152,8 +148,6 @@ describe('DshAcpClient', () => {
   });
 
   it('routes a frame carrying BOTH id and method as a peer request, not a response', async () => {
-    // The ACP server is the only stdio peer that sends Relay requests; treating
-    // one as an uncorrelated response would leave its turn blocked forever.
     const harness = makeHarness();
     const client = makeClient(harness);
     const peers: Array<{ id: string | number; method: string }> = [];
@@ -241,13 +235,11 @@ describe('DshAcpClient', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(settled).toBe(false);
-    harness
-      .latest()
-      .child.serverWrite({
-        jsonrpc: '2.0',
-        id: 2,
-        result: { stopReason: 'end_turn' },
-      });
+    harness.latest().child.serverWrite({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { stopReason: 'end_turn' },
+    });
     await expect(pending).resolves.toEqual({ stopReason: 'end_turn' });
     await client.stop();
   });
@@ -291,13 +283,12 @@ describe('DshAcpClient', () => {
       },
     });
     await vi.waitFor(() => expect(seen).toHaveLength(1));
-    expect(errors[0]?.message).toContain('Invalid dsh ACP JSON');
+    expect(errors[0]?.message).toContain('Invalid ACP JSON');
     await client.stop();
   });
 
   it('emits protocolError on an oversized record without losing framing', async () => {
     const harness = makeHarness();
-    // Above the real `initialize` result, which must still get through.
     const client = makeClient(harness, { maxRecordBytes: 1024 });
     const errors: Error[] = [];
     const seen: unknown[] = [];
@@ -340,7 +331,7 @@ describe('DshAcpClient', () => {
     const client = makeClient(harness);
     await completeStart(harness, client);
 
-    harness.latest().child.emitStderr('dsh: plugin tree failed to load');
+    harness.latest().child.emitStderr('server: plugin tree failed to load');
     const pending = client.prompt({ sessionId: 's-1', prompt: [] });
     await harness.latest().child.waitForFrames(2);
     await vi.waitFor(() =>
@@ -349,7 +340,7 @@ describe('DshAcpClient', () => {
     harness.latest().child.emitClose(1);
 
     await expect(pending).rejects.toThrow(
-      /dsh ACP server exited \(code=1\).*plugin tree failed to load/s
+      /ACP server exited \(code=1\).*plugin tree failed to load/s
     );
   });
 
@@ -358,7 +349,7 @@ describe('DshAcpClient', () => {
     harness.setNextChildOptions({ closeOnStdinEnd: false });
     const client = makeClient(harness, { readinessTimeoutMs: 20 });
     await expect(client.start(INITIALIZE)).rejects.toThrow(
-      'dsh ACP initialize timed out after 20ms'
+      'ACP initialize timed out after 20ms'
     );
     expect(harness.latest().child.kill).toHaveBeenCalled();
   });
@@ -368,7 +359,7 @@ describe('DshAcpClient', () => {
     const client = makeClient(harness);
     await completeStart(harness, client);
     await expect(client.start(INITIALIZE)).rejects.toThrow(
-      'DshAcpClient already started'
+      'AcpClient already started'
     );
     await client.stop();
   });

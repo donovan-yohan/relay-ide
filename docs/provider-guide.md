@@ -38,6 +38,7 @@ refresh. Capabilities must describe only implemented behavior.
 | Pi               | `pi`          | `pi --mode rpc` JSONL                                |
 | Antigravity      | `antigravity` | `agy` stream-json NDJSON over stdin/stdout           |
 | DeepSeek Harness | `dsh`         | `dsh --profile acp` Agent Client Protocol over stdio |
+| Cursor           | `cursor`      | `cursor-agent acp` Agent Client Protocol over stdio  |
 
 ### Prime Agent
 
@@ -170,7 +171,7 @@ newline-delimited JSON-RPC on stdio. That wire is BIDIRECTIONAL in a way no
 other Relay stdio harness is: besides answering Relay's requests and pushing
 `session/update` notifications, the server sends Relay a REQUEST
 (`session/request_permission`) and blocks the agent until Relay answers.
-`server/dsh-acp-client.ts` therefore exposes `respond`/`respondError` next to
+`server/acp-client.ts` therefore exposes `respond`/`respondError` next to
 `request`, and every branch of the adapter's peer-request handler answers —
 including the unknown-method one, which replies `-32601` rather than leaving a
 turn wedged.
@@ -254,6 +255,21 @@ surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.
 
 The Antigravity channel transport is installed-tested with Antigravity CLI (`agy`) 1.1.23. The `agy` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
+
+Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor CLI ACP server (`cursor-agent acp`) and speaks the Agent Client Protocol over stdio.
+
+Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are suppressed by the adapter to prevent duplicate timeline items.
+
+The adapter maps:
+
+- `session/update` notifications (`agent_message_chunk` -> `assistantMessage`, `agent_thought_chunk` -> `reasoning`, `tool_call` -> `commandExecution`/`fileChange`/`dynamicToolCall`, `usage_update` -> context occupancy telemetry)
+- `session/request_permission` peer requests -> Relay approval cards with `allow-once`/`allow-always`/`reject-once` outcomes
+- `cursor/ask_question` peer requests -> Relay question cards, answered with structured `{ questionId, selectedOptionIds }` selections
+- `cursor/create_plan` peer requests -> canonical Relay plan items, auto-accepted so execution proceeds without blocking
+- Provider extensions for `cursor/update_todos`, `cursor/task`, and `cursor/generate_image`
+- Command arguments pass root options (`--model <id>`, `--yolo`) before the `acp` subcommand.
+
+The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY.
 
 ### Live Pi and Prime RPC smoke
 

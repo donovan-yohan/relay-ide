@@ -3,34 +3,35 @@ import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { LineFramer } from './line-framer.js';
 
 /**
- * Transport for the DeepSeek Harness ACP server (`dsh --profile acp`).
+ * Transport for Agent Client Protocol (ACP) stdio servers.
  *
  * The wire is the Agent Client Protocol over newline-delimited JSON-RPC 2.0 on
- * stdio, and it is BIDIRECTIONAL in a way the other stdio harnesses are not:
- * besides answering our requests and pushing `session/update` notifications,
- * the server can send US a request (`session/request_permission`) and block
- * until we answer. That is why this client exposes `respond`/`respondError`
- * alongside `request` — a peer request left unanswered hangs the agent's turn.
+ * stdio, and it is BIDIRECTIONAL in a way other stdio harnesses are not:
+ * besides answering client requests and pushing `session/update` notifications,
+ * the server can send the client a request (such as `session/request_permission`
+ * or `cursor/ask_question`) and block until the client answers. That is why
+ * this client exposes `respond`/`respondError` alongside `request` — a peer
+ * request left unanswered hangs the agent's turn.
  *
  * Everything here is transport plumbing: framing (LF splitting, record and
- * buffer caps) belongs to the shared `LineFramer`, and the ACP vocabulary
- * itself lives in `protocol-adapters/dsh-adapter.ts`.
+ * buffer caps) belongs to the shared `LineFramer`, and provider-specific ACP
+ * vocabularies live in their respective protocol adapters.
  */
 
 /** A server-to-client notification, split into method and params. */
-export interface DshAcpNotification {
+export interface AcpNotification {
   method: string;
   params: Record<string, unknown>;
 }
 
 /** A server-to-client REQUEST. The adapter must answer it or the turn hangs. */
-export interface DshAcpPeerRequest {
+export interface AcpPeerRequest {
   id: string | number;
   method: string;
   params: Record<string, unknown>;
 }
 
-export interface DshAcpClientOptions {
+export interface AcpClientOptions {
   command?: string;
   args?: string[];
   cwd?: string;
@@ -54,13 +55,14 @@ export interface DshAcpClientOptions {
 }
 
 /** `initialize` params. */
-export interface DshAcpInitializeParams {
+export interface AcpInitializeParams {
   protocolVersion: number;
   clientCapabilities: Record<string, unknown>;
+  clientInfo?: { name: string; version: string };
 }
 
 /** `initialize` result: agent identity and the capabilities it actually mounts. */
-export interface DshAcpInitializeResult {
+export interface AcpInitializeResult {
   protocolVersion: number;
   agentInfo?: { name: string; version: string };
   agentCapabilities?: Record<string, unknown>;
@@ -77,7 +79,7 @@ interface PendingCall {
 /** How many stderr lines to keep for transport-close diagnostics. */
 const STDERR_TAIL_LINES = 40;
 
-export class DshAcpClient extends EventEmitter {
+export class AcpClient extends EventEmitter {
   private child: ChildProcess | null = null;
   private readonly framer: LineFramer;
   private stopPromise: Promise<void> | null = null;
@@ -89,7 +91,7 @@ export class DshAcpClient extends EventEmitter {
   private detachDrainListener: (() => void) | null = null;
   private readonly stderrTail: string[] = [];
 
-  constructor(private readonly options: DshAcpClientOptions = {}) {
+  constructor(private readonly options: AcpClientOptions = {}) {
     super();
     const maxRecordBytes = options.maxRecordBytes ?? 8 * 1024 * 1024;
     const maxBufferBytes = options.maxBufferBytes ?? 16 * 1024 * 1024;
@@ -100,12 +102,12 @@ export class DshAcpClient extends EventEmitter {
       onOversized: () =>
         this.emit(
           'protocolError',
-          new Error(`dsh ACP record exceeded ${maxRecordBytes} bytes`)
+          new Error(`ACP record exceeded ${maxRecordBytes} bytes`)
         ),
       onBufferOverflow: () => {
         this.emit(
           'protocolError',
-          new Error(`dsh ACP input buffer exceeded ${maxBufferBytes} bytes`)
+          new Error(`ACP input buffer exceeded ${maxBufferBytes} bytes`)
         );
         // Discarding an unterminated record loses framing. Stop rather than
         // risk interpreting a later suffix as a fresh trusted record.
@@ -130,16 +132,16 @@ export class DshAcpClient extends EventEmitter {
 
   /**
    * Spawn the ACP server and complete the `initialize` handshake, which is the
-   * readiness barrier: the server answers it only once its plugin tree is
-   * mounted, so a resolved response means `session/new` will be accepted.
+   * readiness barrier: the server answers it only once its plugin/server tree
+   * is mounted, so a resolved response means subsequent requests will be accepted.
    */
-  async start(init: DshAcpInitializeParams): Promise<DshAcpInitializeResult> {
+  async start(init: AcpInitializeParams): Promise<AcpInitializeResult> {
     if (this.child || this.stopPromise)
-      throw new Error('DshAcpClient already started');
+      throw new Error('AcpClient already started');
     const spawnFn = this.options.spawn ?? nodeSpawn;
     const child = spawnFn(
-      this.options.command ?? 'dsh',
-      this.options.args ?? ['--profile', 'acp'],
+      this.options.command ?? 'agent',
+      this.options.args ?? ['acp'],
       {
         ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
         ...(this.options.env ? { env: this.options.env } : {}),
@@ -191,10 +193,9 @@ export class DshAcpClient extends EventEmitter {
       const result = await this.requestWithTimeout(
         'initialize',
         init as unknown as Record<string, unknown>,
-        // A node boot plus the plugin-tree loader; measured well under this.
         this.options.readinessTimeoutMs ?? 20_000
       );
-      return result as DshAcpInitializeResult;
+      return result as AcpInitializeResult;
     } catch (error) {
       // A failed readiness barrier must not leave a live child, drain handler,
       // or unsent request behind for a later start attempt.
@@ -252,16 +253,14 @@ export class DshAcpClient extends EventEmitter {
     timeoutMs: number
   ): Promise<unknown> {
     if (!this.child)
-      return Promise.reject(new Error('DshAcpClient is not started'));
+      return Promise.reject(new Error('AcpClient is not started'));
     const id = this.nextId++;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer =
         timeoutMs > 0
           ? setTimeout(() => {
               this.pending.delete(id);
-              reject(
-                new Error(`dsh ACP ${method} timed out after ${timeoutMs}ms`)
-              );
+              reject(new Error(`ACP ${method} timed out after ${timeoutMs}ms`));
             }, timeoutMs)
           : null;
       timer?.unref?.();
@@ -284,12 +283,12 @@ export class DshAcpClient extends EventEmitter {
     if (this.stopPromise) return this.stopPromise;
     const child = this.child;
     if (!child) {
-      this.resetTransportState(new Error('DshAcpClient stopped'));
+      this.resetTransportState(new Error('AcpClient stopped'));
       return;
     }
 
     this.child = null;
-    this.resetTransportState(new Error('DshAcpClient stopped'));
+    this.resetTransportState(new Error('AcpClient stopped'));
     this.removeChildListeners();
     this.stopPromise = this.terminate(child).finally(() => {
       this.stopPromise = null;
@@ -360,7 +359,7 @@ export class DshAcpClient extends EventEmitter {
       this.emit(
         'protocolError',
         new Error(
-          `Invalid dsh ACP JSON: ${error instanceof Error ? error.message : String(error)}`
+          `Invalid ACP JSON: ${error instanceof Error ? error.message : String(error)}`
         )
       );
       return;
@@ -368,7 +367,7 @@ export class DshAcpClient extends EventEmitter {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       this.emit(
         'protocolError',
-        new Error('Invalid dsh ACP record: expected object')
+        new Error('Invalid ACP record: expected object')
       );
       return;
     }
@@ -385,7 +384,7 @@ export class DshAcpClient extends EventEmitter {
           frame.params && typeof frame.params === 'object'
             ? (frame.params as Record<string, unknown>)
             : {},
-      } satisfies DshAcpPeerRequest);
+      } satisfies AcpPeerRequest);
       return;
     }
     if (hasId) {
@@ -399,13 +398,13 @@ export class DshAcpClient extends EventEmitter {
           frame.params && typeof frame.params === 'object'
             ? (frame.params as Record<string, unknown>)
             : {},
-      } satisfies DshAcpNotification);
+      } satisfies AcpNotification);
       return;
     }
     this.emit(
       'protocolError',
       new Error(
-        'Invalid dsh ACP record: neither request, response, nor notification'
+        'Invalid ACP record: neither request, response, nor notification'
       )
     );
   }
@@ -416,7 +415,7 @@ export class DshAcpClient extends EventEmitter {
     if (!pending) {
       this.emit(
         'protocolError',
-        new Error(`Uncorrelated dsh ACP response id: ${String(id)}`)
+        new Error(`Uncorrelated ACP response id: ${String(id)}`)
       );
       return;
     }
@@ -432,7 +431,7 @@ export class DshAcpClient extends EventEmitter {
       const message =
         typeof record.message === 'string' && record.message.length > 0
           ? `${record.message}${detail}`
-          : `dsh ${pending.method} failed`;
+          : `${pending.method} failed`;
       pending.reject(new Error(message));
       return;
     }
@@ -478,7 +477,7 @@ export class DshAcpClient extends EventEmitter {
   private exitError(code: number | null): Error {
     const tail = this.stderrTailText;
     return new Error(
-      `dsh ACP server exited (code=${String(code)})${tail ? `: ${tail}` : ''}`
+      `ACP server exited (code=${String(code)})${tail ? `: ${tail}` : ''}`
     );
   }
 
