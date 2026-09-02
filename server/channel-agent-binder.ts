@@ -12,12 +12,14 @@ import {
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
   createChannelOrchestratorConflictError,
+  memberFoldKey,
   type ChannelBinding,
   type ChannelCompletionCallbackEdge,
   type ChannelCompletionCallbackMessageDisposition,
   type ChannelCompletionCallbackTerminalReason,
   type ChannelMessageStore,
 } from './channel-message-store.js';
+import { LOCAL_HUB_ACTOR_ID } from './local-hub-actor-token.js';
 import type { ChannelHub, ChannelMessagePostedOptions } from './channel-hub.js';
 import {
   AgentControlUnavailableError,
@@ -476,6 +478,8 @@ export interface LiveBinding {
   requestMessageIdByTurn: Map<string, ChannelMessage['id']>;
   /** Bounded exact-turn ancestry retained across a successor; never used by turn-0. */
   exactTurnTombstones: Map<string, ExactTurnTombstone>;
+  /** Routing cwd this binding already reported as diverged from its runtime (#1534). */
+  routingCwdDivergenceReported: string | null;
   /** Last terminal prose row by turn, available before the terminal patch lands. */
   finalMessageByTurn: Map<string, ChannelMessage>;
   /** Child callback and ancestor edge awaited by its internal callback turn. */
@@ -1009,10 +1013,28 @@ export function createChannelAgentBinder(
     return channelTurnId(edge.id as ChannelMessage['id'], requesterProfileId);
   }
 
+  /**
+   * The host-local CLI credential (#1467) posts on an agent-shaped lane
+   * (`deriveSender` stamps `agent:local-cli`), but it is the OPERATOR at the
+   * hub's own terminal, not an installed agent profile. Folding it the way an
+   * agent sender is folded invented `agent-profile:local-cli:default` and
+   * scheduled an agent-to-agent completion callback to a profile that can
+   * never exist, which then terminalized as `requester-profile-unavailable`
+   * mid-turn (#1533). Operator posts take the human path: no callback, and the
+   * run completes when the target's own turn completes.
+   */
+  function isLocalHubCliSender(sender: ChannelMessage['sender']): boolean {
+    return (
+      sender.kind === 'agent' &&
+      memberFoldKey('agent', sender.id) === LOCAL_HUB_ACTOR_ID
+    );
+  }
+
   function requesterProfileForAgentMessage(
     message: ChannelMessage
   ): string | null {
     if (message.sender.kind !== 'agent') return null;
+    if (isLocalHubCliSender(message.sender)) return null;
     if (deps.agentProfileStore?.get(message.sender.id))
       return message.sender.id;
     return message.sender.providerId
@@ -1645,6 +1667,7 @@ export function createChannelAgentBinder(
       parentMessageIdByTurn: new Map(),
       requestMessageIdByTurn: new Map(),
       exactTurnTombstones: new Map(),
+      routingCwdDivergenceReported: null,
       finalMessageByTurn: new Map(),
       continuationByTurn: new Map(),
       completionCallbackByTurn: new Map(),
@@ -1844,6 +1867,39 @@ export function createChannelAgentBinder(
     );
   }
 
+  /**
+   * A channel runtime captures the topic's `routingDefaults.cwd` at SPAWN and
+   * keeps that directory for its whole life — the spawn path passes it through
+   * verbatim (binder -> `runtimes.create` -> `AdapterConfig.cwd` -> the child's
+   * `spawn` cwd). So a topic whose cwd was set, or changed, AFTER its runtime
+   * was bound keeps executing in the old tree, which for a worktree topic is
+   * the wrong repository and is invisible to the operator (#1534).
+   *
+   * Reuse deliberately does not restart a live provider conversation behind
+   * the operator's back (see `composedRuntimePrompt`), so the fix is to make
+   * the divergence VISIBLE — once per binding per routing cwd — instead of
+   * silently running somewhere else. Restarting the agent moves it.
+   */
+  function reportRoutingCwdDivergence(
+    binding: LiveBinding,
+    runtime: ChannelAgentRuntime
+  ): void {
+    const routingCwd = topicStore?.get(binding.channelId)?.routingDefaults.cwd;
+    if (!routingCwd || routingCwd === runtime.cwd) return;
+    if (binding.routingCwdDivergenceReported === routingCwd) return;
+    binding.routingCwdDivergenceReported = routingCwd;
+    logger.warn('channel runtime cwd diverges from the topic routing default', {
+      channelId: binding.channelId,
+      runtimeId: runtime.id,
+      runtimeCwd: runtime.cwd,
+      routingCwd,
+    });
+    postSystemRow(
+      binding.channelId,
+      `@${binding.displayName} is running in ${runtime.cwd}, but this channel now routes to ${routingCwd}. Restart the agent to move it.`
+    );
+  }
+
   async function doEnsureBinding(
     channelId: string,
     profile: AgentProfile,
@@ -1871,6 +1927,7 @@ export function createChannelAgentBinder(
       );
       if (runtime && runtime.adapter === existing.adapter) {
         assertRuntimeRole(channelId, framework, runtime, effectiveRole);
+        reportRoutingCwdDivergence(existing, runtime);
         // Reuse still links: a topic row created (or re-created) after this
         // runtime was attached would otherwise never learn its participant.
         // The patch helper returns undefined when already linked, so a hot
@@ -1895,7 +1952,7 @@ export function createChannelAgentBinder(
     );
     if (restored) {
       assertRuntimeRole(channelId, framework, restored, effectiveRole);
-      return attachRuntime(
+      const attached = attachRuntime(
         channelId,
         profileActorId,
         framework,
@@ -1903,6 +1960,8 @@ export function createChannelAgentBinder(
         restored,
         threadId
       );
+      reportRoutingCwdDivergence(attached, restored);
+      return attached;
     }
 
     // 3.5 Cross-node guard (Amendment 1): a remote-node topic must fail visibly,
