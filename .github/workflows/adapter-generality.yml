@@ -49,7 +49,7 @@ jobs:
           # doc change describing it -- silently satisfy itself.
           if printf '%s\n' "${PR_BODY:-}" \
             | sed -E 's/^[[:space:]]*([-*+>][[:space:]]*)*(\[[ xX]\][[:space:]]*)?//; s/^[*_`]+//' \
-            | grep -qiE '^adapter generality:'; then
+            | grep -iE '^adapter generality:' >/dev/null; then
             echo "PR body classifies the adapter change."
             exit 0
           fi

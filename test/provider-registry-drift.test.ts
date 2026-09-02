@@ -15,10 +15,10 @@
  * cannot quietly disconnect the registry from the code that reads it. The
  * expectation table records what the code does today — a row that looks wrong is a
  * finding to fix in its own slice, not something to silently "generalize" here.
- *
- * Compile-time backpressure lives in both the source and the tests:
- * `test/tsconfig.json` typechecks all tests during `npm run check`, so the
- * `satisfies` clause below is an enforced gate.
+ * Compile-time backpressure lives both in the source (`PROVIDER_DESCRIPTORS` and
+ * the `ProviderDescriptor` interface) and in this suite: `test/tsconfig.json`
+ * typechecks test files during `npm run check` (`npm run typecheck:test`), so
+ * `satisfies` clauses here are enforced compile gates.
  *
  * Run: `npx vitest run test/provider-registry-drift.test.ts`
  */
@@ -238,7 +238,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     resumeKey: 'primeAgentSessionId',
     declaresResumeCapability: true,
     resumeLadderExemption: null,
-    deliversImages: false,
+    deliversImages: true,
     imageRawBudgetMiB: 10,
     terminalFrameworkId: 'prime-agent',
     supportsChannelAgents: true,
@@ -252,7 +252,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
       commandLineSubstrings: ['prime-agent'],
       commandBasenames: [],
     },
-    authCredentialPaths: [],
+    authCredentialPaths: [['.prime', 'agent', 'auth.json']],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
     agentProfileGatewaySecretKey: null,

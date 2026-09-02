@@ -41,6 +41,15 @@ workflow.
   always failed; dsh sessions now report that native resume is unavailable and
   point at the dsh channel agent instead (#1520)
 
+### Prime Agent channel adapter
+
+#### Fixed
+
+- Capture pre-readiness diagnostic tail and classify launch failures into structured reasons with login hints for missing models and lease conflict diagnostics (#1509)
+- Implement resume fallback ladder: fall back to a fresh session on stale session IDs or missing working directories, and to `--fork` on directory mismatches, emitting a `resumeFallback` provider extension notice (#1510)
+- Correct provider descriptor metadata to deliver image attachments to Prime Agent and discover authentication credentials from `~/.prime/agent/auth.json` (#1511)
+- Correlate id-less `Unknown command` responses to pending calls so control retraction operates correctly, map `auto_retry_start/end`, `compaction_start/end`, `agent_start/end`, and handle `extension_ui_request` blocking dialogs by interrupting unattended turns (#1512)
+
 ### CLI help and channel commands
 
 #### Fixed
