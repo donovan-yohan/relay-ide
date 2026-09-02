@@ -565,6 +565,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private handleEvent(event: PrimeAgentRpcMessage): void {
     const type = event.type;
+    if (type === 'agent_start') {
+      logger.debug('prime-agent agent_start', {
+        activeTurnId: this.activeTurnId,
+      });
+      return;
+    }
     if (type === 'turn_start' || type === 'turn_end') return;
     if (type === 'message_start') {
       if (record(event.message).role === 'assistant')
@@ -572,15 +578,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
     if (type === 'agent_end') {
-      this.completeTurn(
-        this.abortRequested
-          ? 'interrupted'
-          : this.turnFailure
-            ? 'failed'
-            : 'completed',
-        this.turnFailure ?? undefined
-      );
-      this.advanceQueuedTurn();
+      this.handleAgentEnd();
       return;
     }
     if (type === 'message_update') {
@@ -588,21 +586,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
     if (type === 'message_end') {
-      const message = record(event.message);
-      if (message.stopReason === 'aborted') this.abortRequested = true;
-      if (message.stopReason === 'error')
-        this.turnFailure = string(
-          message.errorMessage,
-          'Prime Agent generation failed'
-        );
-      this.finishMessageItems(
-        this.abortRequested
-          ? 'cancelled'
-          : this.turnFailure
-            ? 'failed'
-            : 'completed'
-      );
-      this.captureUsage(message);
+      this.handleMessageEnd(event);
       return;
     }
     if (type === 'tool_execution_start') {
@@ -634,14 +618,153 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       );
       return;
     }
-    if (type === 'auto_retry_end' && event.success === false) {
+    if (type === 'auto_retry_start' || type === 'auto_retry_end') {
+      this.handleAutoRetry(event);
+      return;
+    }
+    if (type === 'compaction_start' || type === 'compaction_end') {
+      this.handleCompaction(event);
+      return;
+    }
+    if (type === 'extension_ui_request') {
+      this.handleExtensionUiRequest(event);
+      return;
+    }
+    logger.debug('prime-agent event unmapped', { type });
+  }
+
+  private handleAgentEnd(): void {
+    if (this.activeTurnId) {
+      this.completeTurn(
+        this.abortRequested
+          ? 'interrupted'
+          : this.turnFailure
+            ? 'failed'
+            : 'completed',
+        this.turnFailure ?? undefined
+      );
+      this.advanceQueuedTurn();
+    } else {
+      this.emitLive({
+        status: 'idle',
+        activeTurnId: null,
+        queueLength: this.queued.length,
+      });
+    }
+  }
+
+  private handleMessageEnd(event: PrimeAgentRpcMessage): void {
+    const message = record(event.message);
+    if (message.stopReason === 'aborted') this.abortRequested = true;
+    if (message.stopReason === 'error')
+      this.turnFailure = string(
+        message.errorMessage,
+        'Prime Agent generation failed'
+      );
+    this.finishMessageItems(
+      this.abortRequested
+        ? 'cancelled'
+        : this.turnFailure
+          ? 'failed'
+          : 'completed'
+    );
+    this.captureUsage(message);
+  }
+
+  private handleAutoRetry(event: PrimeAgentRpcMessage): void {
+    if (event.type === 'auto_retry_start') {
+      if (this.activeTurnId) {
+        this.emitProviderExtension(
+          {
+            kind: 'autoRetry',
+            phase: 'start',
+            ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+            ...(event.maxAttempts !== undefined
+              ? { maxAttempts: event.maxAttempts }
+              : {}),
+            ...(event.error ? { error: string(event.error) } : {}),
+          },
+          'normal'
+        );
+      } else {
+        logger.debug('prime-agent auto_retry_start outside active turn');
+      }
+      return;
+    }
+    if (event.success === false) {
       this.turnFailure = string(event.finalError, 'Prime Agent retry failed');
       this.emitError(this.turnFailure);
+    } else if (this.activeTurnId) {
+      this.emitProviderExtension(
+        {
+          kind: 'autoRetry',
+          phase: 'end',
+          success: true,
+          ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+        },
+        'normal'
+      );
+    } else {
+      logger.debug('prime-agent auto_retry_end success outside active turn');
+    }
+  }
+
+  private handleCompaction(event: PrimeAgentRpcMessage): void {
+    if (this.activeTurnId) {
+      this.emitProviderExtension(
+        {
+          kind: 'contextCompaction',
+          phase: event.type === 'compaction_start' ? 'start' : 'end',
+          ...(event.reason ? { reason: string(event.reason) } : {}),
+          ...(event.result ? { result: record(event.result) } : {}),
+        },
+        'normal'
+      );
+    } else {
+      logger.debug('prime-agent compaction outside active turn', {
+        type: event.type,
+      });
+    }
+  }
+
+  private handleExtensionUiRequest(event: PrimeAgentRpcMessage): void {
+    const method = string(event.method);
+    if (
+      method === 'select' ||
+      method === 'confirm' ||
+      method === 'input' ||
+      method === 'editor'
+    ) {
+      const promptText = string(
+        event.prompt,
+        string(event.title, string(event.message, ''))
+      );
+      const promptDetail = promptText ? `: ${promptText.slice(0, 100)}` : '';
+      this.emitError(
+        `Prime asked a blocking UI question (${method}${promptDetail}) that channels cannot answer; interrupting`
+      );
+      void this.interrupt({}).catch(() => undefined);
+    } else {
+      this.emitProviderExtension(
+        {
+          kind: 'extensionUi',
+          method,
+          ...(event.id ? { id: string(event.id) } : {}),
+          ...(event.title ? { title: string(event.title) } : {}),
+          ...(event.message ? { message: string(event.message) } : {}),
+        },
+        'debug'
+      );
     }
   }
 
   private handleMessageUpdate(delta: RpcRecord): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn message_update', {
+        type: delta.type,
+      });
+      return;
+    }
     const kind = string(delta.type);
     const index = Number(delta.contentIndex ?? 0);
     if (kind === 'text_start' || kind === 'text_delta') {
@@ -689,7 +812,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private startTool(event: RpcRecord): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn tool event', {
+        type: event.type,
+        toolCallId: event.toolCallId ?? event.id,
+      });
+      return;
+    }
     const id = this.toolIdForStart(event);
     this.ensureTool(
       id,
@@ -738,7 +867,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
-    if (!this.activeTurnId) return;
+    if (!this.activeTurnId) {
+      logger.debug('prime-agent out-of-turn tool event', {
+        type: event.type,
+        toolCallId: event.toolCallId ?? event.id,
+      });
+      return;
+    }
     const id = this.toolIdForUpdate(event);
     this.ensureTool(
       id,

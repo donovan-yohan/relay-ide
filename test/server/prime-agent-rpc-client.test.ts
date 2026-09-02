@@ -407,4 +407,49 @@ describe('PrimeAgentRpcClient', () => {
       'Invalid prime-agent RPC JSON'
     );
   });
+
+  it('routes an id-less unknown-command response to the oldest pending call with that command', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    child.stdin.once('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string };
+      child.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: 'get_state',
+          success: true,
+        }) + '\n'
+      );
+    });
+    await client.start();
+
+    const events: unknown[] = [];
+    client.on('event', (ev) => events.push(ev));
+
+    const callPromise = client.call('set_model', { modelId: 'm1' });
+    child.stdout.write(
+      '{"type":"response","command":"set_model","success":false,"error":"Unknown command: set_model"}\n'
+    );
+
+    await expect(callPromise).rejects.toMatchObject({
+      name: 'PrimeAgentRpcResponseError',
+      command: 'set_model',
+      message: 'Unknown command: set_model',
+    });
+
+    child.stdout.write(
+      '{"type":"response","command":"unrelated","success":false,"error":"Unknown command: unrelated"}\n'
+    );
+    expect(events).toEqual([
+      {
+        type: 'response',
+        command: 'unrelated',
+        success: false,
+        error: 'Unknown command: unrelated',
+      },
+    ]);
+  });
 });

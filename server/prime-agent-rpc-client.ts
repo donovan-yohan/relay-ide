@@ -356,6 +356,33 @@ export class PrimeAgentRpcClient extends EventEmitter {
       } else {
         pending.resolve(message);
       }
+    } else if (
+      message.type === 'response' &&
+      typeof message.id !== 'string' &&
+      message.success === false &&
+      typeof message.command === 'string'
+    ) {
+      // 0.7.0 dialect quirk: prime-agent returns unknown-command errors with id: undefined
+      // (rpc-mode.js:371-374: error(undefined, type, "Unknown command: <type>")).
+      // Correlate to the oldest pending call for that command.
+      let matchedId: string | undefined;
+      let matchedPending: PendingCall | undefined;
+      for (const [id, pending] of this.pending) {
+        if (pending.command === message.command) {
+          matchedId = id;
+          matchedPending = pending;
+          break;
+        }
+      }
+      if (matchedId && matchedPending) {
+        this.pending.delete(matchedId);
+        clearTimeout(matchedPending.timer);
+        matchedPending.reject(
+          new PrimeAgentRpcResponseError(matchedPending.command, message)
+        );
+      } else {
+        this.emit('event', message);
+      }
     } else {
       this.emit('event', message);
     }

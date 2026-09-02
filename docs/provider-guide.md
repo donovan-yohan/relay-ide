@@ -37,25 +37,37 @@ refresh. Capabilities must describe only implemented behavior.
 | Prime Agent | `prime-agent` | `prime-agent` RPC                      |
 | Pi          | `pi`          | `pi --mode rpc` JSONL                  |
 
-Prime Agent is a first-class channel provider. Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
+Prime Agent is a first-class channel provider. In version 0.7.0, it uses a daemon-backed RPC architecture (the channel subprocess is a thin client communicating with the supervisor daemon; environment variable denylists cover the client process). Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
 lifecycle, `message_update` text and
 thinking deltas to assistant and reasoning items, and
 `tool_execution_start|update|end` to canonical command, file-change, or dynamic
 tool items. It advertises text, reasoning, tools, command execution, file
 changes, queueing, interrupt, resume, telemetry, and streaming; unsupported
-approval, question, plan, and queue-cancellation operations remain false. Because Prime steering stays within one native run, Relay queues concurrent
+approval, question, plan, and queue-cancellation operations remain false. Image attachments are delivered as base64 data URIs via the `images` field on the `prompt` command. Per-message telemetry captures token counts from `message_end` usage metadata (note: Prime does not yet report a total context-window figure in per-message telemetry). Because Prime steering stays within one native run, Relay queues concurrent
 messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
-one durable Relay turn per message. Channel subprocesses currently launch with
-`--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
-to Relay approvals/questions yet.
+one durable Relay turn per message.
+
+Channel subprocesses launch with `--no-extensions` to disable extension UI popups. If an `extension_ui_request` is received, dialog methods (`select`, `confirm`, `input`, `editor`) cause the adapter to emit a descriptive error patch and interrupt the turn so unattended channels cannot hang; non-dialog methods (`notify`, `setStatus`, `setWidget`, `setTitle`) are surfaced as debug provider extensions.
+
+On launch, pre-readiness stdout and stderr are captured into a bounded diagnostic tail. Launch failures are classified into structured reasons (`auth`, `lease-held`, `stale-session`, `cwd-missing`, `cwd-mismatch`, `timeout`, `unknown`):
+
+- `stale-session` or `cwd-missing`: the adapter logs a warning, falls back once to a fresh session (omitting `--resume`), and emits a `resumeFallback` provider extension notice on the first turn.
+- `cwd-mismatch`: the adapter falls back once to `--fork <id>` in the current directory and emits a `resumeFallback` provider extension notice.
+- `lease-held`, `auth`, `timeout`, or `unknown`: the launch fails immediately with a classified error message without fallback.
+
+Native events are mapped according to the never-drop invariant:
+
+- `auto_retry_start` and `auto_retry_end` (success) emit `autoRetry` provider extensions; retry failure sets turn error.
+- `compaction_start` and `compaction_end` emit `contextCompaction` provider extensions.
+- `agent_start` is logged at debug level.
+- `agent_end` settles turn lifecycle; if received out-of-turn (e.g. after observing `isStreaming: true` on connect), it transitions live status to `idle`.
+- Unmapped native events are logged at debug level.
 
 The channel command palette discovers Prime models from the connected RPC
 runtime and exposes `model`, plus `thinking`/`effort` only when the selected
 live model explicitly supplies supported thinking levels. These execute on
 Relay's authenticated control lane, not as persisted chat messages or
-token-consuming prompts. Fresh-session and compaction controls are intentionally
-hidden until Prime supplies an authoritative non-mutating capability source for
-their RPC methods. Model and thinking arguments are validated against live Prime
+token-consuming prompts. Fresh-session, compaction (`compact`), and steering (`steer`) controls are documented in Prime 0.7.0 RPC but remain omitted from the channel command palette pending deferred implementation (part (b)). Model and thinking arguments are validated against live Prime
 metadata; if discovery is unavailable, the adapter fails closed instead of
 guessing. Prime skills, prompt templates, and TUI-only commands are not exposed
 as channel controls. This control surface is installed-tested with Prime Agent
@@ -394,8 +406,7 @@ control catalog. Prime Agent has no pre-bind control preview: its connected
 catalog remains empty until the current RPC runtime has completed discovery.
 The available-model catalog proves only model selection; reasoning depth appears
 only when the selected model explicitly returns supported thinking levels.
-Fresh-session and compaction controls remain hidden because the current RPC
-contract has no authoritative non-mutating capability source for those methods.
+Fresh-session, compaction, and steering controls remain omitted from the channel command palette pending deferred implementation (part (b)).
 A missing live-evidenced native control retracts only that control for the
 active runtime generation and returns a typed unavailable result; reconnect
 invalidates the prior discovery result.
