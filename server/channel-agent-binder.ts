@@ -1757,6 +1757,11 @@ export function createChannelAgentBinder(
    * The turn a patch claims, or `undefined` when it names none: session
    * updates/snapshots, and live-state patches that carry no `activeTurnId`
    * (a bare `waitingOn` or `status` heartbeat).
+   *
+   * An EXPLICIT `activeTurnId: null` is the runtime saying it has no turn in
+   * flight, which is the opposite of liveness on the turn being bounded — it
+   * collapses to `undefined` here so an idle heartbeat from an otherwise
+   * wedged runtime can never refresh a silence budget (#1541, #1548).
    */
   function patchTurnId(patch: AgentPatchV2): string | undefined {
     switch (patch.type) {
@@ -2022,6 +2027,16 @@ export function createChannelAgentBinder(
         }
       }
       existing.exactTurnTombstones.clear();
+      // Open tool calls belong to the RUNTIME that opened them, not to the turn
+      // (#1548). A send failure can rebind this binding to a fresh runtime and
+      // redeliver the same active turn; the replacement never emits a terminal
+      // update for the dead runtime's partially-executed tool, so a carried-over
+      // entry would defer the idle watchdog for the rest of the turn — until
+      // the hard ceiling — no matter how silent the new runtime goes. The
+      // silence budget restarts here too: the old runtime's quiet must not be
+      // charged to its replacement.
+      existing.openToolItems.clear();
+      existing.lastActivityAt = now();
       // Removing the old adapter listeners establishes a hard boundary for
       // anonymous provider turn ids while retaining an exact active retry.
       existing.turnZeroFallbackUnsafe = false;

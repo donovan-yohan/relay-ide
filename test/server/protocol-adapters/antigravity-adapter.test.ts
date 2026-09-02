@@ -979,6 +979,46 @@ describe('AntigravityProtocolAdapter', () => {
     ).toEqual(['activeTurnId']);
   });
 
+  // Test 17c (#1548)
+  it('an idle heartbeat names no turn, so it can never read as activity', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'go' });
+    child.serverWrite({
+      event: 'result',
+      result: { status: 'SUCCESS', response: 'ok' },
+    });
+
+    // The turn's own terminal live-state is EXPLICIT about having no turn in
+    // flight; the binder collapses that to "names no turn", which is what stops
+    // an idle ping from refreshing a silence budget.
+    const live = patches.filter(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    const terminal = live.at(-1) as { live: Record<string, unknown> };
+    expect(terminal.live).toMatchObject({ activeTurnId: null });
+    expect(Object.hasOwn(terminal.live, 'activeTurnId')).toBe(true);
+
+    // A late step for a turn that is over emits no heartbeat at all — there is
+    // no turn to attribute it to, so it can never revive one.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = patches.length;
+    try {
+      child.serverWrite({
+        event: 'step_update',
+        step_update: { step_index: 9, state: 'DONE', step_type: 'checkpoint' },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(
+      patches
+        .slice(before)
+        .filter((p) => p.type === 'agent-live-state-updated-v2')
+    ).toEqual([]);
+  });
+
   // Test 18
   it('emits an assistant fallback item from result.response when nothing streamed', async () => {
     const { adapter, spawns, patches } = harness();
