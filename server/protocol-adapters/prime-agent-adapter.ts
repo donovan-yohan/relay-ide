@@ -108,8 +108,12 @@ export function classifyPrimeLaunchFailure(
       message: tail || errText,
     };
   }
-  // Verbatim Prime Agent 0.7.0 stderr on concurrent session resume:
-  // "Error: Session is already active in <workerId>: <sessionPath>"
+  // Verbatim Prime Agent stderr on concurrent session resume, re-confirmed
+  // unchanged on 0.9.1 (2026-09-02):
+  // "Error: Session is already active in 441b49a29f1d: /tmp/.../<id>.jsonl"
+  // The sibling resume classifications above are 0.9.1-verbatim too:
+  // "Error: No session found matching '<id>'." (stale-session) and
+  // "Session found in different project: <dir>" (cwd-mismatch).
   if (/Session is already active/i.test(combined)) {
     const sessionPrefix = resumeSessionId
       ? `Prime session ${resumeSessionId}`

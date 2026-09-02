@@ -48,6 +48,15 @@ approval, question, plan, and queue-cancellation operations remain false. Image 
 messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
 one durable Relay turn per message.
 
+Verified against prime-agent 0.9.1 (2026-09-02): every flag the adapter spawns
+(`--mode rpc`, `--no-extensions`, `--provider`, `--model`, `--thinking`,
+`--append-system-prompt`, `-r/--resume`, `--fork`) still exists, and the RPC
+wire (`get_state` / `prompt` / `abort` response shapes, the
+`agent_start|message_update|tool_execution_*|agent_end` event names, and
+`sessionActions.queuedCount`) is unchanged from 0.7.0. 0.9.1 adds two output
+modes Relay does not use, `--mode acp` and `--mode daemon`, and one additive
+`get_state` field, `goal`.
+
 Channel subprocesses launch with `--no-extensions` to disable extension UI popups. If an `extension_ui_request` is received, dialog methods (`select`, `confirm`, `input`, `editor`) cause the adapter to emit a descriptive error patch and interrupt the turn so unattended channels cannot hang; non-dialog methods (`notify`, `setStatus`, `setWidget`, `setTitle`) are surfaced as debug provider extensions.
 
 On launch, pre-readiness stdout and stderr are captured into a bounded diagnostic tail. Launch failures are classified into structured reasons (`auth`, `lease-held`, `stale-session`, `cwd-missing`, `cwd-mismatch`, `timeout`, `unknown`):
