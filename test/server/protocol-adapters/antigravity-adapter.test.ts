@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AntigravityProtocolAdapter } from '../../../server/protocol-adapters/antigravity-adapter.js';
 import { AdapterProcessRegistry } from '../../../server/protocol-adapters/adapter-utils.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
@@ -909,6 +909,114 @@ describe('AntigravityProtocolAdapter', () => {
       'ext-antigravity-t1-3',
       'ext-antigravity-t1-4',
     ]);
+  });
+
+  // Test 17b (#1548)
+  it('turns a checkpoint step during an open tool call into turn-scoped activity, not a warn', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'run the checks' });
+
+    // A long command opens and stays open — this is the shape that used to be
+    // force-drained by the channel binder's inactivity watchdog.
+    child.serverWrite({
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        state: 'ACTIVE',
+        step_type: 'tool',
+        tool_name: 'run_command',
+        tool_info: {
+          name: 'run_command',
+          parameters: { CommandLine: 'npm run check' },
+        },
+      },
+    });
+    const started = patches.filter((p) => p.type === 'agent-item-started-v2');
+    expect(
+      started.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'commandExecution' &&
+          p.item.status === 'running'
+      )
+    ).toBe(true);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = patches.length;
+    try {
+      // agy's keep-alive through the command. Nothing maps it to an item, but
+      // it names the turn, so it MUST reach the binder as activity.
+      child.serverWrite({
+        event: 'step_update',
+        step_update: {
+          step_index: 2,
+          state: 'DONE',
+          step_type: 'checkpoint',
+        },
+      });
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[0] ?? '').includes('unmapped step_update')
+        )
+      ).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const live = patches
+      .slice(before)
+      .filter((p) => p.type === 'agent-live-state-updated-v2');
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({
+      type: 'agent-live-state-updated-v2',
+      live: { activeTurnId: 't1' },
+    });
+    // A bare activity ping: it must not restate status or waiting state.
+    expect(
+      Object.keys((live[0] as { live: Record<string, unknown> }).live)
+    ).toEqual(['activeTurnId']);
+  });
+
+  // Test 17c (#1548)
+  it('an idle heartbeat names no turn, so it can never read as activity', async () => {
+    const { adapter, spawns, patches } = harness();
+    await connect(adapter, spawns);
+    const child = spawns[0]!.child;
+    await adapter.sendMessage({ turnId: 't1', content: 'go' });
+    child.serverWrite({
+      event: 'result',
+      result: { status: 'SUCCESS', response: 'ok' },
+    });
+
+    // The turn's own terminal live-state is EXPLICIT about having no turn in
+    // flight; the binder collapses that to "names no turn", which is what stops
+    // an idle ping from refreshing a silence budget.
+    const live = patches.filter(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    const terminal = live.at(-1) as { live: Record<string, unknown> };
+    expect(terminal.live).toMatchObject({ activeTurnId: null });
+    expect(Object.hasOwn(terminal.live, 'activeTurnId')).toBe(true);
+
+    // A late step for a turn that is over emits no heartbeat at all — there is
+    // no turn to attribute it to, so it can never revive one.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = patches.length;
+    try {
+      child.serverWrite({
+        event: 'step_update',
+        step_update: { step_index: 9, state: 'DONE', step_type: 'checkpoint' },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(
+      patches
+        .slice(before)
+        .filter((p) => p.type === 'agent-live-state-updated-v2')
+    ).toEqual([]);
   });
 
   // Test 18

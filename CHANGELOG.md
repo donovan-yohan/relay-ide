@@ -70,6 +70,13 @@ workflow.
 
 #### Fixed
 
+- An agent turn is no longer interrupted while it sits inside one long, silent
+  command. `npm run check`, a full test run, or any tool call that takes minutes
+  and prints nothing looks identical to a wedged agent to a watchdog that only
+  measures silence, and turns were being force-drained mid-command. A turn with
+  a tool call still open is now treated as working, and the silence budget
+  restarts when the last tool call finishes; the hard one-hour turn ceiling
+  still bounds a runaway (#1548)
 - Streaming subscribers no longer get closed by backpressure during tool-heavy
   agent turns. Ephemeral streaming text deltas are now dropped when a subscriber's
   send queue is above the soft limit while preserving durable created, completed,

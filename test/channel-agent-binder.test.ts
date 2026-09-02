@@ -1868,6 +1868,75 @@ class HeartbeatAdapter extends BaseProtocolAdapterV2 {
     this.timer = null;
   }
 
+  /**
+   * Open a tool call for the active turn and emit NOTHING further (#1548).
+   * Models `npm run check`: the item starts, the command runs for minutes, and
+   * no delta, live-state, or step update lands until it is done.
+   */
+  startTool(itemId = 'tool-1', command = 'npm run check'): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'commandExecution',
+        id: itemId,
+        command,
+        output: '',
+        status: 'running',
+      },
+    });
+  }
+
+  /** Terminal update for a tool opened by `startTool`. */
+  finishTool(itemId = 'tool-1', command = 'npm run check'): void {
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'commandExecution',
+        id: itemId,
+        command,
+        output: 'ok',
+        exitCode: 0,
+        status: 'completed',
+      },
+    });
+  }
+
+  /**
+   * A live-state ping that explicitly names NO active turn — the shape a
+   * runtime emits when it thinks it is idle. It must never refresh the silence
+   * budget of the turn the watchdog is bounding (#1548).
+   */
+  emitIdleHeartbeat(): void {
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { status: 'working', activeTurnId: null },
+    });
+  }
+
+  /** Terminal tool delta labelled with ANY turn id — replays a finished turn. */
+  emitToolTerminalDeltaFor(turnId: string, itemId = 'tool-1'): void {
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId,
+      delta: { status: 'completed', output: 'stale' },
+    });
+  }
+
   /** Emit a delta labelled with ANY turn id — used to replay a finished turn. */
   emitDeltaFor(turnId: string): void {
     this.emitPatch({
@@ -2107,6 +2176,23 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
     const d = this.pending.get(turnId);
     this.pending.delete(turnId);
     d?.reject(new Error('transport down'));
+  }
+
+  /** Open a tool call this runtime will never close (it is about to die). */
+  openTool(turnId: string, itemId = 'tool-dead'): void {
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'commandExecution',
+        id: itemId,
+        command: 'npm run check',
+        output: '',
+        status: 'running',
+      },
+    });
   }
 
   /** Accept the send AND stream a completing reply for the turn. */
@@ -6180,6 +6266,228 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     // Relay cancelled this turn; the provider did not fail it.
     expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('cancelled');
     adapter.complete(); // stop the heartbeat
+  });
+
+  it('never drains a turn sitting inside an OPEN tool call (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000), // never beats on its own
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 40,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock check', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // One long command: the tool item opens and the runtime says NOTHING for
+    // three full inactivity windows, which is exactly what `npm run check`
+    // looks like on the wire.
+    adapter.startTool();
+    await new Promise((r) => setTimeout(r, 40 * 3 + 40));
+    expect(
+      systemRows(store).some((m) => m.body.text.includes('force-drained'))
+    ).toBe(false);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(false);
+    expect(adapter.interruptCalls).toEqual([]);
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('working');
+
+    adapter.finishTool();
+    adapter.complete('check passed');
+    await waitFor(() => store.getAsyncRun(run.id)?.state === 'completed', 4000);
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('completed');
+  });
+
+  it('an open tool call still hits the hard ceiling (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      // The open tool call disarms the inactivity drain entirely, so the
+      // ceiling is the only bound left — which is the point of having one.
+      watchdogMs: 10_000,
+      turnCeilingMs: 60,
+    });
+    const { run } = postWithAsyncRun(store, binder, '@mock forever', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.startTool('tool-forever', 'sleep infinity');
+    await waitFor(
+      () => systemRows(store).some((m) => m.body.text.includes('turn limit')),
+      4000
+    );
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    const ceiling = collectReceipts(hub, CH).find(
+      (r) => r.reasonCode === 'turn_ceiling'
+    )!;
+    expect(ceiling.state).toBe('expired_watchdog');
+    expect(store.getAsyncRun(run.id)?.targets[0]?.state).toBe('cancelled');
+  });
+
+  it('drops open tool calls when the binding rebinds to a new runtime (#1548)', async () => {
+    let spawnNumber = 0;
+    let firstAdapter: DeferredAdapter | null = null;
+    let secondAdapter: HeartbeatAdapter | null = null;
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (agentType) => {
+        spawnNumber++;
+        if (spawnNumber === 1) {
+          firstAdapter = new DeferredAdapter(agentType);
+          return firstAdapter;
+        }
+        // Silent replacement: whatever bounds this turn now, it is not activity.
+        secondAdapter = new HeartbeatAdapter(agentType, 60_000);
+        return secondAdapter;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 40,
+    });
+    post(store, binder, '@mock retry', ['mock']);
+    await waitFor(
+      () => firstAdapter !== null && firstAdapter.sendCalls.length === 1
+    );
+    const turnId = firstAdapter!.sendCalls[0]!;
+
+    // The dying runtime got as far as opening a tool call. Its replacement will
+    // never emit a terminal update for that item — different runtime, different
+    // item ids — so a carried-over entry would hold the watchdog off forever.
+    firstAdapter!.openTool(turnId);
+    sessions.forgetWithoutEnd(sessions.firstSessionId());
+    firstAdapter!.rejectSend(turnId);
+    await waitFor(() => secondAdapter !== null && sessions.spawns() === 2);
+
+    // The rebound runtime says nothing at all: the idle drain must fire on
+    // schedule rather than deferring to the dead runtime's ghost tool call.
+    await waitFor(
+      () =>
+        systemRows(store).some((m) => m.body.text.includes('force-drained')),
+      4000
+    );
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
+  });
+
+  it('an idle live-state heartbeat never refreshes a silent turn (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    postWithAsyncRun(store, binder, '@mock quiet', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // A wedged runtime pinging "no turn in flight" is the opposite of liveness
+    // on the turn being bounded, so it must not buy the turn another window.
+    const ping = setInterval(() => adapter.emitIdleHeartbeat(), 15);
+    try {
+      await waitFor(
+        () =>
+          systemRows(store).some((m) => m.body.text.includes('force-drained')),
+        4000
+      );
+    } finally {
+      clearInterval(ping);
+    }
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
+  });
+
+  it('a stale-turn terminal tool delta never closes the ACTIVE turn tool (#1548)', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 40,
+    });
+    post(store, binder, '@mock first', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.complete('first done');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const finishedTurnId = adapter.sendCalls[0]!;
+
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() => adapter.sendCalls.length === 2);
+    adapter.startTool();
+
+    // The finished turn replays a terminal delta for the SAME item id (a real
+    // provider replays late items, and the exact-turn tombstone keeps that id
+    // resolvable). It must not close the live turn's tool call — nor drain it.
+    const stale = setInterval(
+      () => adapter.emitToolTerminalDeltaFor(finishedTurnId),
+      15
+    );
+    try {
+      await new Promise((r) => setTimeout(r, 40 * 3 + 40));
+      expect(
+        systemRows(store).some((m) => m.body.text.includes('force-drained'))
+      ).toBe(false);
+    } finally {
+      clearInterval(stale);
+    }
+
+    // Closing it on the ACTIVE turn does restart the budget, and the drain then
+    // fires — proving the tool was still open the whole time.
+    adapter.finishTool();
+    await waitFor(
+      () =>
+        systemRows(store).some((m) => m.body.text.includes('force-drained')),
+      4000
+    );
+  });
+
+  it('restarts the idle window when the last tool call closes (#1548)', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (t) => new HeartbeatAdapter(t, 60_000),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 60,
+    });
+    postWithAsyncRun(store, binder, '@mock check', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as HeartbeatAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.startTool();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(
+      systemRows(store).some((m) => m.body.text.includes('force-drained'))
+    ).toBe(false);
+
+    // The tool ends and the runtime then wedges: the silence budget restarts
+    // from the completion, and a full window later the drain fires.
+    adapter.finishTool();
+    const closedAt = Date.now();
+    await waitFor(
+      () =>
+        systemRows(store).some((m) => m.body.text.includes('force-drained')),
+      4000
+    );
+    expect(Date.now() - closedAt).toBeGreaterThanOrEqual(45);
+    expect(adapter.interruptCalls).toEqual([adapter.sendCalls[0]]);
+    expect(
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    ).toBe(true);
   });
 
   it('cross-node topics fail visibly and never spawn a local stand-in', async () => {
