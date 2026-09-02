@@ -1272,4 +1272,210 @@ describe('PrimeAgentProtocolAdapter', () => {
       'worker crashed unexpectedly with SIGSEGV'
     );
   });
+
+  it('passes --resume and --append-system-prompt on connect', async () => {
+    const client = new PrimeAgentRpcClient();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-1' },
+    });
+    const clientFactoryOptions: PrimeAgentRpcClientOptions[] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      clientFactoryOptions.push(options);
+      return client;
+    });
+    await adapter.connect({
+      ...config,
+      resumeSessionId: 'prime-1',
+      systemPromptAppendix: 'be terse',
+    });
+    expect(clientFactoryOptions[0]?.args).toEqual([
+      '--mode',
+      'rpc',
+      '--no-extensions',
+      '--append-system-prompt',
+      'be terse',
+      '--resume',
+      'prime-1',
+    ]);
+  });
+
+  it('resumeSession respawns with the new id and keeps patch listeners', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-1', sessionFile: '/tmp/prime-1.jsonl' },
+    });
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-2', sessionFile: '/tmp/prime-2.jsonl' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'call').mockResolvedValue({
+      type: 'response',
+      command: 'prompt',
+      success: true,
+    });
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+    const patches: Array<Record<string, unknown>> = [];
+    adapter.onPatch((patch) =>
+      patches.push(patch as unknown as Record<string, unknown>)
+    );
+
+    await adapter.connect(config);
+    await adapter.resumeSession('prime-2');
+
+    expect(clients[0]!.stop).toHaveBeenCalled();
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-2'])
+    );
+    const snapshots = patches.filter(
+      (patch) => patch.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshots[snapshots.length - 1]?.session).toMatchObject({
+      providerSession: {
+        primeAgentSessionId: 'prime-2',
+        primeAgentSessionFile: '/tmp/prime-2.jsonl',
+      },
+    });
+  });
+
+  it('reconnect folds the live provider session id into --resume', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-discovered-id' },
+    });
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-discovered-id' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+
+    await adapter.connect(config);
+    await adapter.reconnect();
+
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-discovered-id'])
+    );
+  });
+
+  it('falls back to a fresh session when the resumed id is unknown', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(clients[0]!, 'diagnosticTail', 'get').mockReturnValue(
+      "Error: No session found matching 'prime-stale'."
+    );
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-fresh' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+    vi.spyOn(clients[1]!, 'call').mockResolvedValue({
+      type: 'response',
+      command: 'prompt',
+      success: true,
+    });
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+    const patches: Array<Record<string, unknown>> = [];
+    adapter.onPatch((patch) =>
+      patches.push(patch as unknown as Record<string, unknown>)
+    );
+
+    await adapter.connect({ ...config, resumeSessionId: 'prime-stale' });
+
+    expect(factoryArgs[0]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-stale'])
+    );
+    expect(factoryArgs[1]).not.toEqual(expect.arrayContaining(['--resume']));
+    expect(adapter.status).toBe('connected');
+
+    await adapter.sendMessage({ turnId: 't1', content: 'hello' });
+    const extensionPatches = patches.filter(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        (patch.item as { type?: string }).type === 'providerExtension'
+    );
+    expect(
+      (extensionPatches[0]?.item as { payload?: unknown })?.payload
+    ).toEqual({
+      kind: 'resumeFallback',
+      reason: 'stale-session',
+      previousSessionId: 'prime-stale',
+    });
+  });
+
+  it('forks instead of resuming when the session belongs to another cwd', async () => {
+    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    vi.spyOn(clients[0]!, 'start').mockRejectedValue(
+      new Error('prime-agent rpc exited (code=1)')
+    );
+    vi.spyOn(clients[0]!, 'diagnosticTail', 'get').mockReturnValue(
+      'Session found in different project: /elsewhere'
+    );
+    vi.spyOn(clients[0]!, 'stop').mockResolvedValue();
+
+    vi.spyOn(clients[1]!, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'prime-forked' },
+    });
+    vi.spyOn(clients[1]!, 'stop').mockResolvedValue();
+
+    let index = 0;
+    const factoryArgs: string[][] = [];
+    const adapter = new PrimeAgentProtocolAdapter((options) => {
+      if (options.args) factoryArgs.push(options.args);
+      return clients[index++]!;
+    });
+
+    await adapter.connect({ ...config, resumeSessionId: 'prime-1' });
+
+    expect(factoryArgs[0]).toEqual(
+      expect.arrayContaining(['--resume', 'prime-1'])
+    );
+    expect(factoryArgs[1]).toEqual(
+      expect.arrayContaining(['--fork', 'prime-1'])
+    );
+    expect(factoryArgs[1]).not.toEqual(expect.arrayContaining(['--resume']));
+    expect(adapter.status).toBe('connected');
+  });
 });

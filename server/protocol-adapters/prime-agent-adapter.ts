@@ -231,6 +231,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private nextControlId = 0;
   private controlInFlightId: number | null = null;
 
+  private resumeFallbackNotice: {
+    kind: string;
+    previousSessionId: string;
+  } | null = null;
+
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
       new PrimeAgentRpcClient({ ...options, spawn: nodeSpawn })
@@ -251,10 +256,10 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     }));
   }
 
-  async connect(config: AdapterConfig): Promise<void> {
-    this.config = config;
-    this._status = 'connecting';
-    this.clearControlDiscovery();
+  private launchArgs(
+    config: AdapterConfig,
+    mode: 'resume' | 'fork' | 'fresh'
+  ): string[] {
     const args = ['--mode', 'rpc', '--no-extensions'];
     const provider = string(config.extra?.['provider']);
     const thinking = string(config.extra?.['effort']);
@@ -263,7 +268,26 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (thinking) args.push('--thinking', thinking);
     if (config.systemPromptAppendix)
       args.push('--append-system-prompt', config.systemPromptAppendix);
-    if (config.resumeSessionId) args.push('--resume', config.resumeSessionId);
+    if (config.resumeSessionId && mode === 'resume')
+      args.push('--resume', config.resumeSessionId);
+    else if (config.resumeSessionId && mode === 'fork')
+      args.push('--fork', config.resumeSessionId);
+    return args;
+  }
+
+  async connect(config: AdapterConfig): Promise<void> {
+    this.config = config;
+    this._status = 'connecting';
+    this.clearControlDiscovery();
+    this.resumeFallbackNotice = null;
+    return this.connectOnce(config, 'resume');
+  }
+
+  private async connectOnce(
+    config: AdapterConfig,
+    mode: 'resume' | 'fork' | 'fresh'
+  ): Promise<void> {
+    const args = this.launchArgs(config, mode);
     const env = buildChildEnv({ processEnv: config.processEnv });
     const client = this.clientFactory({
       command: PRIME_AGENT_CHANNEL_COMMAND,
@@ -322,6 +346,39 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         client.diagnosticTail,
         config.resumeSessionId
       );
+      if (config.resumeSessionId && mode === 'resume') {
+        if (
+          classified.kind === 'stale-session' ||
+          classified.kind === 'cwd-missing'
+        ) {
+          logger.warn(
+            'prime-agent resume failed, falling back to fresh session',
+            {
+              kind: classified.kind,
+              previousSessionId: config.resumeSessionId,
+            }
+          );
+          this.resumeFallbackNotice = {
+            kind: classified.kind,
+            previousSessionId: config.resumeSessionId,
+          };
+          return await this.connectOnce(config, 'fresh');
+        }
+        if (classified.kind === 'cwd-mismatch') {
+          logger.warn(
+            'prime-agent resume failed due to cwd mismatch, falling back to --fork',
+            {
+              kind: classified.kind,
+              previousSessionId: config.resumeSessionId,
+            }
+          );
+          this.resumeFallbackNotice = {
+            kind: classified.kind,
+            previousSessionId: config.resumeSessionId,
+          };
+          return await this.connectOnce(config, 'fork');
+        }
+      }
       logger.warn('prime-agent launch failed', {
         kind: classified.kind,
         message: classified.message,
@@ -878,6 +935,18 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       activeTurnId: input.turnId,
       queueLength: this.queued.length,
     });
+    if (this.resumeFallbackNotice) {
+      const notice = this.resumeFallbackNotice;
+      this.resumeFallbackNotice = null;
+      this.emitProviderExtension(
+        {
+          kind: 'resumeFallback',
+          reason: notice.kind,
+          previousSessionId: notice.previousSessionId,
+        },
+        'normal'
+      );
+    }
   }
 
   private completeTurn(
