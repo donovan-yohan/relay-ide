@@ -35,6 +35,25 @@ workflow.
   in headless stream-json mode over stdin/stdout with streaming text, typed tool
   cards (`run_command`, file modifications, dynamic tools), token usage aggregation,
   interrupts via SIGINT, and session resumption (#1508)
+- DeepSeek Harness is a built-in channel agent: mention `@dsh` (or a named dsh
+  profile) to run the harness over the Agent Client Protocol as a private
+  channel runtime, with streamed replies, reasoning, command, file, and tool
+  cards, permission prompts that can be answered in the channel, a Stop button
+  that really cancels the turn, and a conversation that survives a reconnect.
+  Credentials come from the profile's `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`;
+  attachments and structured questions are not offered on this lane. Note that
+  channel agents run in yolo mode hub-wide, so dsh is started in
+  `danger-full-access` and its own server auto-approves every permission prompt
+  before Relay ever sees one — set `DSH_PERMISSION_MODE` to `workspace-write`
+  (or `read-only`) in the dsh profile's environment variables to get approval
+  cards in the channel instead (#1535)
+
+#### Fixed
+
+- The read-only dsh session list no longer offers `dsh --resume <id>` as a
+  copyable resume command. No shipped dsh app accepts that flag, so the command
+  always failed; dsh sessions now report that native resume is unavailable and
+  point at the dsh channel agent instead (#1520)
 
 ### Channels
 

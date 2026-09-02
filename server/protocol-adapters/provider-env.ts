@@ -51,3 +51,9 @@ export const OPENCODE_ENV_DENYLIST = providerDenylist(
   ...OPENCODE_EXTRA_ENV_DENYLIST
 );
 export const ANTIGRAVITY_ENV_DENYLIST = providerDenylist();
+/**
+ * Nesting set only. `DEEPSEEK_API_KEY` and `DEEPSEEK_BASE_URL` are the ONLY way
+ * a dsh channel runtime is credentialed, so a named profile must stay able to
+ * set them.
+ */
+export const DSH_ENV_DENYLIST = providerDenylist();

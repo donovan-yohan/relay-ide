@@ -49,17 +49,23 @@ const logger = createLogger('provider-state:dsh-state');
  *   turn/start, step/start|end, request/header|context, session/title, ...).
  *
  * Observation only: this adapter never mutates the store. `resumeCommand`
- * returns copyable argv data; callers decide whether to run it. Resume flag
- * semantics are launcher-level (`dsh --profile tui --resume <id>`, apps/cli):
- * the inner app parses its own `--resume <id>`, so bare `['dsh', '--resume',
- * <id>]` relies on the default profile accepting that flag family — noted as a
- * caveat in the handoff.
+ * returns copyable argv data; callers decide whether to run it.
+ *
+ * There is no such argv for dsh (#1520). The launcher forwards unknown tokens
+ * to the booted profile's app, and no shipped app parses `--resume`: the
+ * headless app rejects it (`error: unknown option '--resume'`, exit 1) and the
+ * web app knows only `--host/--port/--trusted-host/--no-open`. Handing an
+ * operator `dsh --resume <id>` therefore hands them a command that fails, so
+ * this adapter returns no resume argv and declares `canResumeNative: false`.
+ * The dsh CHANNEL adapter is the way to talk to a dsh runtime; it starts a new
+ * conversation rather than replaying one (`resumeStateKey: null`).
  */
 
 const DSH_STATE_CAPABILITIES: AgentHarnessStateCapabilities = {
   canImportTranscript: true,
   canReadProviderState: true,
-  canResumeNative: true,
+  // No shipped dsh app accepts a resume argv; see the module comment (#1520).
+  canResumeNative: false,
   // Wired through NativeSessionLiveTailManager via the framed-zstd tailer.
   canStreamLiveEvents: true,
   canRespondToApprovals: false,
@@ -313,8 +319,9 @@ export class DshStateAdapter implements AgentHarnessStateAdapter {
     return result;
   }
 
-  resumeCommand(ref: NativeSessionRef): string[] {
-    return ['dsh', '--resume', ref.nativeId];
+  resumeCommand(_ref: NativeSessionRef): string[] {
+    // Deliberately empty: no shipped dsh app parses a resume flag (#1520).
+    return [];
   }
 
   private async readRef(ref: NativeSessionRef): Promise<DecodedDshLog> {

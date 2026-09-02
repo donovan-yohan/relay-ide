@@ -408,6 +408,7 @@ export const BUILTIN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'prime-agent',
   'pi',
   'antigravity',
+  'dsh',
   'terminal',
 ]);
 
