@@ -39,53 +39,100 @@ refresh. Capabilities must describe only implemented behavior.
 | Antigravity      | `antigravity` | `agy` stream-json NDJSON over stdin/stdout           |
 | DeepSeek Harness | `dsh`         | `dsh --profile acp` Agent Client Protocol over stdio |
 
-Prime Agent is a first-class channel provider. In version 0.7.0, it uses a daemon-backed RPC architecture (the channel subprocess is a thin client communicating with the supervisor daemon; environment variable denylists cover the client process). Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
-lifecycle, `message_update` text and
-thinking deltas to assistant and reasoning items, and
-`tool_execution_start|update|end` to canonical command, file-change, or dynamic
-tool items. It advertises text, reasoning, tools, command execution, file
-changes, queueing, interrupt, resume, telemetry, and streaming; unsupported
-approval, question, plan, and queue-cancellation operations remain false. Image attachments are delivered as base64 data URIs via the `images` field on the `prompt` command. Per-message telemetry captures token counts from `message_end` usage metadata (note: Prime does not yet report a total context-window figure in per-message telemetry). Because Prime steering stays within one native run, Relay queues concurrent
-messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
-one durable Relay turn per message.
+### Prime Agent
 
-Verified against prime-agent 0.9.1 (2026-09-02): every flag the adapter spawns
-(`--mode rpc`, `--no-extensions`, `--provider`, `--model`, `--thinking`,
-`--append-system-prompt`, `-r/--resume`, `--fork`) still exists, and the RPC
-wire (`get_state` / `prompt` / `abort` response shapes, the
-`agent_start|message_update|tool_execution_*|agent_end` event names, and
-`sessionActions.queuedCount`) is unchanged from 0.7.0. 0.9.1 adds two output
-modes Relay does not use, `--mode acp` and `--mode daemon`, and one additive
-`get_state` field, `goal`.
+Prime Agent 0.9.1 is a first-class channel provider. Relay launches
+`prime-agent --mode rpc --no-extensions`; depending on profile and session
+state, it also supplies `--provider <name>`, `--model <id>`,
+`--thinking <level>`, `--append-system-prompt <text>`, and either
+`--resume [path|id]` or `--fork <path|id>`. These flag spellings are verified
+against `prime-agent --help` in 0.9.1. Relay does not use the advertised
+`--mode acp` or `--mode daemon` modes. It leaves `--daemon-socket <path>`
+unset.
 
-Channel subprocesses launch with `--no-extensions` to disable extension UI popups. If an `extension_ui_request` is received, dialog methods (`select`, `confirm`, `input`, `editor`) cause the adapter to emit a descriptive error patch and interrupt the turn so unattended channels cannot hang; non-dialog methods (`notify`, `setStatus`, `setWidget`, `setTitle`) are surfaced as debug provider extensions.
+The adapter maps the RPC stream as follows:
 
-On launch, pre-readiness stdout and stderr are captured into a bounded diagnostic tail. Launch failures are classified into structured reasons (`auth`, `lease-held`, `stale-session`, `cwd-missing`, `cwd-mismatch`, `timeout`, `unknown`):
+| Prime RPC input or event                                             | Relay mapping                                                                                                            | Lifecycle and fidelity rule                                                                                                                                               |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt`                                                             | Started turn plus completed `userMessage`; `images` contains base64 image data                                           | The response means accepted or queued, not completed                                                                                                                      |
+| `agent_start`                                                        | Debug diagnostic                                                                                                         | Relay already started the turn when it submitted `prompt`                                                                                                                 |
+| `turn_start`, `turn_end`                                             | No Relay patch                                                                                                           | Recognized and ignored as redundant with Relay/native boundaries                                                                                                          |
+| Assistant-role `message_start`                                       | Sequence bookkeeping                                                                                                     | Advances the assistant block sequence; other roles do not                                                                                                                 |
+| `message_update` text/thinking deltas                                | `assistantMessage` / `reasoning` start and delta patches                                                                 | Stable IDs combine the Relay turn, assistant sequence, and content index; out-of-turn updates are debug-only                                                              |
+| `message_update` `toolcall_end`, `tool_execution_start\|update\|end` | `commandExecution`, `fileChange`, or `dynamicToolCall`                                                                   | `toolcall_end` creates a running preview; only `tool_execution_end` terminalizes it; out-of-turn events are debug-only                                                    |
+| `message_update` error                                               | Error patch and turn failure, or interrupted state for `aborted`                                                         | Applied only to the active turn                                                                                                                                           |
+| `message_end`                                                        | Usage plus terminal assistant/reasoning status                                                                           | `aborted` marks interruption; native errors fail the turn; Prime does not supply a total context-window figure here                                                       |
+| `session_action_update`                                              | Live queue depth                                                                                                         | Combines Prime's finite non-negative `queuedCount` with Relay's local queue                                                                                               |
+| `auto_retry_start\|end`                                              | `autoRetry` provider extension                                                                                           | A failed retry sets the turn error; out-of-turn success is diagnostic only                                                                                                |
+| `compaction_start\|end`                                              | `contextCompaction` provider extension                                                                                   | Surfaced only when an active Relay turn can own it; otherwise logged at debug level                                                                                       |
+| `extension_error`                                                    | Debug `extensionError` provider extension                                                                                | Surfaced only during an active turn; otherwise no Relay patch                                                                                                             |
+| `extension_ui_request`                                               | Dialogs emit an error and interrupt an active turn; active-turn non-dialog updates become debug `extensionUi` extensions | `select`, `confirm`, `input`, and `editor` cannot block a channel; an out-of-turn dialog emits a session error, while an out-of-turn non-dialog request produces no patch |
+| `agent_end`                                                          | Terminal turn and live-state patch                                                                                       | Completes, interrupts, or fails the turn, then starts the next locally queued prompt; an out-of-turn event returns live state to idle                                     |
+| Any other event                                                      | Debug diagnostic                                                                                                         | Observed native data is not misrepresented as a supported Relay concept                                                                                                   |
 
-- `stale-session` or `cwd-missing`: the adapter logs a warning, falls back once to a fresh session (omitting `--resume`), and emits a `resumeFallback` provider extension notice on the first turn.
-- `cwd-mismatch`: the adapter falls back once to `--fork <id>` in the current directory and emits a `resumeFallback` provider extension notice.
-- `lease-held`, `auth`, `timeout`, or `unknown`: the launch fails immediately with a classified error message without fallback.
+The adapter advertises text, reasoning, tools, command execution, file changes,
+slash commands, queueing, interrupt, resume, telemetry, and streaming. Approval,
+question, plan, native steering, queue cancellation, fork, rollback, manual
+compaction, and rate-limit capabilities remain false. Relay queues concurrent
+messages locally and submits a new `prompt` after `agent_end`, preserving one
+durable Relay turn per message.
 
-Native events are mapped according to the never-drop invariant:
+**Daemon boundary.** In 0.9.1, `--mode rpc` is a thin client of Prime's
+supervisor daemon; the daemon-owned session worker runs the model and tools.
+Relay applies `buildChildEnv` to the client. A newly created worker receives the
+client environment as an overlay on the daemon environment, but an omitted
+variable is not a deletion marker, and attaching to an existing worker does not
+replace that worker's environment. Relay's client-side environment denylist is
+therefore not a sandbox for commands run by Prime. In particular, a denylisted
+key already present in the daemon environment can remain in the worker.
 
-- `auto_retry_start` and `auto_retry_end` (success) emit `autoRetry` provider extensions; retry failure sets turn error.
-- `compaction_start` and `compaction_end` emit `contextCompaction` provider extensions.
-- `agent_start` is logged at debug level.
-- `agent_end` settles turn lifecycle; if received out-of-turn (e.g. after observing `isStreaming: true` on connect), it transitions live status to `idle`.
-- Unmapped native events are logged at debug level.
+The RPC client's correlated `get_state` call is the 10-second readiness barrier.
+All stderr and any pre-readiness stdout line that is not a JSON object are
+retained in a bounded diagnostic tail. A failed resume follows this one-step
+ladder:
 
-The channel command palette discovers Prime models from the connected RPC
-runtime and exposes `model`, plus `thinking`/`effort` only when the selected
-live model explicitly supplies supported thinking levels. These execute on
-Relay's authenticated control lane, not as persisted chat messages or
-token-consuming prompts. Fresh-session, compaction (`compact`), and steering (`steer`) controls are documented in Prime 0.7.0 RPC but remain omitted from the channel command palette pending deferred implementation (part (b)). Model and thinking arguments are validated against live Prime
-metadata; if discovery is unavailable, the adapter fails closed instead of
-guessing. Prime skills, prompt templates, and TUI-only commands are not exposed
-as channel controls. This control surface is installed-tested with Prime Agent
-0.7.0. It assumes strict-LF JSONL records, a correlated `get_state` readiness
-response, `agent_end` as the settled run boundary, and
-`sessionActions.queuedCount` as a finite non-negative integer; a runtime that
-cannot return a valid live model catalog publishes no connected command catalog.
+| Classified reason | Evidence recognized by the adapter                       | Resume behavior                                        | Channel-visible result                                     |
+| ----------------- | -------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------- |
+| `stale-session`   | `No session found matching`                              | Retry once without `--resume`                          | First turn gets a `resumeFallback` notice                  |
+| `cwd-missing`     | `MissingSessionCwd` or missing session working directory | Retry once without `--resume`                          | First turn gets a `resumeFallback` notice                  |
+| `cwd-mismatch`    | `Session found in different project`                     | Retry once with `--fork <path\|id>` in the channel cwd | First turn gets a `resumeFallback` notice                  |
+| `lease-held`      | `Session is already active`                              | No fallback                                            | Fail with guidance to close or attach to the other process |
+| `auth`            | `No models available`                                    | No fallback                                            | Fail with `/login` guidance                                |
+| `timeout`         | `get_state` does not answer within 10 seconds            | No fallback                                            | Fail with the bounded diagnostic tail when available       |
+| `unknown`         | Any other launch failure                                 | No fallback                                            | Fail with the native error and bounded diagnostic tail     |
+
+A fallback is attempted only for an initial `--resume` launch. If the fresh or
+fork launch also fails, that classified failure is final. Reconnect uses the
+provider session ID learned from `get_state`: it first tears down the client and
+then tries that ID.
+
+The connected command palette calls `get_available_models` and exposes `model`,
+plus `thinking`/`effort` only when the selected live model supplies supported
+thinking levels. The adapter executes these through `set_model` and
+`set_thinking_level`, then refreshes with `get_state`. Missing or malformed
+model discovery produces no guessed catalog, and a native unsupported response
+retracts that control for the current runtime generation.
+
+Prime 0.9.1 also documents `new_session`, `compact`, and `steer`, but their
+existence is not enough to advertise the corresponding Relay capabilities:
+
+- `new_session` changes native session identity. Relay does not expose it until
+  the adapter can switch and publish the durable provider binding as one
+  controlled operation.
+- `compact` is a session mutation with its own asynchronous start/end/failure
+  lifecycle. The adapter observes compaction events during an attributed turn,
+  but has no manual control that owns and reports an idle compaction.
+- `steer` injects into the current native run and has no separate `agent_end`
+  boundary. Relay instead preserves attribution by queueing the message as a
+  distinct turn and sending a fresh `prompt` after the current `agent_end`.
+
+Model and thinking controls run on Relay's authenticated control lane. They are
+not persisted as chat messages and do not consume a prompt. Prime skills,
+prompt templates, TUI-only commands, and the three controls above are not
+exposed in the channel palette. The 0.9.1 compatibility assumptions used here
+are line-delimited JSON records, a correlated `get_state` response,
+`agent_end` as the settled run boundary, and a finite non-negative
+`sessionActions.queuedCount`.
 
 The `prime-agent` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
@@ -518,7 +565,9 @@ control catalog. Prime Agent has no pre-bind control preview: its connected
 catalog remains empty until the current RPC runtime has completed discovery.
 The available-model catalog proves only model selection; reasoning depth appears
 only when the selected model explicitly returns supported thinking levels.
-Fresh-session, compaction, and steering controls remain omitted from the channel command palette pending deferred implementation (part (b)).
+Prime's `new_session`, `compact`, and `steer` methods remain omitted for the
+identity, lifecycle, and turn-attribution reasons documented above; RPC method
+existence alone is not an advertised Relay capability.
 A missing live-evidenced native control retracts only that control for the
 active runtime generation and returns a typed unavailable result; reconnect
 invalidates the prior discovery result.
