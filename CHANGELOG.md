@@ -36,6 +36,16 @@ workflow.
   cards (`run_command`, file modifications, dynamic tools), token usage aggregation,
   interrupts via SIGINT, and session resumption (#1508)
 
+### Channels
+
+#### Fixed
+
+- A channel post typed at the hub's own terminal (`relay-ide v1 channels post`)
+  no longer marks its run `failed` while the agent is still working. The
+  host-local CLI is the operator, not an agent profile, so its posts no longer
+  schedule an agent-to-agent completion callback to a profile that cannot exist
+  (#1533)
+
 ### CLI help and channel commands
 
 #### Fixed

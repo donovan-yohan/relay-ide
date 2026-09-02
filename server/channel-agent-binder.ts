@@ -12,12 +12,14 @@ import {
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
   createChannelOrchestratorConflictError,
+  memberFoldKey,
   type ChannelBinding,
   type ChannelCompletionCallbackEdge,
   type ChannelCompletionCallbackMessageDisposition,
   type ChannelCompletionCallbackTerminalReason,
   type ChannelMessageStore,
 } from './channel-message-store.js';
+import { LOCAL_HUB_ACTOR_ID } from './local-hub-actor-token.js';
 import type { ChannelHub, ChannelMessagePostedOptions } from './channel-hub.js';
 import {
   AgentControlUnavailableError,
@@ -1009,10 +1011,28 @@ export function createChannelAgentBinder(
     return channelTurnId(edge.id as ChannelMessage['id'], requesterProfileId);
   }
 
+  /**
+   * The host-local CLI credential (#1467) posts on an agent-shaped lane
+   * (`deriveSender` stamps `agent:local-cli`), but it is the OPERATOR at the
+   * hub's own terminal, not an installed agent profile. Folding it the way an
+   * agent sender is folded invented `agent-profile:local-cli:default` and
+   * scheduled an agent-to-agent completion callback to a profile that can
+   * never exist, which then terminalized as `requester-profile-unavailable`
+   * mid-turn (#1533). Operator posts take the human path: no callback, and the
+   * run completes when the target's own turn completes.
+   */
+  function isLocalHubCliSender(sender: ChannelMessage['sender']): boolean {
+    return (
+      sender.kind === 'agent' &&
+      memberFoldKey('agent', sender.id) === LOCAL_HUB_ACTOR_ID
+    );
+  }
+
   function requesterProfileForAgentMessage(
     message: ChannelMessage
   ): string | null {
     if (message.sender.kind !== 'agent') return null;
+    if (isLocalHubCliSender(message.sender)) return null;
     if (deps.agentProfileStore?.get(message.sender.id))
       return message.sender.id;
     return message.sender.providerId
