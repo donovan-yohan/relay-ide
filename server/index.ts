@@ -1801,6 +1801,17 @@ async function main(): Promise<void> {
   // @-mention routing binder (#1167): owns private agent runtimes per
   // (channel, profile) and streams replies through the channel bridge.
   // Null when the channel store failed to init (routes degrade to 503).
+  //
+  // Both turn bounds (#1541) are operator-overridable without a route or a
+  // config-schema change: the inactivity watchdog (silence before a turn is
+  // force-drained) and the hard per-turn wall-clock ceiling. Unset — the normal
+  // case — keeps the binder's own defaults.
+  const channelTurnIdleMs = positiveIntegerEnv(
+    'RELAY_IDE_CHANNEL_TURN_IDLE_MS'
+  );
+  const channelTurnCeilingMs = positiveIntegerEnv(
+    'RELAY_IDE_CHANNEL_TURN_CEILING_MS'
+  );
   const channelAgentBinder: ChannelAgentBinder | null = channelMessageStore
     ? createChannelAgentBinder({
         store: channelMessageStore,
@@ -1814,6 +1825,12 @@ async function main(): Promise<void> {
         port: startupConfig.port,
         configDir,
         localNodeId: DEFAULT_LOCAL_NODE_ID,
+        ...(channelTurnIdleMs !== undefined
+          ? { watchdogMs: channelTurnIdleMs }
+          : {}),
+        ...(channelTurnCeilingMs !== undefined
+          ? { turnCeilingMs: channelTurnCeilingMs }
+          : {}),
       })
     : null;
   if (channelAgentBinder) {

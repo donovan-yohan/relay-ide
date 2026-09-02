@@ -1314,7 +1314,10 @@ export type ChannelCompletionCallbackTerminalReason =
   | 'interrupt'
   | 'unexpected-disconnect'
   | 'safe-idle'
-  | 'watchdog';
+  /** Force-drained after the inactivity watchdog expired (#1541). */
+  | 'watchdog'
+  /** Interrupted at the hard turn wall-clock ceiling (#1541). */
+  | 'turn-ceiling';
 
 /** Whether Relay could bind the callback to a terminal assistant message. */
 export type ChannelCompletionCallbackMessageDisposition =

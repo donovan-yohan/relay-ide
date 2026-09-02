@@ -59,6 +59,16 @@ workflow.
 
 #### Fixed
 
+- A long agent turn is no longer killed after five minutes while it is visibly
+  working. The binder's turn watchdog now measures silence, not elapsed time, so
+  a turn that keeps streaming text and tool calls runs as long as the work takes
+  and its run finishes `complete` instead of `failed`. A turn that really does go
+  quiet is still drained — and now the agent is interrupted for real and the
+  channel gets a row saying why, rather than the run quietly flipping to `failed`
+  while the agent kept editing files. A separate hard ceiling (one hour by
+  default) still bounds a single turn; reaching it interrupts the agent and posts
+  its own row. Both bounds can be retuned with `RELAY_IDE_CHANNEL_TURN_IDLE_MS`
+  and `RELAY_IDE_CHANNEL_TURN_CEILING_MS` (#1541)
 - A channel whose worktree is changed after its agent is already running now
   says so instead of silently continuing in the old directory. A channel agent
   keeps the working directory it was started in, so repointing the channel at a

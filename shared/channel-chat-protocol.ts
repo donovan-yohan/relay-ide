@@ -1340,6 +1340,8 @@ export type ChannelDeliveryReceiptReasonCode =
   | 'runtime_unavailable'
   | 'binding_failed'
   | 'watchdog_force_drain'
+  /** Hard per-turn wall-clock ceiling reached; the runtime was interrupted (#1541). */
+  | 'turn_ceiling'
   | 'send_rejected'
   | 'send_error'
   | 'runtime_ended'
@@ -1416,6 +1418,7 @@ const CHANNEL_DELIVERY_RECEIPT_REASON_CODES = new Set<string>([
   'runtime_unavailable',
   'binding_failed',
   'watchdog_force_drain',
+  'turn_ceiling',
   'send_rejected',
   'send_error',
   'runtime_ended',
