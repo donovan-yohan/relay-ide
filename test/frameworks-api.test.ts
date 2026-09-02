@@ -32,6 +32,9 @@ beforeAll(async () => {
   const fakePi = path.join(fakeBinDir, 'pi');
   fs.writeFileSync(fakePi, '#!/bin/sh\nexit 0\n');
   fs.chmodSync(fakePi, 0o755);
+  const fakeAgy = path.join(fakeBinDir, 'agy');
+  fs.writeFileSync(fakeAgy, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fakeAgy, 0o755);
 
   const hermesProbeApp = express();
   hermesProbeApp.get('/health', (_req, res) => {
@@ -93,6 +96,7 @@ describe('GET /api/frameworks', () => {
     expect(ids).toContain('hermes');
     expect(ids).toContain('prime-agent');
     expect(ids).toContain('pi');
+    expect(ids).toContain('antigravity');
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource, and availability', async () => {
@@ -170,6 +174,31 @@ describe('GET /api/frameworks', () => {
     expect(prime!.availability).toEqual({
       installed: true,
       path: path.join(fakeBinDir, 'prime-agent'),
+    });
+  });
+
+  it('returns Antigravity as an installed first-class channel provider', async () => {
+    const res = await fetch(url('/api/frameworks'));
+    const body = (await res.json()) as {
+      frameworks: Array<{
+        id: string;
+        displayName: string;
+        command: string;
+        eventSource: string;
+        capabilities: Record<string, boolean>;
+        availability?: { installed: boolean; path?: string };
+      }>;
+    };
+    const agy = body.frameworks.find((f) => f.id === 'antigravity');
+    expect(agy).toMatchObject({
+      displayName: 'Antigravity',
+      command: 'agy',
+      eventSource: 'timer',
+    });
+    expect(agy!.capabilities.supportsChannelAgents).toBe(true);
+    expect(agy!.availability).toEqual({
+      installed: true,
+      path: path.join(fakeBinDir, 'agy'),
     });
   });
 

@@ -8,3 +8,4 @@ export const CODEX_CHANNEL_COMMAND = 'codex';
 export const PRIME_AGENT_CHANNEL_COMMAND = 'prime-agent';
 export const PI_AGENT_CHANNEL_COMMAND = 'pi';
 export const OPENCODE_CHANNEL_COMMAND = 'opencode';
+export const ANTIGRAVITY_CHANNEL_COMMAND = 'agy';

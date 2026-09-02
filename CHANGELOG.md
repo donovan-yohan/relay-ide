@@ -18,6 +18,15 @@ workflow.
 
 ## [Unreleased]
 
+### Channel Adapters
+
+#### Added
+
+- First-class Antigravity (`antigravity`) channel adapter driving the `agy` CLI
+  in headless stream-json mode over stdin/stdout with streaming text, typed tool
+  cards (`run_command`, file modifications, dynamic tools), token usage aggregation,
+  interrupts via SIGINT, and session resumption (#1508)
+
 ### CLI help and channel commands
 
 #### Fixed

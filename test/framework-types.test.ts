@@ -18,6 +18,7 @@ test('BUILTIN_FRAMEWORKS contains all first-class providers', () => {
   expect('hermes' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('prime-agent' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('pi' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('antigravity' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -148,6 +149,27 @@ test('pi framework exposes native channels and a generic PTY', () => {
     supportsAttachedRuntime: false,
   });
   expect(frameworkCapabilitiesWithChannelLane(pi).supportsChannelAgents).toBe(
+    true
+  );
+});
+
+test('antigravity framework exposes native channels and a generic PTY', () => {
+  const agy = BUILTIN_FRAMEWORKS['antigravity'];
+  expect(agy.id).toBe('antigravity');
+  expect(agy.displayName).toBe('Antigravity');
+  expect(agy.command).toBe('agy');
+  expect(agy.continueArgs).toEqual(['--continue']);
+  expect(agy.yoloArgs).toEqual(['--dangerously-skip-permissions']);
+  expect(agy.parserType).toBe('generic');
+  expect(agy.eventSource).toBe('timer');
+  expect(agy.capabilities).toMatchObject({
+    supportsHooks: false,
+    supportsContinue: true,
+    supportsYolo: true,
+    supportsTelemetry: true,
+    supportsAttachedRuntime: false,
+  });
+  expect(frameworkCapabilitiesWithChannelLane(agy).supportsChannelAgents).toBe(
     true
   );
 });

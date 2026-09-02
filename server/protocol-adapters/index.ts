@@ -21,7 +21,9 @@ import {
 import { CodexNativeProtocolAdapter } from './codex-native-adapter.js';
 import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
 import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
+import { AntigravityProtocolAdapter } from './antigravity-adapter.js';
 import {
+  ANTIGRAVITY_ENV_DENYLIST,
   CLAUDE_ENV_DENYLIST,
   CODEX_ENV_DENYLIST,
   OPENCODE_ENV_DENYLIST,
@@ -29,6 +31,7 @@ import {
   PRIME_AGENT_ENV_DENYLIST,
 } from './provider-env.js';
 import {
+  ANTIGRAVITY_CHANNEL_COMMAND,
   CLAUDE_CHANNEL_COMMAND,
   CODEX_CHANNEL_COMMAND,
   OPENCODE_CHANNEL_COMMAND,
@@ -365,6 +368,36 @@ export const PROVIDER_DESCRIPTORS = {
     agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
+  antigravity: {
+    id: 'antigravity',
+    agentType: 'antigravity',
+    terminalFrameworkId: 'antigravity',
+    launch: {
+      requirement: {
+        kind: 'command',
+        command: ANTIGRAVITY_CHANNEL_COMMAND,
+      },
+      processEnvDenylist: ANTIGRAVITY_ENV_DENYLIST,
+    },
+    bridgedCapabilities: null,
+    supportsChannelAgents: true,
+    mentionableByDefault: true,
+    allowedAsTopicRoutingDefault: true,
+    resumeStateKey: 'antigravityConversationId',
+    deliversImages: false,
+    imageRawByteBudget: GENERAL_IMAGE_RAW_BYTE_BUDGET,
+    relayControls: EMPTY_RELAY_CONTROL_CATALOG,
+    // `agy` is short like pi and matched against command basename.
+    processMatch: { commandLineSubstrings: [], commandBasenames: ['agy'] },
+    authCredentialPaths: [
+      ['.gemini', 'antigravity-cli', 'antigravity-oauth-token'],
+    ],
+    // agy init reports permission_mode: 'always-proceed' when --dangerously-skip-permissions is given.
+    yoloPermissionMode: 'always-proceed',
+    agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
+    isDefaultOrchestratorProvider: false,
+  },
   opencode: {
     id: 'opencode',
     agentType: 'opencode',
@@ -552,6 +585,7 @@ export const v2Adapters = {
   codex: () => new CodexNativeProtocolAdapter(),
   'prime-agent': () => new PrimeAgentProtocolAdapter(),
   pi: () => new PiAgentProtocolAdapter(),
+  antigravity: () => new AntigravityProtocolAdapter(),
   opencode: () =>
     new LegacyProtocolAdapterV2Bridge(
       new OpenCodeProtocolAdapter(),

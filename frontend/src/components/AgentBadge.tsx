@@ -110,6 +110,22 @@ export function AgentBadge({ agent }: AgentBadgeProps) {
     );
   }
 
+  if (agent === 'antigravity') {
+    return (
+      <svg
+        className="agent-badge"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="Antigravity"
+      >
+        <path
+          fill="currentColor"
+          d="M12 2L2 22h20L12 2Zm0 5.5L18.5 19h-13L12 7.5Z"
+        />
+      </svg>
+    );
+  }
+
   const fallbackLetter = agent ? agent[0]!.toUpperCase() : '?';
   return (
     <span className="agent-badge agent-badge--fallback" aria-label={agent}>

@@ -28,9 +28,7 @@ import { AGENT_NESTING_STRIP_KEYS } from './adapter-utils.js';
  * applies the nesting set itself); descriptor rows want the composed list,
  * because a profile must be blocked from setting either kind.
  */
-function providerDenylist(
-  ...extra: readonly string[]
-): readonly string[] {
+function providerDenylist(...extra: readonly string[]): readonly string[] {
   return Object.freeze([...AGENT_NESTING_STRIP_KEYS, ...extra]);
 }
 
@@ -52,3 +50,4 @@ export const PRIME_AGENT_ENV_DENYLIST = providerDenylist();
 export const OPENCODE_ENV_DENYLIST = providerDenylist(
   ...OPENCODE_EXTRA_ENV_DENYLIST
 );
+export const ANTIGRAVITY_ENV_DENYLIST = providerDenylist();
