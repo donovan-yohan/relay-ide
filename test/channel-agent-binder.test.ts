@@ -8805,3 +8805,81 @@ describe('channel-agent-binder — host-local CLI requester (#1533)', () => {
     });
   });
 });
+
+describe('channel-agent-binder — topic routing cwd (#1534)', () => {
+  const WORKTREE = '/repo/relay/.worktrees/lane';
+
+  function makeTopicStore(): WorkspaceTopicStore {
+    const topicStore = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topicStore.close());
+    return topicStore;
+  }
+
+  it('spawns the runtime in the topic worktree cwd, verbatim', async () => {
+    const topicStore = makeTopicStore();
+    topicStore.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'lane',
+      routingDefaults: { repoPath: '/repo/relay', cwd: WORKTREE },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock where am i', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    // The worktree wins over repoPath: a worktree cwd is the whole point of
+    // `routingDefaults.cwd`, and nothing between here and `spawn` rewrites it.
+    expect(sessions.createParams()[0]).toMatchObject({
+      cwd: WORKTREE,
+      repoPath: '/repo/relay',
+    });
+  });
+
+  it('reports a reused runtime whose cwd no longer matches the topic routing cwd', async () => {
+    const topicStore = makeTopicStore();
+    topicStore.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'lane',
+      routingDefaults: { cwd: '/repo/relay' },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock first', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(sessions.createParams()[0]).toMatchObject({ cwd: '/repo/relay' });
+
+    // Point the topic at a worktree AFTER the runtime is live. The runtime
+    // keeps its spawn cwd, so the operator has to be told (#1534).
+    topicStore.update(CH, { routingDefaults: { cwd: WORKTREE } });
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes(WORKTREE))
+    );
+    const diverged = systemRows(store).filter((m) =>
+      m.body.text.includes(WORKTREE)
+    );
+    expect(diverged).toHaveLength(1);
+    expect(diverged[0]!.body.text).toContain('/repo/relay');
+    expect(sessions.spawns()).toBe(1); // reuse never restarts behind the operator
+
+    // The same divergence is reported once, not once per turn.
+    post(store, binder, '@mock third', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 3);
+    expect(
+      systemRows(store).filter((m) => m.body.text.includes(WORKTREE))
+    ).toHaveLength(1);
+  });
+});

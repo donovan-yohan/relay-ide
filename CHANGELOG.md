@@ -40,6 +40,11 @@ workflow.
 
 #### Fixed
 
+- A channel whose worktree is changed after its agent is already running now
+  says so instead of silently continuing in the old directory. A channel agent
+  keeps the working directory it was started in, so repointing the channel at a
+  different worktree posts a note naming both directories and telling you to
+  restart the agent to move it (#1534)
 - A channel post typed at the hub's own terminal (`relay-ide v1 channels post`)
   no longer marks its run `failed` while the agent is still working. The
   host-local CLI is the operator, not an agent profile, so its posts no longer

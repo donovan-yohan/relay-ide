@@ -574,6 +574,10 @@ export class AntigravityProtocolAdapter
       env: this.buildEnv(),
       spawn: this.spawnFn,
     };
+    // #1534: the child's working directory is the topic's `routingDefaults.cwd`
+    // (a worktree, usually). Log it at spawn so a wrong tree is diagnosable
+    // against `/proc/<pid>/cwd` and agy's own `init.cwd` without a rebuild.
+    logger.debug('spawning agy', { cwd: options.cwd, args });
     const client = new AntigravityStreamClient(options);
     this.client = client;
     this.exitedProcessRootPid = null;

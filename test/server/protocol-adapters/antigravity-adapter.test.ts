@@ -1156,4 +1156,23 @@ describe('AntigravityProtocolAdapter', () => {
       )
     ).toBe(false);
   });
+
+  // #1534 — the child runs in the topic's worktree, and says so to agy too
+  it('spawns in the topic worktree cwd and pins it with --add-dir', async () => {
+    const worktree = '/repo/relay/.worktrees/lane';
+    const { adapter, spawns } = harness();
+    const p = adapter.connect({ ...config, cwd: worktree });
+    const child = spawns[spawns.length - 1]!.child;
+    child.serverWrite({
+      ...INIT_FRAME,
+      init: { ...INIT_FRAME.init, cwd: worktree },
+    });
+    await p;
+
+    const spawn = spawns[0]!;
+    // agy honors the process cwd (its `init.cwd` echoes it) — the `--add-dir`
+    // is what also puts the worktree on its writable-roots list.
+    expect(spawn.options.cwd).toBe(worktree);
+    expect(spawn.args.slice(0, 2)).toEqual(['--add-dir', worktree]);
+  });
 });
