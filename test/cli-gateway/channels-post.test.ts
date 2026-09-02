@@ -116,9 +116,16 @@ describe('channels.post CLI gateway command', () => {
       'v1',
       'channels',
       'post',
-      '--input-json',
-      '<json>',
+      '--channel-id',
+      '<id>',
+      '--text',
+      '<text>',
+      '[--format <text|markdown>]',
+      '[--thread-id <id|null>]',
+      '[--parent-message-id <id>]',
+      '[--client-message-id <id>]',
       '--json',
+      '| channels post --input-json <json> --json',
     ]);
     expect(spec.capabilityHints).toEqual(['context:write']);
     expect(spec.inputSchema).toMatchObject({
@@ -198,6 +205,122 @@ describe('channels.post CLI gateway command', () => {
       },
     });
     expect(request.body).not.toHaveProperty('channelId');
+  });
+
+  it('posts with the ergonomic flag form and forwards the route body exactly', async () => {
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--channel-id',
+        'product/main',
+        '--text',
+        'Worker one is ready.',
+        '--format',
+        'markdown',
+        '--parent-message-id',
+        'chm:root',
+        '--thread-id',
+        'chm:root',
+        '--client-message-id',
+        'orchestrator-update-1',
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'channels.post',
+      data: {
+        message: { id: 'chm:test' },
+        run: {
+          id: 'chrun:test',
+          requestMessageId: 'chm:test',
+          state: 'submitted',
+        },
+      },
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/channels/product%2Fmain/messages',
+      body: {
+        text: 'Worker one is ready.',
+        format: 'markdown',
+        parentMessageId: 'chm:root',
+        threadId: 'chm:root',
+        clientMessageId: 'orchestrator-update-1',
+      },
+      headers: {
+        Authorization: 'Bearer relay-sac-v1.test-actor.[REDACTED]',
+        'Content-Type': 'application/json',
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+        'x-relay-capabilities': 'context:write',
+      },
+    });
+    expect(request.body).not.toHaveProperty('channelId');
+  });
+
+  it('keeps --input-json unchanged and rejects mixing it with the flag form', async () => {
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--input-json',
+        JSON.stringify({ channelId: 'product/main', text: 'hello' }),
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({ ok: true, command: 'channels.post' });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/channels/product%2Fmain/messages',
+      body: { text: 'hello' },
+    });
+
+    const mixed = await runCliFailure(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--input-json',
+        JSON.stringify({ channelId: 'topic:one', text: 'ok' }),
+        '--channel-id',
+        'topic:one',
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(mixed).toMatchObject({
+      ok: false,
+      command: 'channels.post',
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: { field: 'inputJson' },
+      },
+    });
   });
 
   it('gets one opaque run through the context-read actor lane', async () => {
@@ -283,6 +406,21 @@ describe('channels.post CLI gateway command', () => {
             },
           ],
         }),
+        '--json',
+      ],
+    ],
+    // Flag form: --text is required alongside --channel-id.
+    [['post', '--channel-id', 'topic:one', '--json']],
+    // Flag form: unknown flags stay fail-closed.
+    [
+      [
+        'post',
+        '--channel-id',
+        'topic:one',
+        '--text',
+        'ok',
+        '--bogus',
+        'x',
         '--json',
       ],
     ],
