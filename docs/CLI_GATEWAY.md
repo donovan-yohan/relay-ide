@@ -154,18 +154,26 @@ identifiers while retaining Relay-owned run/target ids and server-derived
 sender metadata.
 
 `relay-ide v1 channels subscribe --channel-id <id> --after-seq <N> --json`
-emits one NDJSON envelope per versioned `open`, `event`, or `closed` frame.
+emits one NDJSON envelope per versioned `open`, `event`, `resumed`, or `closed` frame.
 Every frame requires `schemaVersion: 1`, `channelId`, `sequence`, `occurredAt`,
 and `durableSeq`.
 `event` additionally requires `payload` (a `ChannelEventV1` or
-`channel-heartbeat-v1`); `closed` additionally requires `reason` and
+`channel-heartbeat-v1`); `resumed` carries `fromSeq` and optional `attempt`; `closed` additionally requires `reason` and
 `retryable`. `afterSeq` is exclusive; persist each frame's `durableSeq` and
 supply it on reconnect. Created and
 authoritative full-row update/completion events may advance that cursor.
 Streaming text deltas are ephemeral and never do. One connection can therefore
 observe replies to multiple posted messages without holding one wait per post.
-Use `--max-events` or `--idle-timeout-ms` for bounded automation. A retryable
-closed frame means reconnect from the last durable sequence. The CLI awaits
+Use `--max-events` or `--idle-timeout-ms` for bounded automation. Control
+frames (`open`, `resumed`, `closed`) and ephemeral control/sync events
+(`channel-heartbeat-v1`, `channel-resync-required-v1`) do not count toward
+`--max-events`; only substantive snapshot, message, and run events decrement
+the event budget. On a retryable
+closed frame (such as backpressure or transient transport drops), the CLI automatically
+resumes from the last known `durableSeq` (up to 10 bounded attempts with backoff),
+emitting a `resumed` frame (`{"frame":"resumed","fromSeq":N}`) on stdout while honoring
+`--max-events` and `--idle-timeout-ms` budgets. A non-retryable close or exhausted attempts
+emits the final `closed` frame. The CLI awaits
 stdout drain instead of dropping frames; a downstream closed pipe is treated as
 clean local cancellation and promptly cancels the upstream reader. The stream uses
 `context:read` plus the actor credential's exact `channelIds` scope.

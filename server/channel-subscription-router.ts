@@ -19,15 +19,19 @@ import {
 import { actorMemberRef } from './channel-chat-router.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
+import { createLogger } from './logger.js';
 import type {
   ChannelEventSink,
   ChannelHub,
   ChannelSubscriptionCloseReason,
 } from './channel-hub.js';
 
+const logger = createLogger('channel-subscription-router');
 const CONTEXT_READ = 'context:read';
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
+const DEFAULT_WRITABLE_SOFT_LIMIT_BYTES = 1024 * 1024;
+const DEFAULT_WRITABLE_LOW_WATERMARK_BYTES = 256 * 1024;
 const DEFAULT_WRITABLE_HARD_LIMIT_BYTES = 4 * 1024 * 1024;
 
 export interface ChannelSubscriptionRouterDeps {
@@ -47,6 +51,8 @@ export interface ChannelSubscriptionRouterDeps {
   now?: () => Date;
   heartbeatMs?: number;
   drainTimeoutMs?: number;
+  writableSoftLimitBytes?: number;
+  writableLowWatermarkBytes?: number;
   writableHardLimitBytes?: number;
   /** Deterministic test seam; production uses ServerResponse.write directly. */
   writeResponse?: (res: Response, data: string) => boolean;
@@ -297,8 +303,16 @@ export function createChannelSubscriptionRouter(
   const now = deps.now ?? (() => new Date());
   const heartbeatMs = deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const drainTimeoutMs = deps.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const writableSoftLimitBytes =
+    deps.writableSoftLimitBytes ?? DEFAULT_WRITABLE_SOFT_LIMIT_BYTES;
   const writableHardLimitBytes =
     deps.writableHardLimitBytes ?? DEFAULT_WRITABLE_HARD_LIMIT_BYTES;
+  const writableLowWatermarkBytes =
+    deps.writableLowWatermarkBytes ??
+    Math.min(
+      DEFAULT_WRITABLE_LOW_WATERMARK_BYTES,
+      Math.floor(writableSoftLimitBytes / 4)
+    );
   const writeResponse = deps.writeResponse ?? ((res, data) => res.write(data));
   const isStillAuthorized = deps.isStillAuthorized ?? (() => true);
 
@@ -392,6 +406,9 @@ export function createChannelSubscriptionRouter(
       let sequence = 0;
       let ended = false;
       let waitingForDrain = false;
+      let lagging = false;
+      let droppedDeltas = false;
+      let resyncRetryScheduled = false;
       let unsubscribe: (() => void) | undefined;
       let heartbeat: NodeJS.Timeout | undefined;
       let drainDeadline: NodeJS.Timeout | undefined;
@@ -420,15 +437,80 @@ export function createChannelSubscriptionRouter(
           drainDeadline.unref?.();
         }
         // Node accepted the bytes even when it returned false. The hub observes
-        // writableLength via bufferedAmount and applies its 1/4MB watermarks;
+        // writableLength via bufferedAmount and applies its watermarks;
         // no route-level replay queue is introduced.
         return true;
+      };
+
+      const emitResyncRequired = (): boolean => {
+        return writeFrame({
+          frame: 'event',
+          schemaVersion: 1,
+          channelId,
+          sequence: sequence++,
+          occurredAt: now().toISOString(),
+          durableSeq,
+          payload: {
+            type: 'channel-resync-required-v1',
+            channelId,
+            timestamp: now().toISOString(),
+            latestSeq: durableSeq,
+          },
+        });
+      };
+
+      const tryEmitResync = (): void => {
+        if (!droppedDeltas || ended || res.destroyed || res.writableEnded) {
+          return;
+        }
+        const sent = emitResyncRequired();
+        if (sent) {
+          droppedDeltas = false;
+          resyncRetryScheduled = false;
+          return;
+        }
+        if (ended || res.destroyed || res.writableEnded) {
+          return;
+        }
+        if (!resyncRetryScheduled) {
+          resyncRetryScheduled = true;
+          res.once('drain', () => {
+            resyncRetryScheduled = false;
+            if (
+              droppedDeltas &&
+              !ended &&
+              !res.destroyed &&
+              !res.writableEnded
+            ) {
+              const retrySent = emitResyncRequired();
+              if (retrySent) {
+                droppedDeltas = false;
+              } else if (!ended) {
+                logger.warn(
+                  'failed to emit channel-resync-required-v1 after delta shedding for %s; closing subscription for client retry',
+                  channelId
+                );
+                finish('backpressure', undefined, true);
+              }
+            }
+          });
+        } else {
+          logger.warn(
+            'failed to emit channel-resync-required-v1 after delta shedding for %s; closing subscription for client retry',
+            channelId
+          );
+          finish('backpressure', undefined, true);
+        }
       };
 
       const onDrain = (): void => {
         waitingForDrain = false;
         if (drainDeadline) clearTimeout(drainDeadline);
         drainDeadline = undefined;
+        if (res.writableLength < writableLowWatermarkBytes && lagging) {
+          lagging = false;
+          tryEmitResync();
+        }
       };
 
       const cleanup = (): void => {
@@ -516,9 +598,20 @@ export function createChannelSubscriptionRouter(
             finish('authorization-revoked');
             return false;
           }
-          if (waitingForDrain) {
+          if (res.writableLength > writableHardLimitBytes) {
             finish('backpressure', undefined, true);
             return false;
+          }
+          if (lagging && res.writableLength < writableLowWatermarkBytes) {
+            lagging = false;
+            tryEmitResync();
+          }
+          if (event.type === 'channel-message-delta-v1') {
+            if (lagging || res.writableLength > writableSoftLimitBytes) {
+              lagging = true;
+              droppedDeltas = true;
+              return true;
+            }
           }
           // This is intentionally before projection. A filtered subscription is
           // a view over the same durable log, never a second cursor domain.
@@ -584,7 +677,13 @@ export function createChannelSubscriptionRouter(
         // Heartbeats are disposable liveness signals. Never append them to a
         // response already above its high-water mark; the drain deadline owns
         // bounded termination if the client never resumes reading.
-        if (waitingForDrain) return;
+        if (
+          waitingForDrain ||
+          lagging ||
+          res.writableLength > writableSoftLimitBytes
+        ) {
+          return;
+        }
         writeFrame({
           frame: 'event',
           schemaVersion: 1,

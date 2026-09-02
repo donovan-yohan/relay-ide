@@ -66,6 +66,14 @@ workflow.
   a tool call still open is now treated as working, and the silence budget
   restarts when the last tool call finishes; the hard one-hour turn ceiling
   still bounds a runaway (#1548)
+- Streaming subscribers no longer get closed by backpressure during tool-heavy
+  agent turns. Ephemeral streaming text deltas are now dropped when a subscriber's
+  send queue is above the soft limit while preserving durable created, completed,
+  and lifecycle frames; once drained, the hub emits a resync event so clients can
+  refresh missing history. `relay-ide v1 channels subscribe` now automatically
+  resumes from the last known durable sequence on retryable closes (emitting a
+  `resumed` envelope on stdout) instead of requiring client loops to handle
+  reconnects (#1544)
 - A long agent turn is no longer killed after five minutes while it is visibly
   working. The binder's turn watchdog now measures silence, not elapsed time, so
   a turn that keeps streaming text and tool calls runs as long as the work takes
