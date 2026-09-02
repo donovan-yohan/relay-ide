@@ -3,8 +3,8 @@
 Relay runs AI coding agents on your own machines and puts the conversation with
 them in a browser you can open from anywhere. A channel is the durable
 conversation, a DM is a channel with one agent profile, and agents post into the
-timeline alongside you. Claude Code, Codex, OpenCode, Hermes, and custom
-profiles all participate through the same contract.
+timeline alongside you. Claude Code, Codex, OpenCode, Hermes, Prime Agent, Pi,
+Antigravity, and custom profiles all participate through the same contract.
 
 The interface is channel-shaped because that shape is already familiar. The
 product is not a chat platform. Relay is an execution workbench: every message
@@ -22,12 +22,12 @@ still moves between releases and there is no upgrade-compatibility promise yet.
 
 ## Prerequisites
 
-| Dependency                                             | Why                                                                                   |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                                              |
-| Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured frameworks as private channel runtimes from the node `PATH` |
-| [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional PR and CI integration                                                        |
-| [Tailscale](https://tailscale.com/)                    | Recommended private phone/tablet access                                               |
+| Dependency                                                                              | Why                                                                                   |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [Node.js 24+](https://nodejs.org/)                                                      | Runtime and build target                                                              |
+| Agent CLI such as Claude Code, Codex, OpenCode, Hermes, Prime Agent, Pi, or Antigravity | Relay launches configured frameworks as private channel runtimes from the node `PATH` |
+| [GitHub CLI (`gh`)](https://cli.github.com/)                                            | Optional PR and CI integration                                                        |
+| [Tailscale](https://tailscale.com/)                                                     | Recommended private phone/tablet access                                               |
 
 ## Quickstart
 

@@ -53,6 +53,11 @@ const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
     command: 'pi',
     deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   },
+  antigravity: {
+    kind: 'command',
+    command: 'agy',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
   opencode: {
     kind: 'command',
     command: 'opencode',

@@ -102,7 +102,14 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'expanded',
   ],
   notifications: NOTIFICATIONS_SECTION_KEYWORDS,
-  'agent-profiles': ['agents', 'profiles', 'claude', 'codex', 'opencode'],
+  'agent-profiles': [
+    'agents',
+    'profiles',
+    'claude',
+    'codex',
+    'opencode',
+    'antigravity',
+  ],
   integrations: [
     'github',
     'webhooks',
