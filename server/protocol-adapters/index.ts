@@ -458,7 +458,7 @@ export const PROVIDER_DESCRIPTORS = {
     imageRawByteBudget: GENERAL_IMAGE_RAW_BYTE_BUDGET,
     relayControls: EMPTY_RELAY_CONTROL_CATALOG,
     processMatch: {
-      commandLineSubstrings: ['cursor-agent', 'agent acp'],
+      commandLineSubstrings: ['cursor-agent'],
       commandBasenames: ['cursor-agent'],
     },
     authCredentialPaths: [

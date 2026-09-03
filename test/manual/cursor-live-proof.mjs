@@ -221,7 +221,7 @@ async function main() {
     const channelId = topicRes.data.topic.id;
     console.log(`[cursor-live-proof] Created channel topic: ${channelId}`);
 
-    // 2. Turn 1: Echo CURSOR_LIVE_OK
+    // 2. Turn 1: Run shell echo CURSOR_LIVE_OK
     console.log('[cursor-live-proof] Sending Turn 1: @cursor prompt...');
     const post1 = await runCli([
       'v1',
@@ -230,7 +230,7 @@ async function main() {
       '--input-json',
       JSON.stringify({
         channelId,
-        text: '@cursor Reply with exactly "CURSOR_LIVE_OK" and nothing else.',
+        text: '@cursor Run `echo CURSOR_LIVE_OK` in the shell and reply with only its output.',
       }),
     ]);
 
@@ -285,6 +285,9 @@ async function main() {
     hub.kill('SIGTERM');
     await new Promise((r) => hub.on('close', r));
     await rm(PROOF_DIR, { recursive: true, force: true });
+    if (existsSync(tokenPath)) {
+      await rm(tokenPath, { force: true });
+    }
   }
 }
 

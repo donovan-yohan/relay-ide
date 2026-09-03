@@ -71,7 +71,7 @@ export interface DshAcpClientDouble {
 }
 
 export function makeDshAcpClientDouble(): DshAcpClientDouble {
-  const client = new AcpClient();
+  const client = new AcpClient({ command: 'dsh' });
   // The rig reuses ONE client for the whole transcript, so each `connect`
   // attaches another listener set. Production builds a fresh client per spawn
   // and never accumulates; raise the cap rather than let the rig warn.

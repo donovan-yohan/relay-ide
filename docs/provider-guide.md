@@ -258,6 +258,8 @@ The Antigravity channel transport is installed-tested with Antigravity CLI (`agy
 
 Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor CLI ACP server (`cursor-agent acp`) and speaks the Agent Client Protocol over stdio.
 
+The Cursor channel transport is installed-tested with `cursor-agent` 2026.08.31-4057e58. The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
+
 Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are suppressed by the adapter to prevent duplicate timeline items.
 
 The adapter maps:

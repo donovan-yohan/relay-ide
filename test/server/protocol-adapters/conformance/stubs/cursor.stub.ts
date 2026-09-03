@@ -46,7 +46,7 @@ export interface CursorAcpClientDouble {
 }
 
 export function makeCursorAcpClientDouble(): CursorAcpClientDouble {
-  const client = new AcpClient();
+  const client = new AcpClient({ command: 'cursor-agent' });
   client.setMaxListeners(50);
   const requests: CursorAcpRequest[] = [];
   const prompts: Record<string, unknown>[] = [];

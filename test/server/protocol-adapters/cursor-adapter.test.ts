@@ -49,7 +49,7 @@ function queueSend(
 }
 
 function harness() {
-  const client = new AcpClient();
+  const client = new AcpClient({ command: 'cursor-agent' });
   client.setMaxListeners(50);
   const start = vi.spyOn(client, 'start').mockResolvedValue(INITIALIZE_RESULT);
   const request = vi
@@ -190,6 +190,13 @@ describe('CursorProtocolAdapter', () => {
       if (method === 'session/load') {
         // Server emits historical replay before answering load request
         h.update({
+          sessionUpdate: 'tool_call',
+          toolCallId: EXEC_CALL_ID,
+          title: '`echo CURSOR_LIVE_OK`',
+          kind: 'execute',
+          rawInput: { command: 'echo CURSOR_LIVE_OK' },
+        });
+        h.update({
           sessionUpdate: 'agent_message_chunk',
           messageId: 'old-msg',
           content: { type: 'text', text: 'historical text' },
@@ -200,8 +207,240 @@ describe('CursorProtocolAdapter', () => {
     });
 
     await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
-    // Verify no agent-item-started or delta was emitted for historical message
-    expect(h.patches.some((p) => p.type === 'agent-item-delta-v2')).toBe(false);
+    // Verify no agent-item patches were emitted for historical replay
+    expect(
+      h.patches.filter(
+        (p) => typeof p.type === 'string' && p.type.startsWith('agent-item')
+      )
+    ).toHaveLength(0);
+  });
+
+  it('classifies kind: read with locations as dynamicToolCall, not fileChange', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-read',
+      content: 'Read file',
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-read-1',
+      title: 'readToolCall',
+      kind: 'read',
+      rawInput: { path: '/workspace/src/index.ts' },
+      locations: [{ path: '/workspace/src/index.ts' }],
+    });
+
+    const itemPatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        (p.item as any).id === 'call-read-1'
+    );
+    expect(itemPatch).toBeDefined();
+    expect((itemPatch?.item as any).type).toBe('dynamicToolCall');
+    expect((itemPatch?.item as any).tool).toBe('readToolCall');
+  });
+
+  it('keeps status: completed for non-zero exit codes unless ACP reported failed', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-exit',
+      content: 'Run test -f',
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-exec-exit',
+      title: '`test -f non_existent_file`',
+      kind: 'execute',
+      rawInput: { command: 'test -f non_existent_file' },
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-exec-exit',
+      status: 'completed',
+      rawOutput: {
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+      },
+    });
+
+    const finishPatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).id === 'call-exec-exit'
+    );
+    expect(finishPatch).toBeDefined();
+    expect((finishPatch?.item as any).exitCode).toBe(1);
+    expect((finishPatch?.item as any).status).toBe('completed');
+  });
+
+  it('formats unified diff with --- a / +++ b headers and hunk markers', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-diff',
+      content: 'Edit file',
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-edit-diff',
+      title: 'Edit `/workspace/foo.txt`',
+      kind: 'edit',
+      rawInput: { path: '/workspace/foo.txt' },
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-edit-diff',
+      status: 'completed',
+      content: [
+        {
+          type: 'diff',
+          path: '/workspace/foo.txt',
+          oldText: 'old line 1\nold line 2',
+          newText: 'old line 1\nnew line 2',
+        },
+      ],
+    });
+
+    const filePatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).id === 'call-edit-diff'
+    );
+    expect(filePatch).toBeDefined();
+    expect((filePatch?.item as any).patch).toContain('--- a/workspace/foo.txt');
+    expect((filePatch?.item as any).patch).toContain('+++ b/workspace/foo.txt');
+    expect((filePatch?.item as any).patch).toContain('@@ -1,2 +1,2 @@');
+    expect((filePatch?.item as any).patch).toContain('-old line 2');
+    expect((filePatch?.item as any).patch).toContain('+new line 2');
+  });
+
+  it('stringifies object rawOutput for dynamicToolCall result', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-dyn',
+      content: 'Call dynamic tool',
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-search-1',
+      title: 'searchToolCall',
+      kind: 'search',
+      rawInput: { query: 'test' },
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-search-1',
+      status: 'completed',
+      rawOutput: { count: 3, matches: ['a', 'b', 'c'] },
+    });
+
+    const dynPatch = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).id === 'call-search-1'
+    );
+    expect(dynPatch).toBeDefined();
+    expect(typeof (dynPatch?.item as any).result).toBe('string');
+    expect((dynPatch?.item as any).result).toContain('"count": 3');
+  });
+
+  it('cancels unanswered questions upon turn end and keys by pending.card.id', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-q-abandon',
+      content: 'Ask something',
+    });
+
+    h.peerRequest(77, 'cursor/ask_question', {
+      title: 'Clarification',
+      questions: [{ id: 'q1', prompt: 'Choose' }],
+    });
+
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as any).id === 'question-cursor-question-77'
+      )
+    ).toBe(true);
+
+    // Turn ends without answering
+    h.settlePrompt('end_turn');
+
+    await vi.waitFor(() => {
+      const cancelledQuestion = h.patches.find(
+        (p) =>
+          p.type === 'agent-item-updated-v2' &&
+          (p.item as any).id === 'question-cursor-question-77'
+      );
+      expect(cancelledQuestion).toBeDefined();
+      expect((cancelledQuestion?.item as any).status).toBe('cancelled');
+    });
+    expect(h.respond).toHaveBeenCalledWith(77, {
+      outcome: { outcome: 'cancelled' },
+    });
+  });
+
+  it('fails closed when permission request options lack the requested kind', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-perm-fail',
+      content: 'Run command',
+    });
+
+    h.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: EXEC_CALL_ID,
+      title: '`echo test`',
+      kind: 'execute',
+      rawInput: { command: 'echo test' },
+    });
+
+    // Only allow_once is provided, but user requests session scope (allow_always)
+    h.peerRequest(55, 'session/request_permission', {
+      sessionId: SESSION_ID,
+      toolCall: { toolCallId: EXEC_CALL_ID },
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      ],
+    });
+
+    await h.adapter.respondToApproval({
+      requestId: 'cursor-approval-55',
+      decision: { kind: 'accept', scope: 'session' },
+    });
+
+    // Should fail closed with cancelled outcome
+    expect(h.respond).toHaveBeenCalledWith(55, {
+      outcome: { outcome: 'cancelled' },
+    });
+    const cancelledApproval = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).id === 'approval-cursor-approval-55'
+    );
+    expect(cancelledApproval).toBeDefined();
+    expect((cancelledApproval?.item as any).status).toBe('cancelled');
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes('did not provide a matching option')
+      )
+    ).toBe(true);
   });
 
   it('falls back to session/new when session/load fails', async () => {

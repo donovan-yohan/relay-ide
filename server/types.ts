@@ -264,7 +264,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsHooks: false,
       supportsContinue: true,
       supportsYolo: true,
-      supportsTelemetry: true,
+      supportsTelemetry: false,
       supportsAttachedRuntime: false,
     },
   },

@@ -58,7 +58,7 @@ function queueSend(
 }
 
 function harness() {
-  const client = new AcpClient();
+  const client = new AcpClient({ command: 'dsh' });
   client.setMaxListeners(50);
   const start = vi.spyOn(client, 'start').mockResolvedValue(INITIALIZE_RESULT);
   const request = vi

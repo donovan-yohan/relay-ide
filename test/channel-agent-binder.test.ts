@@ -5727,6 +5727,33 @@ describe('channel-agent-binder — roster + availability', () => {
     expect(roster[0]).toMatchObject({ available: false, reason });
   });
 
+  it('pins the cursor not-installed reason text on its roster rows', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'cursor' }]);
+    const reason =
+      'cursor-agent is not installed on this node (not found on PATH).';
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'cursor',
+          displayName: 'Cursor',
+          kind: 'framework',
+          available: false,
+          reason,
+          command: 'cursor-agent',
+        },
+      ],
+      knownProviderIds: ['cursor'],
+      agentProfileStore: profiles,
+    });
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({ available: false, reason });
+  });
+
   it.each(CHANNEL_COMMAND_CONTRACTS)(
     'resolves %s command availability against built-in and named-profile PATH',
     async (providerId, command) => {

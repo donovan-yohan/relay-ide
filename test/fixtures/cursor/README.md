@@ -12,7 +12,7 @@ transcribed from real wire interactions, never invented (`conformance/fixture-ty
 | `acp-turn-capture.redacted.ndjson`   | `initialize`, `authenticate`, `session/new`, a tool-assisted turn answering `CURSOR_LIVE_OK`, a second prompt in the same session (continuity), and a cancelled prompt.         |
 | `acp-resume-capture.redacted.ndjson` | `initialize`, `authenticate`, `session/new`, a file-write turn, then a separate process invocation with `session/load` on the saved session ID and a prompt proving continuity. |
 
-The approval and question shapes (`session/request_permission`, `cursor/ask_question`, `cursor/create_plan`) are transcribed from the Cursor CLI ACP specification and server schemas.
+The approval request in `acp-turn-capture.redacted.ndjson` (line 15: `session/request_permission` with `allow-once`/`allow-always`/`reject-once`) is real wire traffic captured when Cursor requested permission for an unlisted bash command. Question and plan shapes (`cursor/ask_question`, `cursor/create_plan`) are transcribed from the Cursor CLI ACP specification and server schemas.
 
 ## How they were captured
 

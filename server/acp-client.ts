@@ -32,7 +32,7 @@ export interface AcpPeerRequest {
 }
 
 export interface AcpClientOptions {
-  command?: string;
+  command: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
@@ -91,7 +91,7 @@ export class AcpClient extends EventEmitter {
   private detachDrainListener: (() => void) | null = null;
   private readonly stderrTail: string[] = [];
 
-  constructor(private readonly options: AcpClientOptions = {}) {
+  constructor(private readonly options: AcpClientOptions) {
     super();
     const maxRecordBytes = options.maxRecordBytes ?? 8 * 1024 * 1024;
     const maxBufferBytes = options.maxBufferBytes ?? 16 * 1024 * 1024;
@@ -139,15 +139,11 @@ export class AcpClient extends EventEmitter {
     if (this.child || this.stopPromise)
       throw new Error('AcpClient already started');
     const spawnFn = this.options.spawn ?? nodeSpawn;
-    const child = spawnFn(
-      this.options.command ?? 'agent',
-      this.options.args ?? ['acp'],
-      {
-        ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
-        ...(this.options.env ? { env: this.options.env } : {}),
-        stdio: 'pipe',
-      }
-    );
+    const child = spawnFn(this.options.command, this.options.args ?? ['acp'], {
+      ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
+      ...(this.options.env ? { env: this.options.env } : {}),
+      stdio: 'pipe',
+    });
     this.child = child;
     this.framer.reset();
     this.stderrTail.length = 0;

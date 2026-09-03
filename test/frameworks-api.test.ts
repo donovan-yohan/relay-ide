@@ -98,6 +98,7 @@ describe('GET /api/frameworks', () => {
     expect(ids).toContain('pi');
     expect(ids).toContain('antigravity');
     expect(ids).toContain('dsh');
+    expect(ids).toContain('cursor');
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource, and availability', async () => {

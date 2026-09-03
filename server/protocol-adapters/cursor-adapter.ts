@@ -98,7 +98,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   fork: false,
   rollback: false,
   compact: false,
-  telemetry: true,
+  telemetry: false,
   rateLimits: false,
   streaming: true,
 } satisfies Required<AgentCapabilitySetV2>;
@@ -109,18 +109,13 @@ const QUEUE_ABANDONED_MESSAGE =
 /** The ACP major version this adapter speaks. */
 const ACP_PROTOCOL_VERSION = 1;
 
-/** Option IDs for Cursor permission requests. */
-const CURSOR_ALLOW_ONCE_ID = 'allow-once';
-const CURSOR_ALLOW_ALWAYS_ID = 'allow-always';
-const CURSOR_REJECT_ONCE_ID = 'reject-once';
-
 const CURSOR_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
   scopes: ['once', 'session'],
   amendmentTypes: [],
   canCancel: true,
 };
 
-/** Native tool names Relay renders as a command card. */
+/** Native tool names Relay renders as a command card when kind is absent. */
 const COMMAND_TOOL_NAMES = new Set([
   'bash',
   'pwsh',
@@ -130,7 +125,7 @@ const COMMAND_TOOL_NAMES = new Set([
   'exec',
 ]);
 
-/** Native tool names Relay renders as a file-change card. */
+/** Native tool names Relay renders as a file-change card when kind is absent. */
 const FILE_TOOL_NAMES = new Set([
   'write',
   'edit',
@@ -147,6 +142,7 @@ interface PendingApproval {
   turnId: string;
   peerRequestId: string | number;
   card: AgentApprovalItemV2;
+  options: Array<{ optionId: string; kind?: string; name?: string }>;
 }
 
 interface PendingInputRequest {
@@ -302,12 +298,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     if (config.model) {
       args.push('--model', config.model);
     }
-    if (
-      config.permissionMode === 'yolo' ||
-      config.permissionMode === 'force' ||
-      config.permissionMode === 'bypassPermissions' ||
-      config.permissionMode === 'danger-full-access'
-    ) {
+    if (config.permissionMode === 'yolo') {
       args.push('--yolo');
     }
     args.push('acp');
@@ -439,6 +430,8 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     const client = this.client;
     if (!client || !this.cursorSessionId) return;
     this.abortRequested = true;
+    // Release and reject any pending approval/question requests on the wire
+    // before sending session/cancel so Cursor unblocks cleanly without wedging.
     this.releasePendingRequests(TURN_ENDED_APPROVAL_REASON);
     client.notify('session/cancel', { sessionId: this.cursorSessionId });
   }
@@ -449,19 +442,64 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       throw new Error(`Unknown cursor approval: ${input.requestId}`);
     const client = this.requireClient();
     this.pendingApprovals.delete(input.requestId);
-    const outcome =
-      input.decision.kind === 'cancel'
-        ? { outcome: 'cancelled' }
-        : {
-            outcome: 'selected',
-            optionId:
-              input.decision.kind === 'accept'
-                ? input.decision.scope === 'session' ||
-                  input.decision.scope === 'permanent'
-                  ? CURSOR_ALLOW_ALWAYS_ID
-                  : CURSOR_ALLOW_ONCE_ID
-                : CURSOR_REJECT_ONCE_ID,
-          };
+
+    let outcome: Record<string, unknown>;
+    if (input.decision.kind === 'cancel') {
+      outcome = { outcome: 'cancelled' };
+    } else {
+      let targetKinds: string[];
+      if (input.decision.kind === 'accept') {
+        targetKinds =
+          input.decision.scope === 'session' ||
+          input.decision.scope === 'permanent'
+            ? ['allow_always', 'allow-always']
+            : ['allow_once', 'allow-once', 'allow_always', 'allow-always'];
+      } else {
+        targetKinds = [
+          'reject_once',
+          'reject-once',
+          'reject_always',
+          'reject-always',
+        ];
+      }
+
+      const matchedOption = pending.options.find((o) =>
+        o.kind ? targetKinds.includes(o.kind) : false
+      );
+
+      if (!matchedOption) {
+        // Fail closed if the requested permission kind is absent on the wire
+        logger.warn(
+          '[cursor] approval kind missing from options; failing closed',
+          {
+            decisionKind: input.decision.kind,
+            availableOptions: pending.options,
+          }
+        );
+        client.respond(pending.peerRequestId, {
+          outcome: { outcome: 'cancelled' },
+        });
+        const resolved: AgentApprovalItemV2 = {
+          ...pending.card,
+          decision: input.decision,
+          respondedBy: 'user',
+          status: 'cancelled',
+          completedAt: nowIso(),
+        };
+        this.items.set(resolved.id, resolved);
+        this.emitItemUpdated(resolved);
+        this.emitLiveStateUpdate();
+        emitErrorPatch(
+          this.patchSink,
+          `Cursor permission request did not provide a matching option for ${input.decision.kind}.`,
+          this.activeTurnId
+        );
+        return;
+      }
+
+      outcome = { outcome: 'selected', optionId: matchedOption.optionId };
+    }
+
     client.respond(pending.peerRequestId, { outcome });
     const resolved: AgentApprovalItemV2 = {
       ...pending.card,
@@ -626,6 +664,29 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       client.respond(request.id, { outcome: { outcome: 'cancelled' } });
       return;
     }
+    const rawOptions = Array.isArray(request.params.options)
+      ? (request.params.options as Array<Record<string, unknown>>)
+      : [];
+    const options = rawOptions.map((o) => ({
+      optionId: string(o.optionId),
+      kind: string(o.kind),
+      name: string(o.name),
+    }));
+
+    // Auto-approve when running with yolo mode without blocking turn
+    if (this.config?.permissionMode === 'yolo') {
+      const allowOpt =
+        options.find(
+          (o) => o.kind === 'allow_always' || o.kind === 'allow_once'
+        ) ?? options[0];
+      if (allowOpt) {
+        client.respond(request.id, {
+          outcome: { outcome: 'selected', optionId: allowOpt.optionId },
+        });
+        return;
+      }
+    }
+
     const toolCallId = string(record(request.params.toolCall).toolCallId);
     const requestId = `cursor-approval-${String(request.id)}`;
     const target = this.approvalTarget(toolCallId);
@@ -645,6 +706,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId,
       peerRequestId: request.id,
       card,
+      options,
     });
     this.items.set(card.id, card);
     this.emitPatch({
@@ -748,6 +810,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       };
 
       this.ensureItem(planId, planItem);
+      this.emitItemUpdated(planItem);
     }
 
     // Accept the plan so Cursor continues execution without blocking
@@ -812,8 +875,8 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     let item: AgentItemV2;
     if (
       kind === 'execute' ||
-      typeof args.command === 'string' ||
-      (!kind && COMMAND_TOOL_NAMES.has(title))
+      (!kind &&
+        (COMMAND_TOOL_NAMES.has(title) || typeof args.command === 'string'))
     ) {
       const command = string(args.command) || stripBackticks(title);
       item = {
@@ -829,16 +892,30 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       kind === 'edit' ||
       kind === 'delete' ||
       kind === 'move' ||
-      hasDiffContent ||
-      typeof args.path === 'string' ||
-      typeof args.file_path === 'string' ||
-      locations.length > 0 ||
-      (!kind && FILE_TOOL_NAMES.has(title))
+      (!kind &&
+        (hasDiffContent ||
+          typeof args.path === 'string' ||
+          typeof args.file_path === 'string' ||
+          locations.length > 0 ||
+          FILE_TOOL_NAMES.has(title)))
     ) {
       const targetPath =
         string(args.path ?? args.file_path) ||
         (isRecord(locations[0]) ? string(locations[0].path) : '') ||
         extractFilePathFromTitle(title);
+      const isAdd =
+        title.toLowerCase().startsWith('create') ||
+        args.is_creation === true ||
+        (Array.isArray(update.content) &&
+          update.content.some(
+            (c) =>
+              isRecord(c) &&
+              c.type === 'diff' &&
+              (c.oldText === null ||
+                c.oldText === '' ||
+                c.oldText === '/dev/null' ||
+                String(c.oldText).startsWith('-- /dev/null'))
+          ));
       item = {
         type: 'fileChange',
         id,
@@ -846,11 +923,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
           {
             path: targetPath,
             status:
-              kind === 'delete'
-                ? 'deleted'
-                : kind === 'edit' || title.toLowerCase().startsWith('edit')
-                  ? 'edited'
-                  : 'modified',
+              kind === 'delete' ? 'deleted' : isAdd ? 'added' : 'modified',
           },
         ],
         applyStatus: 'pending',
@@ -877,6 +950,9 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     const item = this.items.get(id);
     if (!item) return;
     const acpStatus = string(update.status);
+    // In-progress or pending updates report partial state and must NOT finalize
+    // the tool call or emit completed status before the tool has actually settled,
+    // which would trip the watchdog (#1548).
     if (acpStatus === 'pending' || acpStatus === 'in_progress') return;
     const failed = acpStatus === 'failed';
 
@@ -898,32 +974,58 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     if (item.type === 'commandExecution') {
       const output = rawOutputText || textContent;
       const exitCode = realExitCode ?? (failed ? 1 : 0);
-      const isFailed =
-        failed || (typeof exitCode === 'number' && exitCode !== 0);
       updated = {
         ...item,
         output,
         exitCode,
-        status: isFailed ? 'failed' : 'completed',
+        status: failed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
     } else if (item.type === 'fileChange') {
       const patch = diffContent || (textContent ? textContent : undefined);
+      const isCreation =
+        Array.isArray(update.content) &&
+        update.content.some(
+          (c) =>
+            isRecord(c) &&
+            c.type === 'diff' &&
+            (!c.oldText ||
+              c.oldText === '/dev/null' ||
+              c.oldText === '-- /dev/null' ||
+              String(c.oldText).startsWith('-- /dev/null'))
+        );
+      const paths = item.paths.map((p) => {
+        const nextStatus =
+          isCreation && p.status !== 'deleted' ? 'added' : p.status;
+        return {
+          path: p.path,
+          ...(p.oldPath ? { oldPath: p.oldPath } : {}),
+          ...(nextStatus ? { status: nextStatus } : {}),
+        };
+      });
       updated = {
         ...item,
+        paths,
         ...(patch ? { patch } : {}),
         applyStatus: failed ? 'failed' : 'applied',
         status: failed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
     } else if (item.type === 'dynamicToolCall') {
-      const result =
-        rawOutputText ||
-        textContent ||
-        (isRecord(update.rawOutput) ? update.rawOutput : undefined);
+      let result: string | undefined;
+      if (rawOutputText) {
+        result = rawOutputText;
+      } else if (textContent) {
+        result = textContent;
+      } else if (update.rawOutput !== undefined) {
+        result =
+          typeof update.rawOutput === 'string'
+            ? update.rawOutput
+            : JSON.stringify(update.rawOutput, null, 2);
+      }
       updated = {
         ...item,
-        result,
+        ...(result !== undefined ? { result } : {}),
         status: failed ? 'failed' : 'completed',
         completedAt: nowIso(),
       };
@@ -1022,6 +1124,8 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private assertNoAttachments(input: AgentSendMessageInputV2): void {
+    // Cursor ACP does not accept attachment payloads. Reject eagerly before
+    // emitting any turn patches so we never leave a broken or partial turn.
     if (input.attachments && input.attachments.length > 0)
       throw new Error(
         'cursor channel runtime does not accept attachments on this lane'
@@ -1091,7 +1195,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
 
     // Questions / Inputs
     if (this.pendingInputRequests.size > 0) {
-      for (const [requestId, pending] of this.pendingInputRequests) {
+      for (const [, pending] of this.pendingInputRequests) {
         if (client) {
           client.respond(pending.peerRequestId, {
             outcome: { outcome: 'cancelled' },
@@ -1102,7 +1206,7 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
           status: 'cancelled',
           completedAt: nowIso(),
         };
-        this.items.set(requestId, updated);
+        this.items.set(pending.card.id, updated);
         this.emitItemUpdated(updated);
       }
       this.pendingInputRequests.clear();
@@ -1284,6 +1388,55 @@ function extractFilePathFromTitle(title: string): string {
   return title;
 }
 
+function formatUnifiedDiff(
+  filePath: string,
+  oldTextRaw: string | null | undefined,
+  newTextRaw: string | null | undefined
+): string {
+  const p = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  const oldText = oldTextRaw ?? '';
+  const newText = newTextRaw ?? '';
+  const isCreation =
+    !oldText ||
+    oldText === '/dev/null' ||
+    oldText === '-- /dev/null' ||
+    oldText.startsWith('-- /dev/null');
+  const isDeletion =
+    !newText ||
+    newText === '/dev/null' ||
+    newText === '++ /dev/null' ||
+    newText.startsWith('++ /dev/null');
+
+  const oldHeader = isCreation ? '--- /dev/null' : `--- a${p}`;
+  const newHeader = isDeletion ? '+++ /dev/null' : `+++ b${p}`;
+
+  let oldBody = oldText;
+  if (oldBody.startsWith('-- ')) {
+    const newline = oldBody.indexOf('\n');
+    oldBody = newline >= 0 ? oldBody.slice(newline + 1) : '';
+  }
+  let newBody = newText;
+  if (newBody.startsWith('++ ')) {
+    const newline = newBody.indexOf('\n');
+    newBody = newline >= 0 ? newBody.slice(newline + 1) : '';
+  }
+
+  const oldLines = oldBody ? oldBody.split('\n') : [];
+  const newLines = newBody ? newBody.split('\n') : [];
+
+  const hunk = `@@ -${isCreation ? 0 : 1},${oldLines.length} +${isDeletion ? 0 : 1},${newLines.length} @@`;
+  const diffLines: string[] = [oldHeader, newHeader, hunk];
+
+  for (const line of oldLines) {
+    diffLines.push(`-${line}`);
+  }
+  for (const line of newLines) {
+    diffLines.push(`+${line}`);
+  }
+
+  return diffLines.join('\n');
+}
+
 function renderDiffContent(value: unknown): string {
   if (!Array.isArray(value)) return '';
   const diffs: string[] = [];
@@ -1291,18 +1444,18 @@ function renderDiffContent(value: unknown): string {
     if (!isRecord(entry)) continue;
     if (entry.type === 'diff') {
       const p = string(entry.path);
-      const oldT = string(entry.oldText);
-      const newT = string(entry.newText);
-      if (oldT.startsWith('-- ') && newT.startsWith('++ ')) {
-        diffs.push(`${oldT}\n${newT}`);
-      } else {
-        diffs.push(
-          `--- ${p || 'a'}\n+++ ${p || 'b'}\n${oldT ? `- ${oldT}\n` : ''}${newT ? `+ ${newT}\n` : ''}`
-        );
-      }
+      const oldT =
+        entry.oldText === null || entry.oldText === undefined
+          ? null
+          : string(entry.oldText);
+      const newT =
+        entry.newText === null || entry.newText === undefined
+          ? null
+          : string(entry.newText);
+      diffs.push(formatUnifiedDiff(p, oldT, newT));
     }
   }
-  return diffs.join('\n');
+  return diffs.join('\n\n');
 }
 
 function toolContentText(value: unknown): string {

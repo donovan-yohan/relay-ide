@@ -347,7 +347,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     advertisedControlNames: [],
     guardedControlNames: [],
     processMatch: {
-      commandLineSubstrings: ['cursor-agent', 'agent acp'],
+      commandLineSubstrings: ['cursor-agent'],
       commandBasenames: ['cursor-agent'],
     },
     authCredentialPaths: [
