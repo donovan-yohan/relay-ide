@@ -65,8 +65,8 @@ row there for any new doc.
 - Agent output in channels uses `AssistantMarkdown` and `AgentDetailCard`.
   Isolated component fixtures do not prove the live channel path.
 - Built-in agent frameworks are Claude Code, Codex, OpenCode, Hermes, Prime Agent,
-  Pi, Antigravity, and DeepSeek Harness. Custom frameworks and profiles must use
-  the same channel contract.
+  Pi, Antigravity, DeepSeek Harness, and Cursor. Custom frameworks and profiles
+  must use the same channel contract.
 - The hub owns channel persistence, mention routing, auth, policy, and
   federation. Nodes own local execution and paths.
 - Sidebar/navigation surfaces read the channel-workspace model

@@ -61,6 +61,7 @@ export const FALLBACK_PROVIDER_IDS = [
   'pi',
   'antigravity',
   'dsh',
+  'cursor',
 ];
 
 export type TopicProviderOption = {

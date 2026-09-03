@@ -42,11 +42,11 @@ import type {
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import {
-  DshAcpClient,
-  type DshAcpClientOptions,
-  type DshAcpNotification,
-  type DshAcpPeerRequest,
-} from '../dsh-acp-client.js';
+  AcpClient,
+  type AcpClientOptions,
+  type AcpNotification,
+  type AcpPeerRequest,
+} from '../acp-client.js';
 
 const logger = createLogger('dsh-adapter');
 
@@ -123,7 +123,7 @@ const FILE_TOOL_NAMES = new Set([
   'str_replace_based_edit_tool',
 ]);
 
-type ClientFactory = (options: DshAcpClientOptions) => DshAcpClient;
+type ClientFactory = (options: AcpClientOptions) => AcpClient;
 
 interface PendingApproval {
   turnId: string;
@@ -145,7 +145,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
-  private client: DshAcpClient | null = null;
+  private client: AcpClient | null = null;
   private clientGeneration = 0;
   private dshSessionId: string | null = null;
   private activeTurnId: string | null = null;
@@ -179,7 +179,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
 
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
-      new DshAcpClient({ ...options, spawn: nodeSpawn })
+      new AcpClient({ ...options, spawn: nodeSpawn })
   ) {
     super();
   }
@@ -201,10 +201,10 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     const generation = ++this.clientGeneration;
     const current = (): boolean =>
       this.client === client && this.clientGeneration === generation;
-    client.on('notification', (notification: DshAcpNotification) => {
+    client.on('notification', (notification: AcpNotification) => {
       if (current()) this.handleNotification(notification);
     });
-    client.on('peerRequest', (request: DshAcpPeerRequest) => {
+    client.on('peerRequest', (request: AcpPeerRequest) => {
       if (current()) this.handlePeerRequest(request);
     });
     client.on('protocolError', (error: Error) => {
@@ -267,7 +267,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
    * Relay-assigned cwd, which the server validates before publishing.
    */
   private async openSession(
-    client: DshAcpClient,
+    client: AcpClient,
     config: AdapterConfig
   ): Promise<Record<string, unknown>> {
     const params = { cwd: config.cwd, mcpServers: [] };
@@ -383,10 +383,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
    * (the server may have admitted it), so it takes the transport down rather
    * than leaving a turn Relay has given up on still streaming.
    */
-  private beginPrompt(
-    client: DshAcpClient,
-    input: AgentSendMessageInputV2
-  ): void {
+  private beginPrompt(client: AcpClient, input: AgentSendMessageInputV2): void {
     void this.runPrompt(client, input).catch((error: unknown) => {
       this.handleTransportClose(
         error instanceof Error ? error : new Error(String(error))
@@ -403,7 +400,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
    * wait for, and no window in which a completed turn is still streaming.
    */
   private async runPrompt(
-    client: DshAcpClient,
+    client: AcpClient,
     input: AgentSendMessageInputV2
   ): Promise<void> {
     const response = record(
@@ -482,7 +479,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // ── Wire routing ───────────────────────────────────────────────────────────
 
-  private handleNotification(notification: DshAcpNotification): void {
+  private handleNotification(notification: AcpNotification): void {
     const { method, params } = notification;
     if (method !== 'session/update') {
       logger.debug('[dsh] unmapped native notification', { method });
@@ -531,7 +528,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
    * request. An unanswered one blocks the agent's turn forever, so every branch
    * here must answer — including the unknown-method one.
    */
-  private handlePeerRequest(request: DshAcpPeerRequest): void {
+  private handlePeerRequest(request: AcpPeerRequest): void {
     const client = this.client;
     if (!client) return;
     if (request.method !== 'session/request_permission') {
@@ -1008,7 +1005,7 @@ export class DshProtocolAdapter extends BaseProtocolAdapterV2 {
     return this.config?.sessionId ?? 'dsh';
   }
 
-  private requireClient(): DshAcpClient {
+  private requireClient(): AcpClient {
     if (this._status !== 'connected' || !this.client)
       throw new Error('dsh adapter is not connected');
     return this.client;

@@ -23,9 +23,9 @@
  */
 import { DshProtocolAdapter } from '../../../../../server/protocol-adapters/dsh-adapter.js';
 import type {
-  DshAcpNotification,
-  DshAcpPeerRequest,
-} from '../../../../../server/dsh-acp-client.js';
+  AcpNotification,
+  AcpPeerRequest,
+} from '../../../../../server/acp-client.js';
 import { DSH_SESSION_ID, makeDshAcpClientDouble } from '../stubs/dsh.stub.js';
 import type {
   AdapterConformanceFixture,
@@ -37,7 +37,7 @@ function update(
   body: Record<string, unknown>,
   label?: string
 ): FixtureFeedStep {
-  const notification: DshAcpNotification = {
+  const notification: AcpNotification = {
     method: 'session/update',
     params: { sessionId: DSH_SESSION_ID, update: body },
   };
@@ -61,7 +61,7 @@ const WRITE_CALL_ID = 'call_fe4cde6217019bba8c1a45d8034732e4';
 
 function updateKind(step: FixtureFeedStep): string | undefined {
   if (step.kind !== 'native') return undefined;
-  const notification = step.event as DshAcpNotification;
+  const notification = step.event as AcpNotification;
   if (notification.method !== 'session/update') return undefined;
   const body = notification.params.update as { sessionUpdate?: string };
   return body.sessionUpdate;
@@ -85,7 +85,7 @@ const fixture: AdapterConformanceFixture = {
       },
       feed: (step) => {
         if (step.kind === 'native') {
-          acp.emitNotification(step.event as DshAcpNotification);
+          acp.emitNotification(step.event as AcpNotification);
           return;
         }
         if (step.kind === 'server-request') {
@@ -93,7 +93,7 @@ const fixture: AdapterConformanceFixture = {
             id: step.id,
             method: step.method,
             params: (step.params ?? {}) as Record<string, unknown>,
-          } satisfies DshAcpPeerRequest);
+          } satisfies AcpPeerRequest);
           return;
         }
         if (step.kind === 'transport-reply') {

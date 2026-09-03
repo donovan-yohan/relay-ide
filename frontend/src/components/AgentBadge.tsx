@@ -142,6 +142,22 @@ export function AgentBadge({ agent }: AgentBadgeProps) {
     );
   }
 
+  if (agent === 'cursor') {
+    return (
+      <svg
+        className="agent-badge"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="Cursor"
+      >
+        <path
+          fill="currentColor"
+          d="M12 2L2 19.5l4.5-1.5L12 22l5.5-4L22 19.5 12 2Zm0 4.2 6.2 10.8-3.4-1.2L12 18l-2.8-2.2-3.4 1.2L12 6.2Z"
+        />
+      </svg>
+    );
+  }
+
   const fallbackLetter = agent ? agent[0]!.toUpperCase() : '?';
   return (
     <span className="agent-badge agent-badge--fallback" aria-label={agent}>

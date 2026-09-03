@@ -10,9 +10,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  DshAcpClient,
-  type DshAcpClientOptions,
-} from '../../../server/dsh-acp-client.js';
+  AcpClient,
+  type AcpClientOptions,
+} from '../../../server/acp-client.js';
 import { DshProtocolAdapter } from '../../../server/protocol-adapters/dsh-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
@@ -58,7 +58,7 @@ function queueSend(
 }
 
 function harness() {
-  const client = new DshAcpClient();
+  const client = new AcpClient({ command: 'dsh' });
   client.setMaxListeners(50);
   const start = vi.spyOn(client, 'start').mockResolvedValue(INITIALIZE_RESULT);
   const request = vi
@@ -84,7 +84,7 @@ function harness() {
     .spyOn(client, 'respondError')
     .mockImplementation(() => undefined);
   const stop = vi.spyOn(client, 'stop').mockResolvedValue();
-  const clientFactoryOptions: DshAcpClientOptions[] = [];
+  const clientFactoryOptions: AcpClientOptions[] = [];
   const adapter = new DshProtocolAdapter((factoryOptions) => {
     clientFactoryOptions.push(factoryOptions);
     return client;

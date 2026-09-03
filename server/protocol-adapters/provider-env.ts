@@ -57,3 +57,8 @@ export const ANTIGRAVITY_ENV_DENYLIST = providerDenylist();
  * set them.
  */
 export const DSH_ENV_DENYLIST = providerDenylist();
+/**
+ * Nesting set only. `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` must remain settable
+ * per profile.
+ */
+export const CURSOR_ENV_DENYLIST = providerDenylist();

@@ -8,6 +8,7 @@ export {
 export { PiStateAdapter } from './pi-state-adapter.js';
 export { PrimeAgentStateAdapter } from './prime-agent-state-adapter.js';
 export { AntigravityStateAdapter } from './antigravity-state-adapter.js';
+export { CursorStateAdapter } from './cursor-state-adapter.js';
 export {
   SUMMARY_CACHE_DB_FILE,
   NOOP_SUMMARY_CACHE_STORE,

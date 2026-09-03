@@ -29,7 +29,8 @@ export type KnownAgentGlyph =
   | 'prime-agent'
   | 'pi'
   | 'antigravity'
-  | 'dsh';
+  | 'dsh'
+  | 'cursor';
 
 export interface SenderIdentity {
   /** Display label — human is always 'you'. */
@@ -50,6 +51,7 @@ const KNOWN_AGENT_COLOR_VAR: Record<string, string> = {
   pi: '--sender-pi',
   antigravity: '--sender-antigravity',
   dsh: '--sender-dsh',
+  cursor: '--sender-cursor',
 };
 
 const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
@@ -61,6 +63,7 @@ const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
   'pi',
   'antigravity',
   'dsh',
+  'cursor',
 ];
 
 function isKnownGlyph(value: string): value is KnownAgentGlyph {

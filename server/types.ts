@@ -56,7 +56,8 @@ export type BuiltinFrameworkId =
   | 'prime-agent'
   | 'pi'
   | 'antigravity'
-  | 'dsh';
+  | 'dsh'
+  | 'cursor';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
@@ -247,6 +248,22 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsHooks: false,
       supportsContinue: false,
       supportsYolo: false,
+      supportsTelemetry: false,
+      supportsAttachedRuntime: false,
+    },
+  },
+  cursor: {
+    id: 'cursor',
+    displayName: 'Cursor',
+    command: 'cursor-agent',
+    continueArgs: ['--resume'],
+    yoloArgs: ['--yolo'],
+    parserType: 'generic',
+    eventSource: 'timer',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
     },

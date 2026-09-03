@@ -15,3 +15,4 @@ export const ANTIGRAVITY_CHANNEL_COMMAND = 'agy';
  * this stays the plain executable name a PATH probe can resolve.
  */
 export const DSH_CHANNEL_COMMAND = 'dsh';
+export const CURSOR_CHANNEL_COMMAND = 'cursor-agent';

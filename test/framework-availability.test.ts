@@ -63,6 +63,11 @@ const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
     command: 'dsh',
     deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   },
+  cursor: {
+    kind: 'command',
+    command: 'cursor-agent',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
   opencode: {
     kind: 'command',
     command: 'opencode',

@@ -23,10 +23,12 @@ import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
 import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
 import { AntigravityProtocolAdapter } from './antigravity-adapter.js';
 import { DshProtocolAdapter } from './dsh-adapter.js';
+import { CursorProtocolAdapter } from './cursor-adapter.js';
 import {
   ANTIGRAVITY_ENV_DENYLIST,
   CLAUDE_ENV_DENYLIST,
   CODEX_ENV_DENYLIST,
+  CURSOR_ENV_DENYLIST,
   DSH_ENV_DENYLIST,
   OPENCODE_ENV_DENYLIST,
   PI_AGENT_ENV_DENYLIST,
@@ -36,6 +38,7 @@ import {
   ANTIGRAVITY_CHANNEL_COMMAND,
   CLAUDE_CHANNEL_COMMAND,
   CODEX_CHANNEL_COMMAND,
+  CURSOR_CHANNEL_COMMAND,
   DSH_CHANNEL_COMMAND,
   OPENCODE_CHANNEL_COMMAND,
   PI_AGENT_CHANNEL_COMMAND,
@@ -438,6 +441,37 @@ export const PROVIDER_DESCRIPTORS = {
     agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
+  cursor: {
+    id: 'cursor',
+    agentType: 'cursor',
+    terminalFrameworkId: 'cursor',
+    launch: {
+      requirement: { kind: 'command', command: CURSOR_CHANNEL_COMMAND },
+      processEnvDenylist: CURSOR_ENV_DENYLIST,
+    },
+    bridgedCapabilities: null,
+    supportsChannelAgents: true,
+    mentionableByDefault: true,
+    allowedAsTopicRoutingDefault: true,
+    resumeStateKey: 'cursorSessionId',
+    deliversImages: false,
+    imageRawByteBudget: GENERAL_IMAGE_RAW_BYTE_BUDGET,
+    relayControls: EMPTY_RELAY_CONTROL_CATALOG,
+    processMatch: {
+      commandLineSubstrings: ['cursor-agent'],
+      commandBasenames: ['cursor-agent'],
+    },
+    authCredentialPaths: [
+      ['.cursor', 'auth.json'],
+      ['.config', 'cursor', 'auth.json'],
+      ['.cursor-agent', 'auth.json'],
+      ['.config', 'cursor-agent', 'auth.json'],
+    ],
+    yoloPermissionMode: 'yolo',
+    agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
+    isDefaultOrchestratorProvider: false,
+  },
   opencode: {
     id: 'opencode',
     agentType: 'opencode',
@@ -627,6 +661,7 @@ export const v2Adapters = {
   pi: () => new PiAgentProtocolAdapter(),
   antigravity: () => new AntigravityProtocolAdapter(),
   dsh: () => new DshProtocolAdapter(),
+  cursor: () => new CursorProtocolAdapter(),
   opencode: () =>
     new LegacyProtocolAdapterV2Bridge(
       new OpenCodeProtocolAdapter(),

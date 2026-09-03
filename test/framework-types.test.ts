@@ -20,6 +20,7 @@ test('BUILTIN_FRAMEWORKS contains all first-class providers', () => {
   expect('pi' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('antigravity' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('dsh' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('cursor' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -154,6 +155,27 @@ test('dsh framework exposes native channels and a generic PTY', () => {
   expect(frameworkCapabilitiesWithChannelLane(dsh).supportsChannelAgents).toBe(
     true
   );
+});
+
+test('cursor framework exposes native channels and a generic PTY', () => {
+  const cursor = BUILTIN_FRAMEWORKS['cursor'];
+  expect(cursor.id).toBe('cursor');
+  expect(cursor.displayName).toBe('Cursor');
+  expect(cursor.command).toBe('cursor-agent');
+  expect(cursor.continueArgs).toEqual(['--resume']);
+  expect(cursor.yoloArgs).toEqual(['--yolo']);
+  expect(cursor.parserType).toBe('generic');
+  expect(cursor.eventSource).toBe('timer');
+  expect(cursor.capabilities).toMatchObject({
+    supportsHooks: false,
+    supportsContinue: true,
+    supportsYolo: true,
+    supportsTelemetry: false,
+    supportsAttachedRuntime: false,
+  });
+  expect(
+    frameworkCapabilitiesWithChannelLane(cursor).supportsChannelAgents
+  ).toBe(true);
 });
 
 test('pi framework exposes native channels and a generic PTY', () => {

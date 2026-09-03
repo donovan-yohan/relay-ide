@@ -409,6 +409,7 @@ export const BUILTIN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'pi',
   'antigravity',
   'dsh',
+  'cursor',
   'terminal',
 ]);
 

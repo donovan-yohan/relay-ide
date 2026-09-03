@@ -38,6 +38,7 @@ refresh. Capabilities must describe only implemented behavior.
 | Pi               | `pi`          | `pi --mode rpc` JSONL                                |
 | Antigravity      | `antigravity` | `agy` stream-json NDJSON over stdin/stdout           |
 | DeepSeek Harness | `dsh`         | `dsh --profile acp` Agent Client Protocol over stdio |
+| Cursor           | `cursor`      | `cursor-agent acp` Agent Client Protocol over stdio  |
 
 ### Prime Agent
 
@@ -170,7 +171,7 @@ newline-delimited JSON-RPC on stdio. That wire is BIDIRECTIONAL in a way no
 other Relay stdio harness is: besides answering Relay's requests and pushing
 `session/update` notifications, the server sends Relay a REQUEST
 (`session/request_permission`) and blocks the agent until Relay answers.
-`server/dsh-acp-client.ts` therefore exposes `respond`/`respondError` next to
+`server/acp-client.ts` therefore exposes `respond`/`respondError` next to
 `request`, and every branch of the adapter's peer-request handler answers —
 including the unknown-method one, which replies `-32601` rather than leaving a
 turn wedged.
@@ -254,6 +255,23 @@ surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.
 
 The Antigravity channel transport is installed-tested with Antigravity CLI (`agy`) 1.1.23. The `agy` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
+
+Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor CLI ACP server (`cursor-agent acp`) and speaks the Agent Client Protocol over stdio.
+
+The Cursor channel transport is installed-tested with `cursor-agent` 2026.08.31-4057e58. The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
+
+Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
+
+The adapter maps:
+
+- `session/update` notifications (`agent_message_chunk` -> `assistantMessage`, `agent_thought_chunk` -> `reasoning`, `tool_call` -> `commandExecution`/`fileChange`/`dynamicToolCall`, `usage_update` -> context occupancy telemetry)
+- `session/request_permission` peer requests -> Relay approval cards with `allow-once`/`allow-always`/`reject-once` outcomes. `--yolo` does not suppress these on the ACP lane (probed 2026-09-02: the `--yolo` and no-flag requests are byte-identical), so `permissionMode: 'yolo'` auto-approves in the adapter — only ever with the `allow_once` option, and only when Cursor offers one. Every auto-grant is recorded as a debug-visibility `cursor` provider extension (`kind: 'permission_auto_approved'`) plus a hub log line. That extension lives in the agent session mechanics only -- `providerExtension` has no detail card, so the channel bridge does not mirror it to a durable channel row. With no `allow_once` on the wire the request falls through to a normal approval card. Reject decisions are symmetric: a one-time reject never widens to `reject_always`.
+- `cursor/ask_question` peer requests -> Relay question cards, answered with structured `{ questionId, selectedOptionIds }` selections
+- `cursor/create_plan` peer requests -> canonical Relay plan items, auto-accepted so execution proceeds without blocking
+- Provider extensions for `cursor/update_todos`, `cursor/task`, and `cursor/generate_image`
+- Command arguments pass root options (`--model <id>`, `--yolo`) before the `acp` subcommand.
+
+The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY.
 
 ### Live Pi and Prime RPC smoke
 
