@@ -10,7 +10,9 @@ import { CursorProtocolAdapter } from '../../../server/protocol-adapters/cursor-
 /**
  * The yolo permission frame is not transcribed by hand: it is lifted straight
  * out of the `cursor-agent --yolo acp` capture, so this test fails if the
- * recorded wire shape and the adapter's expectations ever drift apart.
+ * recorded wire shape and the adapter's expectations ever drift apart. Like
+ * its sibling captures the file is strict NDJSON holding agent -> client
+ * frames only: one JSON object per line, no direction prefixes.
  */
 const YOLO_CAPTURE_PATH = fileURLToPath(
   new URL(
@@ -23,19 +25,16 @@ function capturedYoloPermissionRequest(): {
   id: number;
   params: Record<string, unknown>;
 } {
-  const line = readFileSync(YOLO_CAPTURE_PATH, 'utf8')
+  const frame = readFileSync(YOLO_CAPTURE_PATH, 'utf8')
     .split('\n')
-    .find(
-      (l) =>
-        l.startsWith('<< ') &&
-        l.includes('"method":"session/request_permission"')
-    );
-  if (!line)
+    .filter((l) => l.trim())
+    .map(
+      (l) => JSON.parse(l) as { id: number; method?: string; params?: unknown }
+    )
+    .find((f) => f.method === 'session/request_permission');
+  if (!frame)
     throw new Error('yolo capture has no session/request_permission frame');
-  return JSON.parse(line.slice(3)) as {
-    id: number;
-    params: Record<string, unknown>;
-  };
+  return frame as { id: number; params: Record<string, unknown> };
 }
 
 type SendInput = Parameters<CursorProtocolAdapter['sendMessage']>[0];
@@ -576,7 +575,10 @@ describe('CursorProtocolAdapter', () => {
       outcome: { outcome: 'selected', optionId: 'allow-once' },
     });
 
-    // The auto-grant is in the transcript, not just the log.
+    // The auto-grant is recorded in the agent session mechanics (a debug-
+    // visibility providerExtension) and the hub log. It is deliberately NOT in
+    // the channel transcript: providerExtension has no detail card, so the
+    // channel bridge does not mirror it to a durable row.
     const extension = h.patches.find(
       (p) =>
         p.type === 'agent-item-started-v2' &&
@@ -585,6 +587,8 @@ describe('CursorProtocolAdapter', () => {
     );
     expect(extension).toBeDefined();
     expect((extension?.item as any).namespace).toBe('cursor');
+    // 'debug' visibility, matching the sibling cursor provider extensions.
+    expect((extension?.item as any).metadata?.eventVisibility).toBe('debug');
     expect((extension?.item as any).payload.grant).toEqual({
       toolCallId: params.toolCall.toolCallId,
       title: params.toolCall.title,
@@ -652,6 +656,101 @@ describe('CursorProtocolAdapter', () => {
     expect(h.respond).toHaveBeenCalledWith(57, {
       outcome: { outcome: 'cancelled' },
     });
+  });
+
+  it('fails closed when a decline decision is offered only reject_always', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-reject-only-always',
+      content: 'Run command',
+    });
+
+    // Symmetric with the accept path: a one-time reject never widens either.
+    h.peerRequest(58, 'session/request_permission', {
+      sessionId: SESSION_ID,
+      toolCall: { toolCallId: EXEC_CALL_ID },
+      options: [
+        {
+          optionId: 'reject-always',
+          name: 'Reject always',
+          kind: 'reject_always',
+        },
+      ],
+    });
+
+    await h.adapter.respondToApproval({
+      requestId: 'cursor-approval-58',
+      decision: { kind: 'decline' },
+    });
+
+    expect(h.respond).toHaveBeenCalledWith(58, {
+      outcome: { outcome: 'cancelled' },
+    });
+    expect(h.respond).not.toHaveBeenCalledWith(58, {
+      outcome: { outcome: 'selected', optionId: 'reject-always' },
+    });
+  });
+
+  it('cancels a permission request that arrives during session/load replay', async () => {
+    const h = harness();
+    h.request.mockImplementation(async (method) => {
+      if (method === 'session/load') {
+        // Cursor can re-raise a stored permission request while history
+        // streams in. There is no turn to attach it to, so it must be
+        // released rather than parked as an un-answerable card.
+        h.peerRequest(99, 'session/request_permission', {
+          sessionId: 'existing-session',
+          toolCall: { toolCallId: EXEC_CALL_ID, title: '`echo old`' },
+          options: [
+            { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          ],
+        });
+        return { sessionId: 'existing-session' };
+      }
+      return {};
+    });
+
+    await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
+
+    expect(h.respond).toHaveBeenCalledWith(99, {
+      outcome: { outcome: 'cancelled' },
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as any).type === 'approval'
+      )
+    ).toBe(false);
+  });
+
+  it('fails the handshake when session/new returns no sessionId', async () => {
+    const h = harness();
+    h.request.mockImplementation(async (method) => {
+      if (method === 'authenticate') return { authenticated: true };
+      // A sessionId-less result would leave every session/prompt failing on
+      // the wire while the adapter reported connected.
+      if (method === 'session/new') return {};
+      return {};
+    });
+
+    await expect(h.adapter.connect(config)).rejects.toThrow(/no sessionId/);
+    expect(h.adapter.status).toBe('disconnected');
+    expect(h.stop).toHaveBeenCalled();
+  });
+
+  it('accepts a session/load handshake that echoes only the resumed id', async () => {
+    const h = harness();
+    h.request.mockImplementation(async (method) => {
+      if (method === 'authenticate') return { authenticated: true };
+      if (method === 'session/load') return {};
+      return {};
+    });
+
+    // resumeSessionId still satisfies the handshake: the id is known.
+    await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
+    expect(h.adapter.status).toBe('connected');
   });
 
   it('falls back to session/new when session/load fails', async () => {

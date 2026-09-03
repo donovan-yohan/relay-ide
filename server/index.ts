@@ -355,6 +355,7 @@ import type {
   NativeSessionProvider,
   NativeSessionRef,
 } from '../shared/provider-native-session-state.js';
+import { NATIVE_SESSION_PROVIDERS } from '../shared/provider-native-session-state.js';
 import {
   buildPtyCapacityResponse,
   countActivePtySessions,
@@ -5037,16 +5038,9 @@ async function main(): Promise<void> {
     cursorStore: new LiveTailCursorStore(configDir),
   });
 
-  const VALID_NATIVE_PROVIDERS = new Set<NativeSessionProvider>([
-    'claude',
-    'codex',
-    'hermes',
-    'opencode',
-    'pi',
-    'prime-agent',
-    'dsh',
-    'antigravity',
-  ]);
+  const VALID_NATIVE_PROVIDERS = new Set<NativeSessionProvider>(
+    NATIVE_SESSION_PROVIDERS
+  );
 
   // GET /sessions/native — list native provider sessions with install status
   app.get(

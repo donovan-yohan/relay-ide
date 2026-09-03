@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CursorStateAdapter } from '../../../server/provider-state/cursor-state-adapter.js';
+import { NATIVE_SESSION_PROVIDERS } from '../../../shared/provider-native-session-state.js';
 
 describe('CursorStateAdapter', () => {
   let tempDir: string;
@@ -55,6 +56,13 @@ describe('CursorStateAdapter', () => {
       status: 'unavailable',
       stateRoots: [missingDir],
     });
+  });
+
+  // The HTTP native-session routes (list/get/import/watch) validate the
+  // `provider` param against this list, so an adapter registered without a row
+  // here 400s on every route.
+  it('is an accepted provider on the native-session routes', () => {
+    expect(NATIVE_SESSION_PROVIDERS).toContain('cursor');
   });
 
   it('listNativeSessions returns empty array', async () => {

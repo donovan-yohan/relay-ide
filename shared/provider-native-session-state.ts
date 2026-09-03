@@ -18,6 +18,32 @@ export type NativeSessionProvider = Extract<
   | 'antigravity'
 >;
 
+/**
+ * Every provider with a registered native-session state adapter. The HTTP
+ * native-session routes validate against this list, so a provider missing here
+ * 400s even though its adapter is registered (#1552: `cursor` was omitted).
+ * `satisfies` holds each entry to the type; `_exhaustive` fails to compile if a
+ * union member is left out, so the list cannot silently fall behind the type.
+ */
+export const NATIVE_SESSION_PROVIDERS = [
+  'claude',
+  'codex',
+  'hermes',
+  'opencode',
+  'pi',
+  'prime-agent',
+  'dsh',
+  'cursor',
+  'antigravity',
+] as const satisfies readonly NativeSessionProvider[];
+
+type _MissingNativeSessionProvider = Exclude<
+  NativeSessionProvider,
+  (typeof NATIVE_SESSION_PROVIDERS)[number]
+>;
+const _exhaustive: _MissingNativeSessionProvider[] = [];
+void _exhaustive;
+
 export type ProviderInstallStatusKind =
   | 'installed'
   | 'unavailable'

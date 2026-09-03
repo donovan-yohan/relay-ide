@@ -268,8 +268,17 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       }
 
       const opened = await this.openSession(client, config);
-      this.cursorSessionId =
+      // Fail closed at the handshake: without a session id every later
+      // `session/prompt` fails on the wire and `interrupt` early-returns, so a
+      // "connected" adapter would silently swallow turns. The catch below
+      // tears the client down.
+      const cursorSessionId =
         string(opened.sessionId) || config.resumeSessionId || null;
+      if (!cursorSessionId)
+        throw new Error(
+          'cursor ACP handshake returned no sessionId; refusing to report connected'
+        );
+      this.cursorSessionId = cursorSessionId;
     } catch (error) {
       this._status = 'disconnected';
       this.client = null;
@@ -463,12 +472,10 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
             ? ['allow_always', 'allow-always']
             : ['allow_once', 'allow-once'];
       } else {
-        targetKinds = [
-          'reject_once',
-          'reject-once',
-          'reject_always',
-          'reject-always',
-        ];
+        // Symmetric with the accept path: a one-time reject never widens into
+        // a standing one, so reject_always is not a fallback. With no
+        // reject_once option on the wire this fails closed to `cancelled`.
+        targetKinds = ['reject_once', 'reject-once'];
       }
 
       const matchedOption = pending.options.find((o) =>
@@ -700,7 +707,11 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
           outcome: { outcome: 'selected', optionId: allowOnce.optionId },
         });
         // Never drop: the grant is a security-relevant decision Relay made on
-        // the operator's behalf, so it lands in the transcript, not just logs.
+        // the operator's behalf, so it is recorded rather than silently made.
+        // A providerExtension item has no detail card
+        // (`agentDetailCardForItem`) and the channel bridge does not mirror
+        // non-card items, so this lands in the agent session mechanics
+        // (`agentSessionV2`) and the hub log — NOT in the channel transcript.
         const grant = {
           toolCallId,
           title: string(toolCall.title),
@@ -710,7 +721,11 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
         logger.info('[cursor] yolo auto-approved permission request', grant);
         // `grant` is nested: the extension envelope already owns `kind` as its
         // discriminator, and the tool call carries a `kind` of its own.
-        this.emitProviderExtension({ kind: 'permission_auto_approved', grant });
+        // 'debug' matches the three sibling emitProviderExtension calls.
+        this.emitProviderExtension(
+          { kind: 'permission_auto_approved', grant },
+          'debug'
+        );
         return;
       }
       logger.warn(

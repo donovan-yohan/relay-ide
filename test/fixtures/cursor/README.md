@@ -7,11 +7,11 @@ These are the source of the native payloads in
 `test/server/protocol-adapters/cursor-adapter.test.ts` — fixture grammar is
 transcribed from real wire interactions, never invented (`conformance/fixture-types.ts`).
 
-| File                                          | What it is                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `acp-turn-capture.redacted.ndjson`            | `initialize`, `authenticate`, `session/new`, a tool-assisted turn answering `CURSOR_LIVE_OK`, a second prompt in the same session (continuity), and a cancelled prompt.                                                                                                                                                                  |
-| `acp-resume-capture.redacted.ndjson`          | `initialize`, `authenticate`, `session/new`, a file-write turn, then a separate process invocation with `session/load` on the saved session ID and a prompt proving continuity.                                                                                                                                                          |
-| `acp-yolo-permission-capture.redacted.ndjson` | `cursor-agent --yolo acp` driven end to end. Proves `--yolo` is inert on the ACP lane: the agent still raises `session/request_permission` (line 30) for `echo YOLO_PROBE` with `content[0].content.text: "Not in allowlist: echo"` and the same three options. A no-flag run of the identical prompt produced a byte-identical request. |
+| File                                          | What it is                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `acp-turn-capture.redacted.ndjson`            | `initialize`, `authenticate`, `session/new`, a tool-assisted turn answering `CURSOR_LIVE_OK`, a second prompt in the same session (continuity), and a cancelled prompt.                                                                                                                                                        |
+| `acp-resume-capture.redacted.ndjson`          | `initialize`, `authenticate`, `session/new`, a file-write turn, then a separate process invocation with `session/load` on the saved session ID and a prompt proving continuity.                                                                                                                                                |
+| `acp-yolo-permission-capture.redacted.ndjson` | `cursor-agent --yolo acp` driven end to end. Proves `--yolo` is inert on the ACP lane: the agent still raises `session/request_permission` for `echo YOLO_PROBE` with `content[0].content.text: "Not in allowlist: echo"` and the same three options. A no-flag run of the identical prompt produced a byte-identical request. |
 
 The approval request in `acp-turn-capture.redacted.ndjson` (line 15: `session/request_permission` with `allow-once`/`allow-always`/`reject-once`) is real wire traffic captured when Cursor requested permission for an unlisted bash command. Question and plan shapes (`cursor/ask_question`, `cursor/create_plan`) are transcribed from the Cursor CLI ACP specification and server schemas.
 
@@ -19,9 +19,19 @@ The approval request in `acp-turn-capture.redacted.ndjson` (line 15: `session/re
 
 A Node driver spawned `cursor-agent acp` (plus root flags, e.g. `--yolo`), drove the ACP protocol handshake, and recorded all traffic on stdio.
 
+## Format
+
+Strict NDJSON: exactly one JSON object per line, no direction prefixes. Every
+file holds agent -> client frames only (results and notifications), so a line
+carrying both `id` and `method` is an agent-initiated peer request. Check with:
+
+```bash
+while read -r l; do echo "$l" | jq -e . >/dev/null || echo BAD; done < <file>
+```
+
 ## Redaction
 
-User email (`user@example.com`), workspace directory (`/workspace`), and user home (`/redacted`) were redacted. The yolo capture's probe cwd was rewritten to `/workspace` and the user home to `/redacted`. No credentials or sensitive data are preserved.
+User email (`user@example.com`), workspace directory (`/workspace`), and user home (`/redacted`) were redacted. The yolo capture's probe cwd was rewritten to `/workspace` and the user home to `/redacted`. In every capture the `available_commands_update` frame listed the operator's 21 personal agent skills; those entries are replaced with `skill-1` .. `skill-21` and a placeholder description, preserving the array's count, order and shape. Cursor's own built-in commands are kept verbatim -- they are protocol facts. No credentials or sensitive data are preserved.
 
 ## Protocol facts these captures pin
 
