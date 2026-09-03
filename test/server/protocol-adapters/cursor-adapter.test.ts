@@ -1,9 +1,42 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AcpClient,
   type AcpClientOptions,
 } from '../../../server/acp-client.js';
 import { CursorProtocolAdapter } from '../../../server/protocol-adapters/cursor-adapter.js';
+
+/**
+ * The yolo permission frame is not transcribed by hand: it is lifted straight
+ * out of the `cursor-agent --yolo acp` capture, so this test fails if the
+ * recorded wire shape and the adapter's expectations ever drift apart.
+ */
+const YOLO_CAPTURE_PATH = fileURLToPath(
+  new URL(
+    '../../fixtures/cursor/acp-yolo-permission-capture.redacted.ndjson',
+    import.meta.url
+  )
+);
+
+function capturedYoloPermissionRequest(): {
+  id: number;
+  params: Record<string, unknown>;
+} {
+  const line = readFileSync(YOLO_CAPTURE_PATH, 'utf8')
+    .split('\n')
+    .find(
+      (l) =>
+        l.startsWith('<< ') &&
+        l.includes('"method":"session/request_permission"')
+    );
+  if (!line)
+    throw new Error('yolo capture has no session/request_permission frame');
+  return JSON.parse(line.slice(3)) as {
+    id: number;
+    params: Record<string, unknown>;
+  };
+}
 
 type SendInput = Parameters<CursorProtocolAdapter['sendMessage']>[0];
 type Patch = Record<string, unknown>;
@@ -184,7 +217,15 @@ describe('CursorProtocolAdapter', () => {
     });
   });
 
-  it('suppresses patch emissions during session/load history replay', async () => {
+  // Regression pin for the no-active-turn guard, NOT for a replay flag. The
+  // adapter has no `isReplaying` field: `session/load` only ever runs from
+  // `connect()`, and `reconnect`/`resumeSession` complete the in-flight turn
+  // before reconnecting, so `activeTurnId` is always null while history
+  // streams in. The invariant is enforced redundantly (`appendMessageChunk`,
+  // `startTool`, `finishTool`, `ensureItem`, `emitDelta`), so removing any one
+  // guard still leaves another; this test goes red once the last layer between
+  // a replayed frame and `emitPatch` is gone. Verified by mutation.
+  it('drops session/load history replay because no turn is active', async () => {
     const h = harness();
     h.request.mockImplementation(async (method) => {
       if (method === 'session/load') {
@@ -200,6 +241,20 @@ describe('CursorProtocolAdapter', () => {
           sessionUpdate: 'agent_message_chunk',
           messageId: 'old-msg',
           content: { type: 'text', text: 'historical text' },
+        });
+        h.update({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: EXEC_CALL_ID,
+          status: 'completed',
+          rawOutput: { exitCode: 0, stdout: 'CURSOR_LIVE_OK\n' },
+        });
+        // usage_update has its own guard, but `startTurn` also clears
+        // `turnUsage`, so replayed usage is unobservable either way and this
+        // test deliberately makes no claim about it.
+        h.update({ sessionUpdate: 'usage_update', used: 4242, size: 200000 });
+        h.client.emit('notification', {
+          method: 'cursor/update_todos',
+          params: { todos: [{ id: 'historical', content: 'stale todo' }] },
         });
         return { sessionId: 'existing-session' };
       }
@@ -441,6 +496,162 @@ describe('CursorProtocolAdapter', () => {
           String(p.message).includes('did not provide a matching option')
       )
     ).toBe(true);
+  });
+
+  it('fails closed when a scope: once accept is offered only allow_always', async () => {
+    const h = harness();
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({
+      turnId: 'turn-once-only-always',
+      content: 'Run command',
+    });
+
+    // A "once" decision must never be widened into a permanent grant.
+    h.peerRequest(56, 'session/request_permission', {
+      sessionId: SESSION_ID,
+      toolCall: { toolCallId: EXEC_CALL_ID },
+      options: [
+        {
+          optionId: 'allow-always',
+          name: 'Allow always',
+          kind: 'allow_always',
+        },
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      ],
+    });
+
+    await h.adapter.respondToApproval({
+      requestId: 'cursor-approval-56',
+      decision: { kind: 'accept', scope: 'once' },
+    });
+
+    expect(h.respond).toHaveBeenCalledWith(56, {
+      outcome: { outcome: 'cancelled' },
+    });
+    expect(h.respond).not.toHaveBeenCalledWith(56, {
+      outcome: { outcome: 'selected', optionId: 'allow-always' },
+    });
+    const resolved = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        (p.item as any).id === 'approval-cursor-approval-56'
+    );
+    expect((resolved?.item as any).status).toBe('cancelled');
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes('did not provide a matching option')
+      )
+    ).toBe(true);
+  });
+
+  it('yolo auto-approves the captured permission frame with allow_once and records the grant', async () => {
+    const captured = capturedYoloPermissionRequest();
+    const params = captured.params as {
+      sessionId: string;
+      toolCall: { toolCallId: string; title: string; kind: string };
+      options: Array<{ optionId: string; kind: string }>;
+    };
+    // Guard the capture itself: this is the frame `--yolo` still produces.
+    expect(params.toolCall.toolCallId).toMatch(/^toolu_/);
+    expect(params.options.map((o) => o.kind)).toEqual([
+      'allow_once',
+      'allow_always',
+      'reject_once',
+    ]);
+
+    const h = harness();
+    await h.adapter.connect({ ...config, permissionMode: 'yolo' });
+    await h.adapter.sendMessage({
+      turnId: 'turn-yolo',
+      content: 'Run echo YOLO_PROBE',
+    });
+
+    h.peerRequest(captured.id, 'session/request_permission', params);
+
+    // Answered on the wire with the single-use grant, never allow-always and
+    // never "whatever option came first".
+    expect(h.respond).toHaveBeenCalledWith(captured.id, {
+      outcome: { outcome: 'selected', optionId: 'allow-once' },
+    });
+
+    // The auto-grant is in the transcript, not just the log.
+    const extension = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        (p.item as any).type === 'providerExtension' &&
+        (p.item as any).payload?.kind === 'permission_auto_approved'
+    );
+    expect(extension).toBeDefined();
+    expect((extension?.item as any).namespace).toBe('cursor');
+    expect((extension?.item as any).payload.grant).toEqual({
+      toolCallId: params.toolCall.toolCallId,
+      title: params.toolCall.title,
+      kind: params.toolCall.kind,
+      optionId: 'allow-once',
+    });
+
+    // No approval card: the turn was never blocked on a human.
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as any).type === 'approval'
+      )
+    ).toBe(false);
+  });
+
+  it('yolo does not auto-approve when no allow_once option is offered', async () => {
+    const h = harness();
+    await h.adapter.connect({ ...config, permissionMode: 'yolo' });
+    await h.adapter.sendMessage({
+      turnId: 'turn-yolo-reject-only',
+      content: 'Run something unapprovable',
+    });
+
+    h.peerRequest(57, 'session/request_permission', {
+      sessionId: SESSION_ID,
+      toolCall: {
+        toolCallId: EXEC_CALL_ID,
+        title: '`rm -rf /`',
+        kind: 'execute',
+        status: 'pending',
+      },
+      options: [
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      ],
+    });
+
+    // Nothing was auto-selected on the wire...
+    expect(h.respond).not.toHaveBeenCalled();
+    // ...and no grant was recorded.
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as any).type === 'providerExtension' &&
+          (p.item as any).payload?.kind === 'permission_auto_approved'
+      )
+    ).toBe(false);
+
+    // The request fell through to the normal approval card path.
+    const card = h.patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        (p.item as any).id === 'approval-cursor-approval-57'
+    );
+    expect(card).toBeDefined();
+    expect((card?.item as any).status).toBe('pending');
+
+    // And accepting it still fails closed, because there is no allow option.
+    await h.adapter.respondToApproval({
+      requestId: 'cursor-approval-57',
+      decision: { kind: 'accept', scope: 'once' },
+    });
+    expect(h.respond).toHaveBeenCalledWith(57, {
+      outcome: { outcome: 'cancelled' },
+    });
   });
 
   it('falls back to session/new when session/load fails', async () => {

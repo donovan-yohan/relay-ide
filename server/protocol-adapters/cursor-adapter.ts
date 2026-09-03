@@ -60,7 +60,7 @@ const logger = createLogger('cursor-adapter');
  * initialize                         | -> Server | (readiness barrier)
  * authenticate (cursor_login)        | -> Server | (auth handshake)
  * session/new                        | -> Server | agent-session-snapshot-v2 (providerSession.cursorSessionId)
- * session/load                       | -> Server | agent-session-snapshot-v2 (history suppressed during replay)
+ * session/load                       | -> Server | agent-session-snapshot-v2 (history dropped: no active turn)
  * session/prompt                     | -> Server | response stopReason settles turn outcome
  * session/cancel                     | -> Server | cancels active prompt; completes turn interrupted
  * session/update (agent_message_chunk)| <- Server | agent-item-started-v2 + agent-item-delta-v2 (assistantMessage)
@@ -173,7 +173,6 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
   private turnUsage: AgentUsageV2 | undefined;
   private providerExtensionSequence = 0;
   private queueAdvanceInFlight = false;
-  private isReplaying = false;
   private readonly items = new Map<string, AgentItemV2>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingInputRequests = new Map<
@@ -313,18 +312,24 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!config.resumeSessionId)
       return record(await client.request('session/new', params));
 
+    // QUIRK: Cursor streams the whole stored transcript as `session/update`
+    // notifications while `session/load` is still in flight. Those frames need
+    // no dedicated replay flag: `session/load` only ever runs from `connect()`,
+    // and every caller that can reach `connect()` mid-turn (`reconnect`,
+    // `resumeSession`) goes through `resetForTransportSwitch`, which completes
+    // the active turn first. With `activeTurnId === null` the notification
+    // handlers below (`appendMessageChunk`, `startTool`, `finishTool`,
+    // `applyUsage`, `emitProviderExtension`) all return without emitting or
+    // mutating state, so history is dropped by the no-active-turn guard. See
+    // the "drops session/load history replay" regression test.
     try {
-      this.isReplaying = true;
-      const result = record(
+      return record(
         await client.request('session/load', {
           sessionId: config.resumeSessionId,
           ...params,
         })
       );
-      this.isReplaying = false;
-      return result;
     } catch (error) {
-      this.isReplaying = false;
       this.resumeFallbackReason =
         error instanceof Error ? error.message : String(error);
       logger.warn('[cursor] session/load failed; starting a fresh session', {
@@ -449,11 +454,14 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
     } else {
       let targetKinds: string[];
       if (input.decision.kind === 'accept') {
+        // A "once" decision must never widen into a permanent grant, so
+        // allow_always is NOT a fallback here: with no allow_once option on
+        // the wire this falls through to the fail-closed branch below.
         targetKinds =
           input.decision.scope === 'session' ||
           input.decision.scope === 'permanent'
             ? ['allow_always', 'allow-always']
-            : ['allow_once', 'allow-once', 'allow_always', 'allow-always'];
+            : ['allow_once', 'allow-once'];
       } else {
         targetKinds = [
           'reject_once',
@@ -549,7 +557,6 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private handleNotification(notification: AcpNotification): void {
     const { method, params } = notification;
-    if (this.isReplaying) return;
 
     if (method === 'cursor/update_todos') {
       this.emitProviderExtension(
@@ -673,21 +680,48 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
       name: string(o.name),
     }));
 
-    // Auto-approve when running with yolo mode without blocking turn
+    const toolCall = record(request.params.toolCall);
+    const toolCallId = string(toolCall.toolCallId);
+
+    // QUIRK: `cursor-agent --yolo acp` still raises session/request_permission
+    // (probed 2026-09-02: `--yolo` and no-flag runs produce byte-identical
+    // requests), so yolo has to be honoured here rather than by the flag.
+    // Auto-approve WITHOUT blocking the turn, but only ever with the
+    // single-use grant: allow_always would outlive the turn, and options[0] is
+    // whatever Cursor happened to list first — possibly a reject. When no
+    // allow_once option is on the wire we do not auto-approve at all and fall
+    // through to the normal approval card so a human decides.
     if (this.config?.permissionMode === 'yolo') {
-      const allowOpt =
-        options.find(
-          (o) => o.kind === 'allow_always' || o.kind === 'allow_once'
-        ) ?? options[0];
-      if (allowOpt) {
+      const allowOnce = options.find(
+        (o) => o.kind === 'allow_once' || o.kind === 'allow-once'
+      );
+      if (allowOnce) {
         client.respond(request.id, {
-          outcome: { outcome: 'selected', optionId: allowOpt.optionId },
+          outcome: { outcome: 'selected', optionId: allowOnce.optionId },
         });
+        // Never drop: the grant is a security-relevant decision Relay made on
+        // the operator's behalf, so it lands in the transcript, not just logs.
+        const grant = {
+          toolCallId,
+          title: string(toolCall.title),
+          kind: string(toolCall.kind),
+          optionId: allowOnce.optionId,
+        };
+        logger.info('[cursor] yolo auto-approved permission request', grant);
+        // `grant` is nested: the extension envelope already owns `kind` as its
+        // discriminator, and the tool call carries a `kind` of its own.
+        this.emitProviderExtension({ kind: 'permission_auto_approved', grant });
         return;
       }
+      logger.warn(
+        '[cursor] yolo permission request offered no allow_once option; asking the operator',
+        {
+          toolCallId,
+          availableOptions: options,
+        }
+      );
     }
 
-    const toolCallId = string(record(request.params.toolCall).toolCallId);
     const requestId = `cursor-approval-${String(request.id)}`;
     const target = this.approvalTarget(toolCallId);
     const startedAt = nowIso();
@@ -1035,6 +1069,11 @@ export class CursorProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private applyUsage(update: Record<string, unknown>): void {
+    // Usage outside a turn is not attributable to one. Belt-and-braces:
+    // `startTurn` also clears `turnUsage`, so a replayed usage_update could
+    // never reach a turn-completed patch — this only keeps the no-active-turn
+    // guard uniform across every notification handler.
+    if (!this.activeTurnId) return;
     const used = numberOr(update.used, -1);
     const size = numberOr(update.size, -1);
     if (used < 0) return;

@@ -260,12 +260,12 @@ Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor C
 
 The Cursor channel transport is installed-tested with `cursor-agent` 2026.08.31-4057e58. The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
 
-Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are suppressed by the adapter to prevent duplicate timeline items.
+Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
 
 The adapter maps:
 
 - `session/update` notifications (`agent_message_chunk` -> `assistantMessage`, `agent_thought_chunk` -> `reasoning`, `tool_call` -> `commandExecution`/`fileChange`/`dynamicToolCall`, `usage_update` -> context occupancy telemetry)
-- `session/request_permission` peer requests -> Relay approval cards with `allow-once`/`allow-always`/`reject-once` outcomes
+- `session/request_permission` peer requests -> Relay approval cards with `allow-once`/`allow-always`/`reject-once` outcomes. `--yolo` does not suppress these on the ACP lane (probed 2026-09-02: the `--yolo` and no-flag requests are byte-identical), so `permissionMode: 'yolo'` auto-approves in the adapter — only ever with the `allow_once` option, and only when Cursor offers one. Every auto-grant is recorded as a `cursor` provider extension (`kind: 'permission_auto_approved'`); with no `allow_once` on the wire the request falls through to a normal approval card.
 - `cursor/ask_question` peer requests -> Relay question cards, answered with structured `{ questionId, selectedOptionIds }` selections
 - `cursor/create_plan` peer requests -> canonical Relay plan items, auto-accepted so execution proceeds without blocking
 - Provider extensions for `cursor/update_todos`, `cursor/task`, and `cursor/generate_image`
