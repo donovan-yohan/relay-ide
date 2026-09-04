@@ -40,6 +40,31 @@ refresh. Capabilities must describe only implemented behavior.
 | DeepSeek Harness | `dsh`         | `dsh --profile acp` Agent Client Protocol over stdio |
 | Cursor           | `cursor`      | `cursor-agent acp` Agent Client Protocol over stdio  |
 
+### Agent Client Protocol (ACP): shared base + harness profiles
+
+Relay has one shared ACP choreography layer:
+
+- `server/acp-client.ts`: provider-neutral newline-delimited JSON-RPC 2.0 stdio transport with bidirectional peer requests.
+- `server/protocol-adapters/acp-adapter.ts`: `AcpProtocolAdapter`, which implements the ACP turn choreography once and delegates harness quirks to an `AcpHarnessProfile`.
+
+**Quirk containment rule:** anything that depends on a specific harness’s ACP behavior stays in the `AcpHarnessProfile` (not a second adapter copy). The base owns the sequencing, queueing, replay suppression (no-active-turn guard), prompt boundaries, teardown, and the canonical item mapping defaults.
+
+Hooks used by shipped ACP harnesses today:
+
+- **dsh (`dsh --profile acp`)**:
+  - `resumeStrategy: 'resume'` (ACP `session/resume` lane).
+  - `buildEnv` (translates Relay permission mode into `DSH_PERMISSION_MODE`, and preserves env-only credentials).
+  - `selectPermissionOptionId` (dsh hard-codes `allow-once` / `reject-once` option ids).
+  - `mapToolCall` (dsh tool names are `bash`/`write`/`edit` plus dynamic tools).
+  - `onNotification` (surfaces `config_option_update` as a debug provider extension).
+- **cursor (`cursor-agent acp`)**:
+  - `authMethodId: 'cursor_login'`.
+  - `resumeStrategy: 'load'` (ACP `session/load` lane; history replay suppressed by the base no-active-turn guard).
+  - `permissionPolicy` (Cursor `--yolo` is inert on the ACP lane, so yolo auto-approval happens in the adapter).
+  - `selectPermissionOptionId` (permission selection is by `options[].kind` with fail-closed once-scope).
+  - `mapToolCall` (kind-based tool discrimination and unified-diff patch parsing).
+  - `onPeerRequest` / `onNotification` (Cursor vendor extension methods `cursor/*`).
+
 ### Prime Agent
 
 Prime Agent 0.9.1 is a first-class channel provider. Relay launches

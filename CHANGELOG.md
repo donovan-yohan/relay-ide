@@ -24,6 +24,10 @@ workflow.
 
 - First-class Cursor CLI channel adapter over the Agent Client Protocol (`cursor-agent acp`), enabling `@cursor` participation in channels, threads, and DMs with streaming text, reasoning thoughts, command executions, file changes, permission approvals, structured questions, canonical plans, and native session resumes (#1552).
 
+#### Changed
+
+- Extract shared Agent Client Protocol (`acp`) adapter choreography into `AcpProtocolAdapter` with per-harness `AcpHarnessProfile` hooks, and migrate the dsh and cursor adapters onto it with unchanged behavior and fixtures (#1554).
+
 ### Scoped CLI actor credentials across hub restart
 
 #### Fixed
