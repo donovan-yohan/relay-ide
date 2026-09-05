@@ -6797,6 +6797,7 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
     'parentMessageId',
     'threadId',
     'clientMessageId',
+    'expect',
   ]);
   const undeclared = Object.keys(input).find((key) => !allowed.has(key));
   if (undeclared) {
@@ -7056,7 +7057,43 @@ async function runGatewayChannelsMembership(
 }
 
 async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
-  const values = parseChannelCliFlags('channels.post', channelArgs, [
+  const deliveryExpect: string[] = [];
+  const filteredArgs: string[] = [];
+  for (let i = 0; i < channelArgs.length; i += 1) {
+    const arg = channelArgs[i];
+    if (arg === undefined) continue;
+    if (arg === '--expect') {
+      const value = channelArgs[i + 1];
+      if (value === undefined) {
+        gatewayInvalid('channels.post', '--expect requires a value', {
+          field: 'expect',
+        });
+        return;
+      }
+      if (!value.trim()) {
+        gatewayInvalid('channels.post', '--expect must be non-empty', {
+          field: 'expect',
+        });
+        return;
+      }
+      deliveryExpect.push(value);
+      i += 1;
+      continue;
+    }
+    if (arg?.startsWith('--expect=')) {
+      const value = arg.slice('--expect='.length);
+      if (!value.trim()) {
+        gatewayInvalid('channels.post', '--expect must be non-empty', {
+          field: 'expect',
+        });
+      }
+      deliveryExpect.push(value);
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  const values = parseChannelCliFlags('channels.post', filteredArgs, [
     '--input-json',
     '--channel-id',
     '--text',
@@ -7074,7 +7111,8 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
     '--parent-message-id',
     '--client-message-id',
   ] as const;
-  const hasFlagForm = flagFormFlags.some((flag) => values.has(flag));
+  const hasFlagForm =
+    deliveryExpect.length > 0 || flagFormFlags.some((flag) => values.has(flag));
   if (inputJson !== undefined && hasFlagForm) {
     gatewayInvalid(
       'channels.post',
@@ -7111,6 +7149,7 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
       if (value !== undefined) input[key] = value;
     }
   }
+  if (deliveryExpect.length > 0) input['expect'] = deliveryExpect;
   validateChannelPostCliInput(input);
   const channelId = input['channelId'] as string;
   const body = { ...input };

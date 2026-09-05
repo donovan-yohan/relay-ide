@@ -49,6 +49,7 @@ export type ChannelAsyncRunState =
   | 'input-required'
   | 'auth-required'
   | 'completed'
+  | 'completed_unmet'
   | 'failed'
   | 'cancelled'
   | 'rejected';
@@ -78,6 +79,25 @@ export interface ChannelAsyncRun {
   requesterId: string;
   state: ChannelAsyncRunState;
   reason?: string;
+  /**
+   * Optional delivery contract declared on the triggering `channels.post`
+   * request (#1569). Persisted on both the request message and the run.
+   */
+  deliveryContract?: {
+    expect: string[];
+    result?: {
+      met: boolean;
+      unmet: string[];
+      /**
+       * Expectations that could not be verified due to probe failures (e.g. git
+       * context unavailable, gh unauthenticated, regex budget exceeded). These
+       * never count as unmet and must not force `completed_unmet`.
+       */
+      unknown?: Array<{ spec: string; reason: string }>;
+      evaluatedAt: string;
+    };
+    followupPostedAt?: string;
+  };
   targets: ChannelAsyncRunTarget[];
   createdAt: string;
   updatedAt: string;
@@ -458,6 +478,7 @@ const TERMINAL_MESSAGE_STATUSES = new Set<ChannelMessageStatus>(
 );
 const TERMINAL_RUN_STATES = new Set<ChannelAsyncRunState>([
   'completed',
+  'completed_unmet',
   'failed',
   'cancelled',
   'rejected',
@@ -1681,6 +1702,7 @@ const ASYNC_RUN_STATES = new Set<ChannelAsyncRunState>([
   'input-required',
   'auth-required',
   'completed',
+  'completed_unmet',
   'failed',
   'cancelled',
   'rejected',

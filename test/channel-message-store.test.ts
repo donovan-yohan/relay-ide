@@ -137,7 +137,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(18);
+    ).toBe(19);
     expect(
       (
         inspect
@@ -607,7 +607,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(18);
+    ).toBe(19);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -795,7 +795,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(18);
+    ).toBe(19);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1010,6 +1010,110 @@ describe('channel-message-store schema migration', () => {
     ).toEqual(['chm:wal-keeper']);
     expect(migrated.getMessage('chm:wal-duplicate')).toBeNull();
   });
+
+  it('upgrades a v18 async-run ledger to v19 with delivery_contract_json + completed_unmet (#1569)', () => {
+    const file = dbPath();
+    const current = store(file);
+    current.close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX IF EXISTS idx_char_channel_created;
+      CREATE TABLE channel_async_runs_v18 (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+        request_message_id TEXT NOT NULL UNIQUE, requester_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+        reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO channel_async_runs_v18 (
+        id, channel_id, thread_id, request_message_id, requester_id,
+        state, reason, created_at, updated_at, completed_at
+      )
+      SELECT
+        id, channel_id, thread_id, request_message_id, requester_id,
+        state, reason, created_at, updated_at, completed_at
+      FROM channel_async_runs;
+      DROP TABLE channel_async_runs;
+      ALTER TABLE channel_async_runs_v18 RENAME TO channel_async_runs;
+      CREATE INDEX idx_char_channel_created
+        ON channel_async_runs(channel_id, created_at, id);
+
+      INSERT INTO channel_async_runs
+        (id, channel_id, thread_id, request_message_id, requester_id, state, reason, created_at, updated_at, completed_at)
+      VALUES
+        ('chrun:legacy-v18', 'topic:run-v19', NULL, 'chm:legacy', 'human:operator', 'completed', NULL,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO channel_async_run_targets
+        (run_id, target_id, state, reason, approval_state, updated_at, completed_at)
+      VALUES
+        ('chrun:legacy-v18', 'agent-profile:mock:default', 'completed', NULL, NULL,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+
+      UPDATE schema_version SET version = 18;
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    migrated.appendCompleteWithAsyncRun({
+      channelId: 'topic:run-v19',
+      sender: HUMAN,
+      text: '@mock ship',
+      mentions: [
+        {
+          raw: '@mock',
+          providerId: 'mock',
+          profileId: 'agent-profile:mock:default',
+        },
+      ],
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['file:missing.txt'] },
+      meta: { deliveryContract: { expect: ['file:missing.txt'] } },
+    });
+    migrated.close();
+
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(19);
+    expect(
+      (
+        inspect
+          .prepare('PRAGMA table_info(channel_async_runs)')
+          .all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name)
+    ).toContain('delivery_contract_json');
+
+    expect(
+      inspect
+        .prepare(
+          `SELECT id, state, delivery_contract_json FROM channel_async_runs WHERE id = ?`
+        )
+        .get('chrun:legacy-v18')
+    ).toEqual({
+      id: 'chrun:legacy-v18',
+      state: 'completed',
+      delivery_contract_json: null,
+    });
+
+    expect(() => {
+      inspect
+        .prepare(
+          `INSERT INTO channel_async_runs
+            (id, channel_id, thread_id, request_message_id, requester_id, state, reason, delivery_contract_json, created_at, updated_at, completed_at)
+          VALUES
+            ('chrun:unmet', 'topic:run-v19', NULL, 'chm:unmet', 'human:operator', 'completed_unmet', 'delivery-contract-unmet', NULL,
+             '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`
+        )
+        .run();
+    }).not.toThrow();
+  });
 });
 
 describe('channel-message-store async-run migration (#1391)', () => {
@@ -1039,7 +1143,7 @@ describe('channel-message-store async-run migration (#1391)', () => {
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
     expect(inspect.prepare('SELECT version FROM schema_version').get()).toEqual(
-      { version: 18 }
+      { version: 19 }
     );
     expect(
       inspect
@@ -3722,7 +3826,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(18);
+    expect(version.version).toBe(19);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -5241,7 +5345,7 @@ describe('channel-message-store invite and removal (#1455 slice 2)', () => {
           version: number;
         }
       ).version
-    ).toBe(18);
+    ).toBe(19);
     expect(upgraded.listMembers('topic:v17')).toEqual([
       expect.objectContaining({
         id: 'agent:claude',

@@ -2723,6 +2723,9 @@ function makeBinder(cfg: {
   processEnv?: NodeJS.ProcessEnv;
   storePath?: string;
   now?: () => number;
+  deliveryContractProbeFactory?: Parameters<
+    typeof createChannelAgentBinder
+  >[0]['deliveryContractProbeFactory'];
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -2761,6 +2764,9 @@ function makeBinder(cfg: {
     ...(cfg.yolo !== undefined ? { yolo: cfg.yolo } : {}),
     ...(cfg.processEnv !== undefined ? { processEnv: cfg.processEnv } : {}),
     ...(cfg.now !== undefined ? { now: cfg.now } : {}),
+    ...(cfg.deliveryContractProbeFactory
+      ? { deliveryContractProbeFactory: cfg.deliveryContractProbeFactory }
+      : {}),
   });
   cleanup.push(() => binder.close());
   return { binder, store, hub, sessions };
@@ -4608,6 +4614,417 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(store.getBinding(CH, profileActorId)?.providerSession).toEqual({
       threadId: 'durable-provider-thread',
     });
+  });
+
+  it('marks a completed run as completed_unmet and posts one follow-up when delivery contract is unmet (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['pr:feat/x'] },
+      meta: { deliveryContract: { expect: ['pr:feat/x'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+    await waitFor(() => {
+      const run = store.getAsyncRun(result.run.id);
+      return run?.state === 'completed_unmet';
+    });
+
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.state).toBe('completed_unmet');
+    expect(run.deliveryContract?.result?.met).toBe(false);
+    expect(run.deliveryContract?.result?.unmet).toEqual(['pr:feat/x']);
+    expect(run.deliveryContract?.result?.unknown ?? []).toEqual([]);
+    expect(run.deliveryContract?.followupPostedAt).toBeTruthy();
+
+    const sys = systemRows(store).map((m) => m.body.text);
+    expect(sys.some((t) => t.includes('Delivery contract unmet'))).toBe(true);
+    expect(
+      sys.filter((t) => t.includes('Turn ended with contract unmet')).length
+    ).toBe(1);
+  });
+
+  it('keeps a run completed when the delivery contract cannot be verified (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({
+            kind: 'unknown',
+            reason: 'not a git repository',
+          }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({
+            kind: 'unknown',
+            reason: 'gh unauthenticated',
+          }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['commit', 'pr:feat/x'] },
+      meta: { deliveryContract: { expect: ['commit', 'pr:feat/x'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+    await waitFor(() => {
+      const run = store.getAsyncRun(result.run.id);
+      return (
+        run?.state === 'completed' && Boolean(run.deliveryContract?.result)
+      );
+    });
+
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.state).toBe('completed');
+    expect(run.deliveryContract?.result?.unmet ?? []).toEqual([]);
+    expect(run.deliveryContract?.result?.unknown?.length ?? 0).toBeGreaterThan(
+      0
+    );
+    expect(run.deliveryContract?.followupPostedAt).toBeFalsy();
+
+    const sys = systemRows(store).map((m) => m.body.text);
+    expect(
+      sys.some((t) => t.includes('Delivery contract could not verify'))
+    ).toBe(true);
+    expect(sys.some((t) => t.includes('Turn ended with contract unmet'))).toBe(
+      false
+    );
+  });
+
+  it('keeps a run completed and does not follow-up when the delivery contract is met (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 1 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: true }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['text:done'] },
+      meta: { deliveryContract: { expect: ['text:done'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+    await waitFor(() => {
+      const run = store.getAsyncRun(result.run.id);
+      return (
+        run?.state === 'completed' && Boolean(run.deliveryContract?.result)
+      );
+    });
+
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.state).toBe('completed');
+    expect(run.deliveryContract?.result?.met).toBe(true);
+    expect(run.deliveryContract?.followupPostedAt).toBeFalsy();
+    const sys = systemRows(store).map((m) => m.body.text);
+    expect(sys.some((t) => t.includes('Delivery contract unmet'))).toBe(false);
+    expect(sys.some((t) => t.includes('Turn ended with contract unmet'))).toBe(
+      false
+    );
+  });
+
+  it('does not consume a MAX_CONSECUTIVE_AGENT_TURNS slot when routing the follow-up (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['pr:feat/x'] },
+      meta: { deliveryContract: { expect: ['pr:feat/x'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('Turn ended with contract unmet')
+      )
+    );
+
+    const baseline = agentReplies(store, 'mock').length;
+    for (let i = 0; i < MAX_CONSECUTIVE_AGENT_TURNS; i += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `post-followup-${i}`,
+        'item-0',
+        `@mock agent turn ${i}`,
+        ['mock'],
+        'session:not-registered',
+        AGENT_SENDER
+      );
+    }
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        baseline + MAX_CONSECUTIVE_AGENT_TURNS
+    );
+    expect(
+      systemRows(store).some((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    ).toBe(false);
+
+    postAgentTurnRow(
+      store,
+      binder,
+      'post-followup-cap',
+      'item-0',
+      '@mock should be braked',
+      ['mock'],
+      'session:not-registered',
+      AGENT_SENDER
+    );
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    );
+    const pause = systemRows(store).find((m) =>
+      m.body.text.includes('Mention chain paused')
+    );
+    expect(pause?.body.text).toContain(
+      `Mention chain paused — ${MAX_CONSECUTIVE_AGENT_TURNS} agent turns without a human.`
+    );
+  });
+
+  it('does not route a follow-up when the channel is paused (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }, { id: 'b' }]);
+
+    const deferred = new DeferredAdapter('mock');
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        agentType === 'mock'
+          ? deferred
+          : new ScriptedAdapter(agentType, { mode: 'reply', text: 'ok' }),
+      targets: [
+        {
+          id: 'mock',
+          displayName: 'Mock',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        {
+          id: 'b',
+          displayName: 'B',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['mock', 'b'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock', 'b']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['pr:feat/x'] },
+      meta: { deliveryContract: { expect: ['pr:feat/x'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+    await waitFor(() => deferred.sendInputs.length === 1);
+
+    for (let i = 0; i < MAX_CONSECUTIVE_AGENT_TURNS + 1; i += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `pause-${i}`,
+        'item-0',
+        `@b pause me ${i}`,
+        ['b'],
+        'session:not-registered',
+        AGENT_SENDER
+      );
+    }
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    );
+    const pauseRowsBefore = systemRows(store).filter((m) =>
+      m.body.text.includes('Mention chain paused')
+    ).length;
+
+    deferred.completeReply(deferred.sendCalls[0]!, 'done');
+
+    await waitFor(
+      () => store.getAsyncRun(result.run.id)?.state === 'completed_unmet'
+    );
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.deliveryContract?.followupPostedAt).toBeFalsy();
+
+    await waitFor(() => {
+      const rows = systemRows(store).filter((m) =>
+        m.body.text.includes('Mention chain paused')
+      );
+      return rows.length === pauseRowsBefore + 1;
+    });
+    expect(deferred.sendInputs).toHaveLength(1);
+  });
+
+  it('records a could-not-verify result and posts a system row when evaluation throws (#1569)', async () => {
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', handler);
+    try {
+      const profiles = createAgentProfileStore(':memory:');
+      cleanup.push(() => profiles.close());
+      profiles.seedBuiltIns([{ id: 'mock' }]);
+
+      const { binder, store } = makeBinder({
+        build: (agentType) =>
+          new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+        targets: MOCK_TARGETS,
+        knownProviderIds: ['mock'],
+        agentProfileStore: profiles,
+        deliveryContractProbeFactory: () => ({
+          git: {
+            currentBranch: async () => {
+              throw new Error('git probe exploded');
+            },
+            aheadCount: async () => ({ kind: 'ok', value: 0 }),
+          },
+          pr: {
+            hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+          },
+        }),
+      });
+
+      const mentions = parseMentions('@mock please ship', ['mock']);
+      const result = store.appendCompleteWithAsyncRun({
+        channelId: CH,
+        sender: OPERATOR,
+        text: '@mock please ship',
+        mentions,
+        targetIds: [builtInAgentProfileId('mock')],
+        deliveryContract: { expect: ['pr'] },
+        meta: { deliveryContract: { expect: ['pr'] } },
+      });
+      binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+      await waitFor(() => {
+        const run = store.getAsyncRun(result.run.id);
+        return (
+          run?.state === 'completed' && Boolean(run.deliveryContract?.result)
+        );
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).toEqual([]);
+      const run = store.getAsyncRun(result.run.id)!;
+      expect(
+        run.deliveryContract?.result?.unknown?.length ?? 0
+      ).toBeGreaterThan(0);
+      expect(
+        systemRows(store).some((m) =>
+          m.body.text.includes('Delivery contract could not verify')
+        )
+      ).toBe(true);
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
   });
 });
 
