@@ -43,6 +43,13 @@ test/workspace-divergence-api.test.ts
 # them so vitest sees the same env as a normal `npm test`.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
+# Relay sessions export RELAY_* / RELAY_IDE_* env vars for interactive shells.
+# Unit tests assert these are absent in non-Relay processes; the pre-push hook
+# must not leak them into vitest workers.
+for key in $(env | cut -d= -f1 | grep '^RELAY_'); do
+  unset "$key"
+done
+
 PREPUSH_VITEST_EXCLUDES=""
 for file in $PREPUSH_EXCLUDE_FILES; do
   PREPUSH_VITEST_EXCLUDES="$PREPUSH_VITEST_EXCLUDES --exclude $file"
