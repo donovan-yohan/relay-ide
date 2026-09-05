@@ -1010,6 +1010,73 @@ describe('channel-message-store schema migration', () => {
     ).toEqual(['chm:wal-keeper']);
     expect(migrated.getMessage('chm:wal-duplicate')).toBeNull();
   });
+
+  it('upgrades a v18 async-run ledger to v19 with delivery_contract_json + completed_unmet (#1569)', () => {
+    const file = dbPath();
+    const current = store(file);
+    current.close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX IF EXISTS idx_char_channel_created;
+      CREATE TABLE channel_async_runs_v18 (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+        request_message_id TEXT NOT NULL UNIQUE, requester_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+        reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO channel_async_runs_v18 (
+        id, channel_id, thread_id, request_message_id, requester_id,
+        state, reason, created_at, updated_at, completed_at
+      )
+      SELECT
+        id, channel_id, thread_id, request_message_id, requester_id,
+        state, reason, created_at, updated_at, completed_at
+      FROM channel_async_runs;
+      DROP TABLE channel_async_runs;
+      ALTER TABLE channel_async_runs_v18 RENAME TO channel_async_runs;
+      CREATE INDEX idx_char_channel_created
+        ON channel_async_runs(channel_id, created_at, id);
+      UPDATE schema_version SET version = 18;
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    migrated.appendCompleteWithAsyncRun({
+      channelId: 'topic:run-v19',
+      sender: HUMAN,
+      text: '@mock ship',
+      mentions: [
+        {
+          raw: '@mock',
+          providerId: 'mock',
+          profileId: 'agent-profile:mock:default',
+        },
+      ],
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['file:missing.txt'] },
+      meta: { deliveryContract: { expect: ['file:missing.txt'] } },
+    });
+
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(19);
+    expect(
+      (
+        inspect
+          .prepare('PRAGMA table_info(channel_async_runs)')
+          .all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name)
+    ).toContain('delivery_contract_json');
+  });
 });
 
 describe('channel-message-store async-run migration (#1391)', () => {
