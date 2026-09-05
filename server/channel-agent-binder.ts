@@ -4179,6 +4179,17 @@ export function createChannelAgentBinder(
       );
       if (alreadyFollowedUp) return;
 
+      const scopeKey = conversationScopeKey(binding.channelId, run.threadId);
+      const brakeState = consecutiveAgentTurns.get(scopeKey);
+      if (brakeState?.paused) {
+        postSystemRow(
+          binding.channelId,
+          `Mention chain paused — ${brakeState.count} agent turns without a human.`,
+          { parentMessageId }
+        );
+        return;
+      }
+
       const followupText = `Turn ended with contract unmet: ${evaluation.unmet.join(
         ', '
       )}. @${binding.displayName} finish it.`;
@@ -4202,9 +4213,30 @@ export function createChannelAgentBinder(
       });
       if (withFollowup) hub.broadcastRunLifecycle(withFollowup);
     } catch (err) {
-      logger.warn(
-        'channel binder delivery-contract evaluation failed:',
-        err instanceof Error ? err.message : String(err)
+      const message = err instanceof Error ? err.message : String(err);
+      const expect = run.deliveryContract?.expect ?? [];
+      if (expect.length === 0 || run.deliveryContract?.result) {
+        logger.warn(
+          'channel binder delivery-contract evaluation failed:',
+          message
+        );
+        return;
+      }
+      const evaluatedAt = new Date(now()).toISOString();
+      const unknown = expect.map((spec) => ({ spec, reason: message }));
+      const updated = store.finalizeAsyncRunDeliveryContract({
+        runId: run.id,
+        result: { met: false, unmet: [], unknown, evaluatedAt },
+      });
+      if (updated) hub.broadcastRunLifecycle(updated);
+
+      const parentMessageId = parentForTurn(binding, turnId);
+      postSystemRow(
+        binding.channelId,
+        `Delivery contract could not verify: ${unknown
+          .map((u) => `${u.spec}: ${u.reason}`)
+          .join(', ')}`,
+        { parentMessageId }
       );
     }
   }

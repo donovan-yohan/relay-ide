@@ -4951,15 +4951,8 @@ describe('channel-agent-binder — lifecycle', () => {
     await waitFor(
       () => store.getAsyncRun(result.run.id)?.state === 'completed_unmet'
     );
-    const followup = systemRows(store).find((m) =>
-      Boolean(
-        (m.meta as Record<string, unknown> | undefined)?.[
-          'deliveryContractFollowup'
-        ]
-      )
-    );
-    expect(followup).toBeTruthy();
-    if (followup) binder.handleMessagePosted(followup, []);
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.deliveryContract?.followupPostedAt).toBeFalsy();
 
     await waitFor(() => {
       const rows = systemRows(store).filter((m) =>
@@ -4970,7 +4963,7 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(deferred.sendInputs).toHaveLength(1);
   });
 
-  it('swallows exceptions thrown during delivery-contract evaluation (#1569)', async () => {
+  it('records a could-not-verify result and posts a system row when evaluation throws (#1569)', async () => {
     const unhandled: unknown[] = [];
     const handler = (reason: unknown) => {
       unhandled.push(reason);
@@ -5012,11 +5005,23 @@ describe('channel-agent-binder — lifecycle', () => {
       });
       binder.handleMessagePosted(result.message, result.message.mentions ?? []);
 
-      await waitFor(
-        () => store.getAsyncRun(result.run.id)?.state === 'completed'
-      );
+      await waitFor(() => {
+        const run = store.getAsyncRun(result.run.id);
+        return (
+          run?.state === 'completed' && Boolean(run.deliveryContract?.result)
+        );
+      });
       await new Promise((r) => setTimeout(r, 50));
       expect(unhandled).toEqual([]);
+      const run = store.getAsyncRun(result.run.id)!;
+      expect(
+        run.deliveryContract?.result?.unknown?.length ?? 0
+      ).toBeGreaterThan(0);
+      expect(
+        systemRows(store).some((m) =>
+          m.body.text.includes('Delivery contract could not verify')
+        )
+      ).toBe(true);
     } finally {
       process.off('unhandledRejection', handler);
     }

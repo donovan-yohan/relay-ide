@@ -357,6 +357,36 @@ describe('channels.post CLI gateway command', () => {
     });
   });
 
+  it('rejects mixing --input-json with --expect (delivery contract flag form)', async () => {
+    const mixed = await runCliFailure(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--input-json',
+        JSON.stringify({ channelId: 'topic:one', text: 'ok' }),
+        '--expect',
+        'pr',
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(mixed).toMatchObject({
+      ok: false,
+      command: 'channels.post',
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: { field: 'inputJson' },
+      },
+    });
+  });
+
   it('gets one opaque run through the context-read actor lane', async () => {
     const { envelope, request } = await runCli(
       [

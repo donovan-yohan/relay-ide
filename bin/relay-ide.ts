@@ -7111,7 +7111,8 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
     '--parent-message-id',
     '--client-message-id',
   ] as const;
-  const hasFlagForm = flagFormFlags.some((flag) => values.has(flag));
+  const hasFlagForm =
+    deliveryExpect.length > 0 || flagFormFlags.some((flag) => values.has(flag));
   if (inputJson !== undefined && hasFlagForm) {
     gatewayInvalid(
       'channels.post',
