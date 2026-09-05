@@ -622,8 +622,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       this.queued.drain();
     }, timeoutMs);
     // Do not hold the process open on a watchdog.
-    const maybeUnref = (timer as unknown as { unref?: () => void }).unref;
-    if (typeof maybeUnref === 'function') maybeUnref();
+    (timer as unknown as { unref?: () => void }).unref?.();
     this.firstUpdateTimer = timer;
   }
 
