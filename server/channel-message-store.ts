@@ -75,7 +75,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 const ASYNC_RUN_SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
@@ -899,8 +899,9 @@ CREATE TABLE IF NOT EXISTS channel_async_runs (
   thread_id          TEXT,
   request_message_id TEXT NOT NULL UNIQUE,
   requester_id       TEXT NOT NULL,
-  state              TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+  state              TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','completed_unmet','failed','cancelled','rejected')),
   reason             TEXT,
+  delivery_contract_json TEXT,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL,
   completed_at       TEXT
@@ -1046,6 +1047,7 @@ interface AsyncRunRow {
   requester_id: string;
   state: ChannelAsyncRunState;
   reason: string | null;
+  delivery_contract_json: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -1093,6 +1095,10 @@ export interface AppendCompleteInput {
 export interface CreateChannelAsyncRunPostInput extends AppendCompleteInput {
   /** Resolved Relay profile actors; provider ids are not persisted publicly. */
   targetIds: readonly string[];
+  /** Optional delivery contract (#1569), persisted on the run record. */
+  deliveryContract?: {
+    expect: string[];
+  };
 }
 
 export interface BeginStreamInput {
@@ -1495,6 +1501,12 @@ export interface ChannelMessageStore {
     state: ChannelAsyncRunTargetState;
     reason?: string;
     approvalState?: ChannelAsyncRunApprovalState;
+  }): ChannelAsyncRun | null;
+  /** Finalize the delivery contract on a settled run (#1569). */
+  finalizeAsyncRunDeliveryContract(input: {
+    runId: ChannelAsyncRunId;
+    result: { met: boolean; unmet: string[]; evaluatedAt: string };
+    followupPostedAt?: string;
   }): ChannelAsyncRun | null;
   beginStream(input: BeginStreamInput): ChannelMessage;
   updateStreamText(id: string, text: string): ChannelMessage | null;
@@ -3519,6 +3531,38 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 18').run();
     })();
   }
+  if (current < 19) {
+    db.transaction(() => {
+      // #1569: delivery contract for channel turns — widen run terminal states
+      // and persist the declared contract + its evaluation result on the run.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_char_channel_created;
+        CREATE TABLE channel_async_runs_v19 (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL,
+          thread_id TEXT,
+          request_message_id TEXT NOT NULL UNIQUE,
+          requester_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','completed_unmet','failed','cancelled','rejected')),
+          reason TEXT,
+          delivery_contract_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        INSERT INTO channel_async_runs_v19 (
+          id, channel_id, thread_id, request_message_id, requester_id, state, reason, delivery_contract_json, created_at, updated_at, completed_at
+        )
+        SELECT id, channel_id, thread_id, request_message_id, requester_id, state, reason, NULL, created_at, updated_at, completed_at
+        FROM channel_async_runs;
+        DROP TABLE channel_async_runs;
+        ALTER TABLE channel_async_runs_v19 RENAME TO channel_async_runs;
+        CREATE INDEX idx_char_channel_created
+          ON channel_async_runs(channel_id, created_at, id);
+      `);
+      db.prepare('UPDATE schema_version SET version = 19').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -4305,6 +4349,13 @@ export function createChannelMessageStore(
       requesterId: row.requester_id,
       state: row.state,
       ...(row.reason ? { reason: row.reason } : {}),
+      ...(row.delivery_contract_json
+        ? {
+            deliveryContract: JSON.parse(
+              row.delivery_contract_json
+            ) as NonNullable<ChannelAsyncRun['deliveryContract']>,
+          }
+        : {}),
       targets: targets.map(
         (target): ChannelAsyncRunTarget => ({
           targetId: target.target_id,
@@ -4386,8 +4437,8 @@ export function createChannelMessageStore(
       const runId = `chrun:${crypto.randomUUID()}` as ChannelAsyncRunId;
       db.prepare(
         `INSERT INTO channel_async_runs
-           (id, channel_id, thread_id, request_message_id, requester_id, state, reason, created_at, updated_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (id, channel_id, thread_id, request_message_id, requester_id, state, reason, delivery_contract_json, created_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         runId,
         message.channelId,
@@ -4396,6 +4447,7 @@ export function createChannelMessageStore(
         message.sender.id,
         state,
         targetIds.length === 0 ? 'no-eligible-target' : null,
+        input.deliveryContract ? JSON.stringify(input.deliveryContract) : null,
         now,
         now,
         targetIds.length === 0 ? now : null
@@ -4459,6 +4511,7 @@ export function createChannelMessageStore(
       const state = aggregateAsyncRunState(targets);
       const runTerminal = [
         'completed',
+        'completed_unmet',
         'failed',
         'cancelled',
         'rejected',
@@ -4471,11 +4524,63 @@ export function createChannelMessageStore(
     }
   );
 
+  const finalizeAsyncRunDeliveryContractImpl = db.transaction(
+    (input: {
+      runId: ChannelAsyncRunId;
+      result: { met: boolean; unmet: string[]; evaluatedAt: string };
+      followupPostedAt?: string;
+    }): ChannelAsyncRun | null => {
+      const run = selectAsyncRun.get(input.runId) as AsyncRunRow | undefined;
+      if (!run) return null;
+      if (!run.delivery_contract_json) return asyncRunFromRow(run);
+
+      let contract: NonNullable<ChannelAsyncRun['deliveryContract']>;
+      try {
+        contract = JSON.parse(run.delivery_contract_json) as NonNullable<
+          ChannelAsyncRun['deliveryContract']
+        >;
+      } catch {
+        return asyncRunFromRow(run);
+      }
+      if (!contract || !Array.isArray(contract.expect))
+        return asyncRunFromRow(run);
+
+      const next: NonNullable<ChannelAsyncRun['deliveryContract']> = {
+        ...contract,
+        // Keep an existing result if one is already recorded.
+        ...(contract.result
+          ? { result: contract.result }
+          : { result: input.result }),
+        ...(input.followupPostedAt && !contract.followupPostedAt
+          ? { followupPostedAt: input.followupPostedAt }
+          : {}),
+      };
+
+      const met = next.result?.met === true;
+      const wantsUnmet =
+        !met &&
+        run.state === 'completed' &&
+        Array.isArray(next.result?.unmet) &&
+        next.result!.unmet.length > 0;
+      const nextState: ChannelAsyncRunState = wantsUnmet
+        ? 'completed_unmet'
+        : run.state;
+      const nextReason = wantsUnmet ? 'delivery-contract-unmet' : run.reason;
+      const now = nowIso();
+      db.prepare(
+        `UPDATE channel_async_runs
+            SET state = ?, reason = ?, delivery_contract_json = ?, updated_at = ?
+          WHERE id = ?`
+      ).run(nextState, nextReason ?? null, JSON.stringify(next), now, run.id);
+      return asyncRunFromRow(selectAsyncRun.get(run.id) as AsyncRunRow);
+    }
+  );
+
   const recoverAsyncRunsImpl = db.transaction((): ChannelAsyncRun[] => {
     const rows = db
       .prepare(
         `SELECT * FROM channel_async_runs
-          WHERE state NOT IN ('completed','failed','cancelled','rejected')`
+          WHERE state NOT IN ('completed','completed_unmet','failed','cancelled','rejected')`
       )
       .all() as AsyncRunRow[];
     if (rows.length === 0) return [];
@@ -4509,7 +4614,7 @@ export function createChannelMessageStore(
       const ids = db
         .prepare(
           `SELECT id FROM channel_async_runs
-          WHERE state IN ('completed','failed','cancelled','rejected')
+          WHERE state IN ('completed','completed_unmet','failed','cancelled','rejected')
             AND completed_at IS NOT NULL AND completed_at < ?`
         )
         .all(cutoff) as Array<{ id: string }>;
@@ -5246,6 +5351,10 @@ export function createChannelMessageStore(
 
     transitionAsyncRunTarget(input) {
       return transitionAsyncRunTargetImpl(input);
+    },
+
+    finalizeAsyncRunDeliveryContract(input) {
+      return finalizeAsyncRunDeliveryContractImpl(input);
     },
 
     beginStream(input) {

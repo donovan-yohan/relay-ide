@@ -83,6 +83,10 @@ import {
   type ChannelReadStateUpdateResponse,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
+import {
+  ChannelDeliveryContractParseError,
+  parseChannelDeliveryContract,
+} from '../shared/channel-delivery-contract.js';
 
 import {
   DEFAULT_ORCHESTRATOR_PROVIDER_ID,
@@ -1046,6 +1050,7 @@ function rejectInvalidActorChannelPostBody(
     'parentMessageId',
     'threadId',
     'clientMessageId',
+    'expect',
   ]);
   const undeclared = Object.keys(body).find((field) => !allowed.has(field));
   if (undeclared) {
@@ -1110,6 +1115,23 @@ function rejectInvalidActorChannelPostBody(
       { field: 'threadId', reasonCode: 'CHANNEL_ACTOR_POST_ALIAS_INVALID' }
     );
     return true;
+  }
+  if (body['expect'] !== undefined) {
+    const value = body['expect'];
+    if (
+      !Array.isArray(value) ||
+      value.length === 0 ||
+      value.some((spec) => typeof spec !== 'string' || spec.trim().length === 0)
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'expect must be a non-empty array of strings',
+        false,
+        { field: 'expect', reasonCode: 'CHANNEL_ACTOR_POST_EXPECT_INVALID' }
+      );
+      return true;
+    }
   }
   return false;
 }
@@ -1375,6 +1397,7 @@ function postToChannel(
      */
     steering?: ChannelPostSteering;
     targetIds: readonly string[];
+    deliveryContractExpect?: string[] | undefined;
   }
 ): {
   message: ChannelMessage;
@@ -1396,6 +1419,14 @@ function postToChannel(
     ...(input.parts?.length ? { parts: input.parts } : {}),
     ...(input.sourceRuntimeId
       ? { source: { runtimeId: input.sourceRuntimeId } }
+      : {}),
+    ...(input.deliveryContractExpect && input.deliveryContractExpect.length > 0
+      ? {
+          meta: {
+            deliveryContract: { expect: input.deliveryContractExpect },
+          },
+          deliveryContract: { expect: input.deliveryContractExpect },
+        }
       : {}),
     targetIds: input.targetIds,
   });
@@ -2372,6 +2403,12 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       ? suppliedSteering
       : undefined;
 
+    const deliveryContractExpect = readDeliveryContractExpectOrRespond(
+      res,
+      body
+    );
+    if (deliveryContractExpect === null) return;
+
     const credential = authenticatedCliGatewayActorCredential(req);
     const sourceRuntimeId = authenticatedSourceRuntimeId(
       credential,
@@ -2422,6 +2459,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         targetIds,
         ...(parts.length ? { parts } : {}),
         ...(steering ? { steering } : {}),
+        ...(deliveryContractExpect && deliveryContractExpect.length > 0
+          ? { deliveryContractExpect }
+          : {}),
       });
       if (result.replayed && steering) {
         deps.binder?.steerExisting(result.message, steering);
@@ -2436,6 +2476,45 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       mapStoreError(res, error);
     }
   });
+
+  function readDeliveryContractExpectOrRespond(
+    res: Response,
+    body: Record<string, unknown>
+  ): string[] | undefined | null {
+    const rawExpect = body['expect'];
+    if (rawExpect === undefined) return undefined;
+    if (
+      !Array.isArray(rawExpect) ||
+      rawExpect.length === 0 ||
+      rawExpect.some((spec) => typeof spec !== 'string')
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'expect must be a non-empty array of strings',
+        false,
+        { field: 'expect', reasonCode: 'CHANNEL_EXPECT_INVALID' }
+      );
+      return null;
+    }
+    try {
+      const parsed = parseChannelDeliveryContract(rawExpect);
+      return parsed?.expect;
+    } catch (err) {
+      const message =
+        err instanceof ChannelDeliveryContractParseError
+          ? err.message
+          : 'expect contract is invalid';
+      const details =
+        err instanceof ChannelDeliveryContractParseError ? err.details : {};
+      sendGatewayError(res, 'INVALID_ARGUMENT', message, false, {
+        field: 'expect',
+        reasonCode: 'CHANNEL_EXPECT_INVALID',
+        ...details,
+      });
+      return null;
+    }
+  }
 
   // #1308 slice 1 item 3: the operator edits one of their OWN durable rows.
   //

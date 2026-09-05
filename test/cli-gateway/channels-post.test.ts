@@ -121,6 +121,7 @@ describe('channels.post CLI gateway command', () => {
       '--text',
       '<text>',
       '[--format <text|markdown>]',
+      '[--expect <spec>]',
       '[--thread-id <id|null>]',
       '[--parent-message-id <id>]',
       '[--client-message-id <id>]',
@@ -139,6 +140,7 @@ describe('channels.post CLI gateway command', () => {
         parentMessageId: { type: 'string' },
         threadId: { type: ['string', 'null'] },
         clientMessageId: { type: 'string' },
+        expect: { type: 'array' },
       },
     });
     expect(spec.inputSchema.properties).not.toHaveProperty('parts');
@@ -267,6 +269,38 @@ describe('channels.post CLI gateway command', () => {
       },
     });
     expect(request.body).not.toHaveProperty('channelId');
+  });
+
+  it('accepts repeatable --expect and forwards it as expect[]', async () => {
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--channel-id',
+        'product/main',
+        '--text',
+        'Ship it.',
+        '--expect',
+        'commit',
+        '--expect',
+        'file:README.md',
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({ ok: true, command: 'channels.post' });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/channels/product%2Fmain/messages',
+      body: { text: 'Ship it.', expect: ['commit', 'file:README.md'] },
+    });
   });
 
   it('keeps --input-json unchanged and rejects mixing it with the flag form', async () => {

@@ -6658,7 +6658,8 @@ type ChannelCliValueFlag =
   | '--format'
   | '--parent-message-id'
   | '--client-message-id'
-  | '--input-json';
+  | '--input-json'
+  | '--expect';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
 function parseChannelCliFlags(
@@ -6694,6 +6695,53 @@ function parseChannelCliFlags(
     index += 1;
   }
   return values;
+}
+
+function parseChannelCliFlagsWithRepeats(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: readonly string[],
+  valueFlags: readonly ChannelCliValueFlag[],
+  repeatableFlags: readonly ChannelCliValueFlag[]
+): {
+  values: ReadonlyMap<ChannelCliValueFlag, string>;
+  repeats: ReadonlyMap<ChannelCliValueFlag, string[]>;
+} {
+  const allowed = new Set<string>(['--json', ...valueFlags]);
+  const repeatable = new Set<string>(repeatableFlags);
+  const seen = new Set<string>();
+  const values = new Map<ChannelCliValueFlag, string>();
+  const repeats = new Map<ChannelCliValueFlag, string[]>();
+  for (let index = 0; index < commandArgs.length; index += 1) {
+    const flag = commandArgs[index];
+    if (!flag || !allowed.has(flag)) {
+      gatewayInvalid(commandName, `unsupported ${commandName} argument`, {
+        argument: flag,
+        allowed: [...allowed],
+      });
+    }
+    if (flag === '--json') continue;
+    const value = commandArgs[index + 1];
+    if (!value || value.startsWith('--')) {
+      gatewayInvalid(commandName, `${flag} requires a value`, {
+        argument: flag,
+      });
+    }
+    if (repeatable.has(flag)) {
+      const bucket = repeats.get(flag as ChannelCliValueFlag) ?? [];
+      bucket.push(value);
+      repeats.set(flag as ChannelCliValueFlag, bucket);
+    } else {
+      if (seen.has(flag)) {
+        gatewayInvalid(commandName, `duplicate ${flag} is not allowed`, {
+          argument: flag,
+        });
+      }
+      seen.add(flag);
+      values.set(flag as ChannelCliValueFlag, value);
+    }
+    index += 1;
+  }
+  return { values, repeats };
 }
 
 function requiredChannelCliString(
@@ -6797,6 +6845,7 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
     'parentMessageId',
     'threadId',
     'clientMessageId',
+    'expect',
   ]);
   const undeclared = Object.keys(input).find((key) => !allowed.has(key));
   if (undeclared) {
@@ -6848,6 +6897,20 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
       'threadId must be a non-empty string or null',
       { field: 'threadId' }
     );
+  }
+  if (input['expect'] !== undefined) {
+    if (
+      !Array.isArray(input['expect']) ||
+      (input['expect'] as unknown[]).some(
+        (spec) => typeof spec !== 'string' || spec.trim().length === 0
+      )
+    ) {
+      gatewayInvalid(
+        'channels.post',
+        'expect must be an array of non-empty strings',
+        { field: 'expect' }
+      );
+    }
   }
 }
 
@@ -7056,15 +7119,23 @@ async function runGatewayChannelsMembership(
 }
 
 async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
-  const values = parseChannelCliFlags('channels.post', channelArgs, [
-    '--input-json',
-    '--channel-id',
-    '--text',
-    '--format',
-    '--thread-id',
-    '--parent-message-id',
-    '--client-message-id',
-  ]);
+  const parsed = parseChannelCliFlagsWithRepeats(
+    'channels.post',
+    channelArgs,
+    [
+      '--input-json',
+      '--channel-id',
+      '--text',
+      '--format',
+      '--thread-id',
+      '--parent-message-id',
+      '--client-message-id',
+      '--expect',
+    ],
+    ['--expect']
+  );
+  const values = parsed.values;
+  const expectSpecs = parsed.repeats.get('--expect') ?? [];
   const inputJson = values.get('--input-json');
   const flagFormFlags = [
     '--channel-id',
@@ -7074,7 +7145,8 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
     '--parent-message-id',
     '--client-message-id',
   ] as const;
-  const hasFlagForm = flagFormFlags.some((flag) => values.has(flag));
+  const hasFlagForm =
+    flagFormFlags.some((flag) => values.has(flag)) || expectSpecs.length > 0;
   if (inputJson !== undefined && hasFlagForm) {
     gatewayInvalid(
       'channels.post',
@@ -7110,6 +7182,7 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
       const value = values.get(flag);
       if (value !== undefined) input[key] = value;
     }
+    if (expectSpecs.length > 0) input['expect'] = expectSpecs;
   }
   validateChannelPostCliInput(input);
   const channelId = input['channelId'] as string;

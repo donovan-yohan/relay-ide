@@ -3618,6 +3618,7 @@ const channelPostInputSchema: RelayJsonSchema = {
     parentMessageId: stringSchema,
     threadId: nullableStringSchema,
     clientMessageId: stringSchema,
+    expect: { type: 'array', items: stringSchema },
   },
   required: ['channelId', 'text'],
 };
@@ -3630,6 +3631,7 @@ const channelAsyncRunStateSchema: RelayJsonSchema = {
     'input-required',
     'auth-required',
     'completed',
+    'completed_unmet',
     'failed',
     'cancelled',
     'rejected',
@@ -3679,6 +3681,30 @@ const channelAsyncRunSchema: RelayJsonSchema = {
     requesterId: stringSchema,
     state: channelAsyncRunStateSchema,
     reason: stringSchema,
+    deliveryContract: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        expect: { type: 'array', items: stringSchema },
+        result: {
+          oneOf: [
+            { type: 'null' },
+            {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                met: booleanSchema,
+                unmet: { type: 'array', items: stringSchema },
+                evaluatedAt: { type: 'string', format: 'date-time' },
+              },
+              required: ['met', 'unmet', 'evaluatedAt'],
+            },
+          ],
+        },
+        followupPostedAt: { type: 'string', format: 'date-time' },
+      },
+      required: ['expect'],
+    },
     targets: { type: 'array', items: channelAsyncRunTargetSchema },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
@@ -7908,6 +7934,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--text',
       '<text>',
       '[--format <text|markdown>]',
+      '[--expect <spec>]',
       '[--thread-id <id|null>]',
       '[--parent-message-id <id>]',
       '[--client-message-id <id>]',

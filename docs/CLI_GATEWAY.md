@@ -102,7 +102,7 @@ relay-ide v1 settings get --json
 relay-ide v1 settings update --input-json '{"key":"updateChannel","value":"nightly","confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
 relay-ide v1 webhooks ping --json
-relay-ide v1 channels post --channel-id <id> --text <text> [--format <text|markdown>] [--thread-id <id|null>] [--parent-message-id <id>] [--client-message-id <id>] --json
+relay-ide v1 channels post --channel-id <id> --text <text> [--format <text|markdown>] [--expect <spec>] [--thread-id <id|null>] [--parent-message-id <id>] [--client-message-id <id>] --json
 relay-ide v1 channels post --input-json '{"channelId":"<id>","text":"<text>"}' --json
 ```
 

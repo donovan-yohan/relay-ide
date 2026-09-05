@@ -1,8 +1,12 @@
 import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { createLogger } from './logger.js';
 import { resolveExecutablePath } from './frameworks.js';
 import { bindSessionToChannel } from './channel-agent-bridge.js';
+import { getPrForBranch } from './gh.js';
+import { evaluateDeliveryContract } from './channel-delivery-contract-evaluator.js';
 import {
   buildMentionContextPacketEnvelope,
   PACKET_MAX_ROWS,
@@ -42,6 +46,7 @@ import {
 } from '../shared/agent-command-catalog.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { AgentProfileStore } from './agent-profile-store.js';
+import type { CliGatewayEventBus } from './cli-gateway-event-bus.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import {
   builtInAgentProfileId,
@@ -75,6 +80,8 @@ import type {
 import type { AgentRole } from '../shared/agent-roster.js';
 import { isDmChannel } from '../shared/dm-channels.js';
 import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.js';
+
+const execFileAsync = promisify(execFile);
 
 // Channel routing binder (#1167, #1353). One module owns the whole loop:
 // subscribe to hub.onMessagePosted → resolve explicit mentions or the implicit
@@ -327,6 +334,8 @@ export interface ChannelAgentBinderDeps {
   attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
+  /** Optional metadata event bus; used for `attention` on unmet delivery contracts (#1569). */
+  events?: Pick<CliGatewayEventBus, 'publish'>;
   /** Durable local AgentProfile catalog. */
   agentProfileStore?: AgentProfileStore | null;
   runtimes: BinderRuntimes;
@@ -347,6 +356,10 @@ export interface ChannelAgentBinderDeps {
   now?: () => number;
   /** Base environment inherited by channel adapter subprocesses. */
   processEnv?: NodeJS.ProcessEnv;
+  /** Optional probes for delivery contract evaluation (#1569); tests inject network-free probes. */
+  deliveryContractProbeFactory?: (input: {
+    cwd: string;
+  }) => Parameters<typeof evaluateDeliveryContract>[1];
 }
 
 export interface ChannelAgentBinder {
@@ -860,6 +873,35 @@ export function createChannelAgentBinder(
       hub.broadcastCreated(message);
     } catch (err) {
       logger.warn('channel binder system row failed:', err);
+    }
+  }
+
+  function postDeliveryContractFollowupTrigger(input: {
+    channelId: string;
+    text: string;
+    targetProfileId: string;
+    parentMessageId?: string;
+    runId?: string;
+  }): void {
+    try {
+      const message = store.appendComplete({
+        channelId: input.channelId,
+        kind: 'system',
+        sender: { ...SYSTEM_SENDER },
+        text: input.text,
+        ...(input.parentMessageId
+          ? { parentMessageId: input.parentMessageId }
+          : {}),
+        meta: {
+          deliveryContractFollowup: {
+            targetProfileId: input.targetProfileId,
+            ...(input.runId ? { runId: input.runId } : {}),
+          },
+        },
+      });
+      hub.broadcastCreated(message);
+    } catch (err) {
+      logger.warn('channel binder delivery-contract followup row failed:', err);
     }
   }
 
@@ -3914,7 +3956,175 @@ export function createChannelAgentBinder(
       state,
       ...options,
     });
-    if (changed) hub.broadcastRunLifecycle(changed);
+    if (changed) {
+      hub.broadcastRunLifecycle(changed);
+      if (
+        changed.state === 'completed' &&
+        changed.deliveryContract?.expect?.length
+      ) {
+        void evaluateDeliveryContractForCompletedRun(binding, turnId, changed);
+      }
+    }
+  }
+
+  async function evaluateDeliveryContractForCompletedRun(
+    binding: LiveBinding,
+    turnId: string,
+    run: import('../shared/channel-chat-protocol.js').ChannelAsyncRun
+  ): Promise<void> {
+    // Idempotent: once evaluated, never re-evaluate.
+    if (run.deliveryContract?.result) return;
+    const expect = run.deliveryContract?.expect ?? [];
+    if (expect.length === 0) return;
+
+    const runtime = binding.runtimeId
+      ? deps.runtimes.get(binding.runtimeId)
+      : undefined;
+    const cwd =
+      runtime?.cwd ??
+      deps.topicStore?.get(binding.channelId)?.routingDefaults.cwd ??
+      os.homedir();
+    const finalText = binding.finalMessageByTurn.get(turnId)?.body.text ?? '';
+
+    const gitProbe = {
+      currentBranch: async (): Promise<string | null> => {
+        try {
+          const { stdout } = await execFileAsync(
+            'git',
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            { cwd, timeout: 5000 }
+          );
+          const name = stdout.trim();
+          return name ? name : null;
+        } catch {
+          return null;
+        }
+      },
+      aheadCount: async (): Promise<number> => {
+        const resolveDefaultBase = async (): Promise<string | null> => {
+          try {
+            const { stdout } = await execFileAsync(
+              'git',
+              ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+              { cwd, timeout: 5000 }
+            );
+            const upstream = stdout.trim();
+            if (upstream) return upstream;
+          } catch {
+            /* no upstream */
+          }
+          try {
+            const { stdout } = await execFileAsync(
+              'git',
+              ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+              { cwd, timeout: 5000 }
+            );
+            const ref = stdout.trim();
+            const prefix = 'refs/remotes/origin/';
+            if (ref.startsWith(prefix))
+              return `origin/${ref.slice(prefix.length)}`;
+          } catch {
+            /* no origin/HEAD */
+          }
+          return null;
+        };
+        const base = await resolveDefaultBase();
+        if (!base) return 0;
+        try {
+          const { stdout } = await execFileAsync(
+            'git',
+            ['rev-list', '--count', `${base}..HEAD`],
+            { cwd, timeout: 5000 }
+          );
+          const raw = stdout.trim();
+          const n = Number.parseInt(raw, 10);
+          return Number.isFinite(n) && n > 0 ? n : 0;
+        } catch {
+          return 0;
+        }
+      },
+    };
+
+    const prProbe = {
+      hasOpenPrForBranch: async (branch: string): Promise<boolean> => {
+        type ExecLike = (
+          file: string,
+          args: string[],
+          options: { cwd: string; timeout?: number }
+        ) => Promise<{ stdout: string; stderr: string }>;
+        const pr = await getPrForBranch(cwd, branch, {
+          exec: execFileAsync as unknown as ExecLike,
+        });
+        return Boolean(pr && pr.state === 'OPEN');
+      },
+    };
+
+    const evaluation = await evaluateDeliveryContract(
+      { expect, cwd, finalAssistantText: finalText },
+      deps.deliveryContractProbeFactory
+        ? deps.deliveryContractProbeFactory({ cwd })
+        : { git: gitProbe, pr: prProbe }
+    );
+    const evaluatedAt = new Date(now()).toISOString();
+    const updated = store.finalizeAsyncRunDeliveryContract({
+      runId: run.id,
+      result: {
+        met: evaluation.met,
+        unmet: evaluation.unmet,
+        evaluatedAt,
+      },
+    });
+    if (updated) hub.broadcastRunLifecycle(updated);
+
+    if (evaluation.met) return;
+
+    const parentMessageId = parentForTurn(binding, turnId);
+    postSystemRow(
+      binding.channelId,
+      `Delivery contract unmet: ${evaluation.unmet.join(', ')}`,
+      { parentMessageId }
+    );
+
+    // Attention is a metadata topic; keep payload redaction-safe.
+    deps.events?.publish({
+      topic: 'attention',
+      type: 'delivery-contract.unmet',
+      ...(runtime?.repoPath ? { repoPath: runtime.repoPath } : {}),
+      payload: {
+        channelId: binding.channelId,
+        runId: run.id,
+        targetProfileId: binding.profileActorId,
+        unmet: evaluation.unmet,
+      },
+    });
+
+    const alreadyFollowedUp = Boolean(
+      updated?.deliveryContract?.followupPostedAt ??
+      run.deliveryContract?.followupPostedAt
+    );
+    if (alreadyFollowedUp) return;
+
+    const followupText = `Turn ended with contract unmet: ${evaluation.unmet.join(
+      ', '
+    )}. @${binding.displayName} finish it.`;
+    postDeliveryContractFollowupTrigger({
+      channelId: binding.channelId,
+      text: followupText,
+      targetProfileId: binding.profileActorId,
+      ...(parentMessageId ? { parentMessageId } : {}),
+      runId: run.id,
+    });
+    const followupPostedAt = new Date(now()).toISOString();
+    const withFollowup = store.finalizeAsyncRunDeliveryContract({
+      runId: run.id,
+      result: {
+        met: evaluation.met,
+        unmet: evaluation.unmet,
+        evaluatedAt,
+      },
+      followupPostedAt,
+    });
+    if (withFollowup) hub.broadcastRunLifecycle(withFollowup);
   }
 
   function handleApprovalStarted(
@@ -4435,7 +4645,30 @@ export function createChannelAgentBinder(
     options?: ChannelMessagePostedOptions
   ): void {
     if (closed) return;
-    if (message.kind !== 'message') return; // system rows never route (§1)
+    if (message.kind !== 'message') {
+      // Narrow exception (#1569): one binder-authored system row can request a
+      // single follow-up routed turn to the SAME profile without consuming the
+      // consecutive-agent brake.
+      const followup = (message.meta as Record<string, unknown> | undefined)?.[
+        'deliveryContractFollowup'
+      ];
+      if (
+        message.kind === 'system' &&
+        followup &&
+        typeof followup === 'object' &&
+        typeof (followup as Record<string, unknown>)['targetProfileId'] ===
+          'string'
+      ) {
+        const targetProfileId = (followup as Record<string, unknown>)[
+          'targetProfileId'
+        ] as string;
+        const profile = deps.agentProfileStore?.get(targetProfileId) ?? null;
+        if (profile) {
+          void routeOne(message, profile);
+        }
+      }
+      return; // ordinary system rows never route (§1)
+    }
     // Both browser-human and CLI-gateway-actor posts arrive here (postToChannel
     // fires onMessagePosted for both). Routing is IDENTICAL for both (locked
     // decision: @claude via gateway == browser). The loop brake, however, keys

@@ -1831,6 +1831,8 @@ async function main(): Promise<void> {
     store: channelMessageStore,
     channelExists: (channelId) => Boolean(workspaceTopicStore?.get(channelId)),
   });
+
+  const cliGatewayEventBus = createCliGatewayEventBus();
   // @-mention routing binder (#1167): owns private agent runtimes per
   // (channel, profile) and streams replies through the channel bridge.
   // Null when the channel store failed to init (routes degrade to 503).
@@ -1851,6 +1853,7 @@ async function main(): Promise<void> {
         attachmentStore: channelAttachmentStore,
         hub: channelHub,
         topicStore: workspaceTopicStore,
+        events: cliGatewayEventBus,
         agentProfileStore,
         runtimes: channelAgentRuntimes,
         knownProviderIds: Object.keys(v2Adapters),
@@ -1871,8 +1874,6 @@ async function main(): Promise<void> {
       channelAgentBinder.handleMessagePosted(message, mentions, options)
     );
   }
-
-  const cliGatewayEventBus = createCliGatewayEventBus();
 
   await initializePinConfig(startupConfig);
 
