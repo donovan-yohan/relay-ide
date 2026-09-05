@@ -1,0 +1,4 @@
+apps/relay-app/** linguist-vendored
+apps/relay-app/src/relayBridge.ts -linguist-vendored
+apps/relay-app/src/features/agent-runs/** -linguist-vendored
+apps/relay-app/src/features/onboarding/ui/HubConnectScreen.tsx -linguist-vendored

@@ -1,0 +1,115 @@
+/* AssistantMarkdown styles for Relay Agent Prose */
+
+.tl-text {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8125rem;
+  color: var(--text, var(--foreground, #e0e0e0));
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.tl-text code {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text, var(--foreground, #e0e0e0));
+}
+
+.tl-markdown {
+  white-space: normal;
+}
+
+.tl-markdown p,
+.tl-markdown ul,
+.tl-markdown ol,
+.tl-markdown blockquote,
+.tl-markdown table {
+  margin: 0 0 8px;
+}
+
+.tl-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.tl-markdown ul,
+.tl-markdown ol {
+  padding-left: 1.4em;
+}
+
+.tl-markdown li {
+  margin: 2px 0;
+}
+
+.tl-markdown h1,
+.tl-markdown h2,
+.tl-markdown h3,
+.tl-markdown h4,
+.tl-markdown h5,
+.tl-markdown h6 {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text, var(--foreground, #e0e0e0));
+  margin: 12px 0 6px;
+}
+
+.tl-markdown blockquote {
+  border-left: 3px solid var(--border, #333333);
+  padding-left: 10px;
+  color: var(--muted-foreground, #888888);
+}
+
+.tl-markdown a {
+  color: var(--accent, #6366f1);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tl-markdown a.tl-md-img-link {
+  color: var(--muted-foreground, #888888);
+  font-style: italic;
+}
+
+.tl-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border, #333333);
+  margin: 10px 0;
+}
+
+.tl-md-code {
+  border: 1px solid var(--border, #333333);
+  background: var(--muted, rgba(255, 255, 255, 0.05));
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--accent, #818cf8);
+}
+
+.tl-md-pre {
+  background: var(--card, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--border, #333333);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0 0 8px;
+  overflow-x: auto;
+}
+
+.tl-markdown table {
+  border-collapse: collapse;
+  font-size: 0.78125rem;
+  display: block;
+  overflow-x: auto;
+}
+
+.tl-markdown th,
+.tl-markdown td {
+  border: 1px solid var(--border, #333333);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.tl-markdown th {
+  color: var(--muted-foreground, #888888);
+  font-weight: 700;
+}

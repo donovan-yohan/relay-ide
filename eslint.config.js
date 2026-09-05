@@ -75,6 +75,7 @@ export default [
   },
   {
     ignores: [
+      'apps/relay-app/**',
       'dist/',
       'node_modules/',
       '.svelte-kit/',
