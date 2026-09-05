@@ -16,6 +16,7 @@ import { createServer } from 'node:net';
 import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,8 +37,29 @@ if (!process.env.DEEPSEEK_API_KEY) {
 const exec = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const worktreeRoot = path.resolve(__dirname, '..', '..');
-const PROOF_PARENT = process.env.RELAY_PROOF_ROOT ?? '/tmp/acp-base-proof';
-const PROOF_ROOT = path.join(PROOF_PARENT, 'relay-ide');
+
+/** Mirrors `relayAppDataDir()` in server/runtime-state-paths.ts. */
+function relayAppDataDir() {
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  const base =
+    xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), '.config');
+  return path.join(base, 'relay-ide');
+}
+
+/**
+ * The hub publishes its port-keyed local actor token into the SHARED app-data
+ * root (`$XDG_CONFIG_HOME/relay-ide` when absolute, else `~/.config/relay-ide`)
+ * and refuses to publish it at all when its config dir sits outside that root
+ * (`configDirIsShared`, server/local-hub-actor-token.ts). So the throwaway
+ * config dir goes UNDER that root — it is never redirected there by setting
+ * `XDG_CONFIG_HOME` for the hub: the hub passes its environment to every agent
+ * CLI it spawns, and an XDG-aware CLI reads its login from under that root
+ * (`cursor-agent` uses `$XDG_CONFIG_HOME/cursor/auth.json`). Redirecting it
+ * leaves the live agent silently logged out, so `session/prompt` never settles
+ * and the proof hangs forever instead of failing. The dir and the token file
+ * are removed on exit.
+ */
+const PROOF_ROOT = relayAppDataDir();
 const PROOF_DIR = path.join(PROOF_ROOT, `proof-dsh-${Date.now()}`);
 const CLI_PATH = path.join(worktreeRoot, 'dist', 'bin', 'relay-ide.js');
 
@@ -63,7 +85,6 @@ let PORT = 0;
 async function runCli(args, env = {}) {
   const fullEnv = {
     ...process.env,
-    XDG_CONFIG_HOME: PROOF_PARENT,
     RELAY_IDE_CONFIG: path.join(PROOF_DIR, 'config.json'),
     RELAY_IDE_PORT: String(PORT),
     ...(hubToken ? { RELAY_IDE_ACTOR_TOKEN: hubToken } : {}),
@@ -108,7 +129,6 @@ async function main() {
       cwd: worktreeRoot,
       env: {
         ...process.env,
-        XDG_CONFIG_HOME: PROOF_PARENT,
         RELAY_IDE_CONFIG: configPath,
         RELAY_IDE_HOST: '127.0.0.1',
         RELAY_IDE_PORT: String(PORT),
@@ -163,13 +183,15 @@ async function main() {
 
   console.log('[dsh-live-proof] Hub is ready.');
 
+  // Match on `sender.providerId`, the field the channel row actually carries.
+  // `sender.displayName` is the PROVIDER DESCRIPTOR's label — dsh's is
+  // 'DeepSeek Harness', not 'dsh' — and there is no `sender.role`/
+  // `sender.framework` at all, so matching those silently never fires. Rows
+  // with no text are the agent's detail cards (command output, file changes);
+  // the assistant message is the one with a body.
   function findAgentMessages(messages) {
     return messages.filter(
-      (m) =>
-        (m.sender?.role === 'agent' ||
-          m.sender?.framework === 'dsh' ||
-          m.sender?.displayName === 'dsh') &&
-        (m.body?.text || m.text)
+      (m) => m.sender?.providerId === 'dsh' && (m.body?.text || m.text)
     );
   }
 
