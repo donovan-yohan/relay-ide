@@ -2690,6 +2690,13 @@ export function createChannelAgentBinder(
       callbackEdgeRequest === undefined &&
       steering !== 'interrupt' &&
       binding.activeTurnId !== null &&
+      // #1570: correlated channel runs require one trigger → one turn so
+      // `channels wait/history --run` can correlate on the deterministic
+      // `channelTurnId(requestMessageId, targetId)`. Native safe-boundary
+      // steering collapses multiple triggers into one turn, which makes the
+      // later trigger's run appear cancelled/stuck while the runtime keeps
+      // working and later emits terminal output.
+      store.getAsyncRunForRequestMessage(trigger.id) === null &&
       binding.adapter?.capabilities.steer === true &&
       binding.adapter.steerMessage !== undefined
     ) {
