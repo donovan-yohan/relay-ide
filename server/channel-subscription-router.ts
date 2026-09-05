@@ -132,23 +132,50 @@ function filterIsEmpty(filter: ChannelSubscriptionFilter): boolean {
   return Object.keys(filter).length === 0;
 }
 
+type ChannelSubscriptionOnly = 'run-terminal' | 'system' | 'run' | 'message';
+
+const CHANNEL_SUBSCRIPTION_ONLY_VALUES = new Set<ChannelSubscriptionOnly>([
+  'run-terminal',
+  'system',
+  'run',
+  'message',
+]);
+
+function querySubscriptionOnly(
+  req: Request
+): Set<ChannelSubscriptionOnly> | null | 'invalid' {
+  const raw = req.query['only'];
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string') return 'invalid';
+  const tokens = raw
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean) as ChannelSubscriptionOnly[];
+  if (tokens.length === 0) return 'invalid';
+  for (const token of tokens) {
+    if (!CHANNEL_SUBSCRIPTION_ONLY_VALUES.has(token)) return 'invalid';
+  }
+  return new Set(tokens);
+}
+
 /**
  * Preserve hub control and snapshot metadata while removing only row payloads.
  * Cursor advancement happens before this function, from the original event.
  */
 function projectEvent(
   event: ChannelEventV1,
-  filter: ChannelSubscriptionFilter
+  filter: ChannelSubscriptionFilter,
+  only: Set<ChannelSubscriptionOnly> | null
 ): ChannelEventV1 | null {
   if (event.type !== 'channel-snapshot-v1' && filterIsEmpty(filter)) {
-    return event;
+    if (!only) return event;
   }
   switch (event.type) {
     case 'channel-snapshot-v1': {
       if (filterIsEmpty(filter)) {
-        return event;
+        if (!only) return event;
       }
-      return {
+      const projected: ChannelEventV1 = {
         ...event,
         messages: event.messages.filter((message) =>
           channelMessageMatchesSubscriptionFilter(message, filter)
@@ -177,23 +204,81 @@ function projectEvent(
         // reference would point at rows the actor never received.
         inFlight: [],
       };
+      if (!only) return projected;
+      const keepMessages = only.has('message') || only.has('system');
+      const keepRuns = only.has('run') || only.has('run-terminal');
+      const wantSystem = only.has('system');
+      const wantMessage = only.has('message');
+      return {
+        ...projected,
+        messages: keepMessages
+          ? projected.messages.filter((m) => {
+              if (wantSystem && wantMessage) return true;
+              if (wantSystem) return m.kind === 'system';
+              if (wantMessage) return m.kind === 'message';
+              return false;
+            })
+          : [],
+        ...(projected.stateReplacements === undefined
+          ? {}
+          : {
+              stateReplacements: keepMessages
+                ? projected.stateReplacements.filter((r) => {
+                    if (wantSystem && wantMessage) return true;
+                    if (wantSystem) return r.message.kind === 'system';
+                    if (wantMessage) return r.message.kind === 'message';
+                    return false;
+                  })
+                : [],
+            }),
+        ...(projected.runs === undefined
+          ? {}
+          : {
+              runs: keepRuns
+                ? projected.runs.filter(
+                    (run) =>
+                      !only.has('run-terminal') ||
+                      run.state === 'completed' ||
+                      run.state === 'completed_unmet' ||
+                      run.state === 'failed' ||
+                      run.state === 'cancelled' ||
+                      run.state === 'rejected'
+                  )
+                : [],
+            }),
+      };
     }
     case 'channel-message-created-v1':
     case 'channel-message-updated-v1':
     case 'channel-message-completed-v1':
     case 'channel-message-edited-v1':
     case 'channel-message-deleted-v1':
-      return channelMessageMatchesSubscriptionFilter(event.message, filter)
-        ? event
-        : null;
+      if (!channelMessageMatchesSubscriptionFilter(event.message, filter))
+        return null;
+      if (!only) return event;
+      if (only.has('system') && event.message.kind === 'system') return event;
+      if (only.has('message') && event.message.kind !== 'system') return event;
+      return null;
     case 'channel-message-delta-v1':
       // A delta has no durable row to evaluate and can expose provider/tool
       // output, so a semantic projection never forwards it.
       return null;
     case 'channel-run-lifecycle-v1':
-      return channelAsyncRunMatchesSubscriptionFilter(event.run, filter)
-        ? event
-        : null;
+      if (!channelAsyncRunMatchesSubscriptionFilter(event.run, filter))
+        return null;
+      if (!only) return event;
+      if (only.has('run')) return event;
+      if (only.has('run-terminal')) {
+        const state = event.run.state;
+        return state === 'completed' ||
+          state === 'completed_unmet' ||
+          state === 'failed' ||
+          state === 'cancelled' ||
+          state === 'rejected'
+          ? event
+          : null;
+      }
+      return null;
     case 'channel-delivery-receipt-v1':
       // Receipts are content-free operational signals (ids, state, timestamps),
       // not message rows: semantic projection forwards them unchanged.
@@ -348,6 +433,17 @@ export function createChannelSubscriptionRouter(
           400,
           'INVALID_ARGUMENT',
           'subscription filter has an invalid value'
+        );
+        return;
+      }
+      const only = querySubscriptionOnly(req);
+      if (only === 'invalid') {
+        sendError(
+          res,
+          400,
+          'INVALID_ARGUMENT',
+          'only must be a comma-separated list of: run-terminal, system, run, message',
+          { field: 'only' }
         );
         return;
       }
@@ -616,7 +712,7 @@ export function createChannelSubscriptionRouter(
           // This is intentionally before projection. A filtered subscription is
           // a view over the same durable log, never a second cursor domain.
           durableSeq = advanceDurableCursor(durableSeq, event);
-          const projected = projectEvent(event, filter);
+          const projected = projectEvent(event, filter, only);
           if (!projected) return true;
           const payload = authenticatedOperatorClientCredential(req)
             ? (projectRelayChannelPublicValue(projected) as ChannelEventV1)

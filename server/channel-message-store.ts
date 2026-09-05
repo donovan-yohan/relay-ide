@@ -777,6 +777,11 @@ CREATE INDEX IF NOT EXISTS idx_chm_channel_seq
   ON channel_messages(channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_chm_thread
   ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+-- Run/turn introspection (#1570): efficient lookup of all rows emitted for one
+-- deterministic turn id, used by channels history --run and channels wait.
+CREATE INDEX IF NOT EXISTS idx_chm_source_turn
+  ON channel_messages(channel_id, source_turn_id, seq)
+  WHERE source_turn_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chm_source_dedupe
   ON channel_messages(source_runtime_id, source_turn_id, source_item_id)
   WHERE source_runtime_id IS NOT NULL
@@ -1557,6 +1562,18 @@ export interface ChannelMessageStore {
     clientMessageId: string
   ): ChannelMessage | null;
   history(channelId: string, filter?: ChannelHistoryFilter): ChannelMessage[];
+  /** All durable rows emitted for one or more deterministic turn ids. */
+  listMessagesForTurns(input: {
+    channelId: string;
+    turnIds: readonly string[];
+    limit?: number;
+  }): ChannelMessage[];
+  /** System rows parented under a durable message id (threaded replies). */
+  listSystemMessagesForParent(input: {
+    channelId: string;
+    parentMessageId: string;
+    limit?: number;
+  }): ChannelMessage[];
   /**
    * Exact mention-delivery summary plus newest bounded prose rows. Filtering,
    * counting, and LIMIT all happen in SQLite; callers must not page JS history.
@@ -3806,6 +3823,16 @@ export function createChannelMessageStore(
       WHERE m.channel_id = @channelId AND m.sender_id = @senderId
         AND m.client_message_id = @clientMessageId`
   );
+  const selectSystemByParent = db.prepare(
+    `SELECT m.*,
+            ${replyCountSql('m')} AS reply_count
+       FROM channel_messages m
+      WHERE m.channel_id = @channelId
+        AND m.kind = 'system'
+        AND m.parent_message_id = @parentMessageId
+      ORDER BY m.seq ASC
+      LIMIT @limit`
+  );
   const mentionContextStatements = {
     channel: {
       boundary: db.prepare(buildChannelMentionContextBoundarySql('channel')),
@@ -4511,7 +4538,10 @@ export function createChannelMessageStore(
             SET state = ?, reason = ?, approval_state = ?, updated_at = ?,
                 completed_at = CASE WHEN ? THEN ? ELSE NULL END
           WHERE run_id = ? AND target_id = ?
-            AND state NOT IN ('completed','failed','cancelled','rejected')`
+            AND (
+              state NOT IN ('completed','failed','cancelled','rejected')
+              OR (state = 'cancelled' AND reason = 'server-restarted')
+            )`
         )
         .run(
           input.state,
@@ -4535,10 +4565,19 @@ export function createChannelMessageStore(
         'cancelled',
         'rejected',
       ].includes(state);
+      const nextReason =
+        run.reason === 'server-restarted' && !runTerminal ? null : run.reason;
       db.prepare(
-        `UPDATE channel_async_runs SET state = ?, updated_at = ?,
+        `UPDATE channel_async_runs SET state = ?, reason = ?, updated_at = ?,
           completed_at = CASE WHEN ? THEN ? ELSE NULL END WHERE id = ?`
-      ).run(state, now, runTerminal ? 1 : 0, runTerminal ? now : null, run.id);
+      ).run(
+        state,
+        nextReason ?? null,
+        now,
+        runTerminal ? 1 : 0,
+        runTerminal ? now : null,
+        run.id
+      );
       return asyncRunFromRow(selectAsyncRun.get(run.id) as AsyncRunRow);
     }
   );
@@ -5761,6 +5800,38 @@ export function createChannelMessageStore(
         )
         .all(params) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
+    },
+
+    listMessagesForTurns(input) {
+      const channelId = input.channelId;
+      const raw = [...new Set(input.turnIds)].filter(
+        (id) => typeof id === 'string' && id.trim().length > 0
+      );
+      if (raw.length === 0) return [];
+      const limit = cleanLimit(input.limit ?? 2000, 2000);
+      const placeholders = raw.map(() => '?').join(',');
+      const rows = db
+        .prepare(
+          `SELECT m.*,
+                  ${replyCountSql('m')} AS reply_count
+           FROM channel_messages m
+           WHERE m.channel_id = ?
+             AND m.source_turn_id IN (${placeholders})
+           ORDER BY m.seq ASC
+           LIMIT ?`
+        )
+        .all(channelId, ...raw, limit) as ChannelMessageRow[];
+      return rows.map(rowToMessage);
+    },
+
+    listSystemMessagesForParent(input) {
+      return (
+        (selectSystemByParent.all({
+          channelId: input.channelId,
+          parentMessageId: input.parentMessageId,
+          limit: cleanLimit(input.limit ?? 200),
+        }) as ChannelMessageRow[]) ?? []
+      ).map(rowToMessage);
     },
 
     mentionContext(input) {

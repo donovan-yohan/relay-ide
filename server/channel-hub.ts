@@ -1,6 +1,8 @@
 import { createLogger } from './logger.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
+  channelMessageIsPrincipalProse,
+  channelTurnId,
   type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
   type ChannelAsyncRun,
@@ -13,6 +15,22 @@ import {
 } from '../shared/channel-chat-protocol.js';
 
 const logger = createLogger('channel-hub');
+const UTF8_ENCODER = new TextEncoder();
+
+function truncateUtf8Prefix(text: string, maxBytes: number): string {
+  const encoded = UTF8_ENCODER.encode(text);
+  if (encoded.byteLength <= maxBytes) return text;
+  // Find a character boundary whose UTF-8 encoding fits.
+  let hi = text.length;
+  let lo = 0;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    const bytes = UTF8_ENCODER.encode(text.slice(0, mid)).byteLength;
+    if (bytes <= maxBytes) lo = mid;
+    else hi = mid - 1;
+  }
+  return text.slice(0, lo);
+}
 
 /**
  * Bounded server-side retention for delivery receipts (#1442). Receipts are
@@ -767,11 +785,58 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     },
 
     broadcastRunLifecycle(run) {
+      const terminal =
+        run.state === 'completed' ||
+        run.state === 'completed_unmet' ||
+        run.state === 'failed' ||
+        run.state === 'cancelled' ||
+        run.state === 'rejected';
+      const extras: Record<string, unknown> = {};
+      if (terminal && store) {
+        const turnIds = run.targets.map((target) =>
+          channelTurnId(run.requestMessageId, target.targetId)
+        );
+        let final: ChannelMessage | null = null;
+        try {
+          const messages = store.listMessagesForTurns({
+            channelId: run.channelId,
+            turnIds,
+            limit: 2000,
+          });
+          final =
+            messages
+              .filter(
+                (m) =>
+                  m.sender.kind === 'agent' &&
+                  m.asyncRun?.runId === run.id &&
+                  channelMessageIsPrincipalProse(m)
+              )
+              .at(-1) ?? null;
+        } catch {
+          /* best-effort preview only */
+        }
+        if (final) {
+          extras['finalMessageSeq'] = final.seq;
+          extras['finalTextPreview'] = truncateUtf8Prefix(
+            final.body.text ?? '',
+            2048
+          );
+        }
+      }
+      if (terminal && run.deliveryContract?.result) {
+        extras['contract'] = {
+          ...run.deliveryContract.result,
+          ...(run.deliveryContract.followupPostedAt
+            ? { followupPostedAt: run.deliveryContract.followupPostedAt }
+            : {}),
+        };
+      }
       broadcast(run.channelId, {
         type: 'channel-run-lifecycle-v1',
         channelId: run.channelId,
         timestamp: nowIso(),
         run,
+        ...extras,
       });
     },
 
@@ -785,13 +850,17 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       });
     },
 
-    listDeliveryReceipts({ channelId, messageId, targetBindingId, targetProfileId, limit }) {
+    listDeliveryReceipts({
+      channelId,
+      messageId,
+      targetBindingId,
+      targetProfileId,
+      limit,
+    }) {
       const ring = deliveryReceiptRings.get(channelId);
       if (!ring) return [];
       const cap =
-        typeof limit === 'number' &&
-        Number.isSafeInteger(limit) &&
-        limit > 0
+        typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0
           ? Math.min(limit, DELIVERY_RECEIPT_LIST_MAX)
           : DELIVERY_RECEIPT_LIST_MAX;
       // Newest-first: the common consumer question is "what happened to this
@@ -800,7 +869,8 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       const out: ChannelDeliveryReceiptV1[] = [];
       for (let i = ring.receipts.length - 1; i >= 0 && out.length < cap; i--) {
         const receipt = ring.receipts[i]!;
-        if (messageId !== undefined && receipt.messageId !== messageId) continue;
+        if (messageId !== undefined && receipt.messageId !== messageId)
+          continue;
         if (
           targetBindingId !== undefined &&
           receipt.targetBindingId !== targetBindingId

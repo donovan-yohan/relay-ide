@@ -305,6 +305,10 @@ before any projected message/run rows are omitted. This preserves the
 register-before-replay handoff, replay gap behavior, and backpressure bounds;
 control frames and liveness heartbeats remain visible even when no row matches.
 
+For orchestrators that only need a wake signal, `channels.subscribe` also
+supports an `--only` projection (`run-terminal`, `system`, `run`, `message`) to
+drop unrelated event kinds server-side without changing resume semantics.
+
 ### Correlated asynchronous runs
 
 An accepted external `channels.post` that can route work creates one opaque,
@@ -319,6 +323,13 @@ not by parsing provider runtime, turn, or item identifiers.
 identity check, never a selector that can move a run between threads. Snapshots
 include the most recent run projections within explicit count and byte budgets;
 the lifecycle stream remains authoritative for subsequent changes.
+
+When a run reaches a terminal state, the `channel-run-lifecycle-v1` event may
+include orchestrator helpers: `finalMessageSeq`, a UTF-8 `finalTextPreview`
+truncated to 2 KiB, and a delivery `contract` summary (when present).
+
+For the stable CLI surfaces built on this protocol, see `relay-ide v1 channels wait`
+(final-response lane) and `relay-ide v1 channels history --run ...` (inspect lane).
 
 A run has immutable channel, canonical root-or-thread, requester, and request
 message scope. Its targets move independently through `queued`, `working`,

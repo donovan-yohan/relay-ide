@@ -70,8 +70,11 @@ import {
   CHANNEL_READ_STATE_EVENT,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
+  channelMessageIsPrincipalProse,
+  channelTurnId,
   isChannelPostSteering,
   parseMentions,
+  type ChannelAsyncRun,
   type ChannelBodyFormat,
   type ChannelMention,
   type ChannelPostSteering,
@@ -1487,6 +1490,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const listAuth = deps.requireReadActorAuth?.('channels.list') ?? auth;
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const runGetAuth = deps.requireReadActorAuth?.('channels.run.get') ?? auth;
+  const runWaitAuth = deps.requireReadActorAuth?.('channels.run.wait') ?? auth;
+  const runHistoryAuth =
+    deps.requireReadActorAuth?.('channels.run.history') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
   // Typed delivery receipts (#1442): an observation read over the hub's
   // in-memory receipt ring, so it gets its OWN gateway verb rather than riding
@@ -1553,6 +1559,72 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       return null;
     }
     return topic;
+  }
+
+  function requirePersistedChannelById(
+    res: Response,
+    channelId: string
+  ): WorkspaceTopic | null {
+    const topicStore = topicStoreOr503(res, deps.topicStore);
+    if (!topicStore) return null;
+    const topic = topicStore.get(channelId);
+    if (!topic || topic.source !== 'persisted') {
+      sendGatewayError(res, 'NOT_FOUND', 'channel not found', false, {
+        channelId,
+      });
+      return null;
+    }
+    return topic;
+  }
+
+  function runTerminalState(state: ChannelAsyncRun['state']): boolean {
+    return (
+      state === 'completed' ||
+      state === 'completed_unmet' ||
+      state === 'failed' ||
+      state === 'cancelled' ||
+      state === 'rejected'
+    );
+  }
+
+  function contractSummaryForRun(
+    run: ChannelAsyncRun
+  ): Record<string, unknown> | null {
+    const contract = run.deliveryContract;
+    if (!contract?.result) return null;
+    return {
+      ...contract.result,
+      ...(contract.followupPostedAt
+        ? { followupPostedAt: contract.followupPostedAt }
+        : {}),
+    };
+  }
+
+  function finalAssistantTextForRun(
+    store: Pick<ChannelMessageStore, 'listMessagesForTurns'>,
+    run: ChannelAsyncRun
+  ): { finalText: string; finalMessageSeq: number | null } {
+    const turnIds = run.targets.map((target) =>
+      channelTurnId(run.requestMessageId, target.targetId)
+    );
+    const messages = store.listMessagesForTurns({
+      channelId: run.channelId,
+      turnIds,
+      limit: 2000,
+    });
+    const principal =
+      messages
+        .filter(
+          (m) =>
+            m.sender.kind === 'agent' &&
+            m.asyncRun?.runId === run.id &&
+            channelMessageIsPrincipalProse(m)
+        )
+        .at(-1) ?? null;
+    return {
+      finalText: principal?.body.text ?? '',
+      finalMessageSeq: principal?.seq ?? null,
+    };
   }
 
   router.get('/channels', listAuth, (req, res) => {
@@ -1753,6 +1825,270 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       }
       mapStoreError(res, error);
     }
+  });
+
+  // #1570: orchestrator wake signal — block until a run reaches a terminal
+  // state and return its outcome + final assistant text.
+  //
+  // MUST stay above `/channels/:id` for the same registration-order reason as
+  // `/channels/search`: `wait` is a literal segment, and `topic:`-prefixed ids
+  // do not prevent Express from shadowing it.
+  type ChannelRunWaitFor = 'any' | 'completed' | 'failed';
+  type ParsedWait =
+    | {
+        mode: 'run';
+        runId: ChannelAsyncRun['id'];
+        for: ChannelRunWaitFor;
+        timeoutMs: number;
+      }
+    | {
+        mode: 'channel';
+        channelId: string;
+        afterSeq: number;
+        for: ChannelRunWaitFor;
+        timeoutMs: number;
+      };
+
+  function parseChannelsWait(req: Request, res: Response): ParsedWait | null {
+    const runId =
+      typeof req.query['runId'] === 'string' ? req.query['runId'] : undefined;
+    const channelId =
+      typeof req.query['channelId'] === 'string'
+        ? req.query['channelId']
+        : undefined;
+    const afterSeq = parseSeqQuery(req.query['afterSeq']);
+    const timeoutMsRaw = parseSeqQuery(req.query['timeoutMs']);
+    const timeoutMs =
+      typeof timeoutMsRaw === 'number' && Number.isSafeInteger(timeoutMsRaw)
+        ? timeoutMsRaw
+        : 300_000;
+    const forRaw =
+      typeof req.query['for'] === 'string' ? req.query['for'] : 'any';
+    if (forRaw !== 'any' && forRaw !== 'completed' && forRaw !== 'failed') {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        '--for must be completed, failed, or any',
+        false,
+        { field: 'for', value: forRaw }
+      );
+      return null;
+    }
+    if (timeoutMs < 1 || timeoutMs > 3_600_000) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'timeoutMs must be between 1 and 3600000',
+        false,
+        { field: 'timeoutMs', value: timeoutMs }
+      );
+      return null;
+    }
+    if (runId && (channelId || afterSeq !== undefined)) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'runId cannot be combined with channelId/afterSeq',
+        false,
+        { field: 'runId' }
+      );
+      return null;
+    }
+    if (runId) {
+      if (!runId.startsWith('chrun:')) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'runId must be a Relay run id',
+          false,
+          { field: 'runId' }
+        );
+        return null;
+      }
+      return {
+        mode: 'run',
+        runId: runId as ChannelAsyncRun['id'],
+        for: forRaw,
+        timeoutMs,
+      };
+    }
+    if (!channelId) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'runId or channelId is required',
+        false,
+        {
+          field: 'runId',
+        }
+      );
+      return null;
+    }
+    if (afterSeq === undefined) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'afterSeq is required when channelId is provided',
+        false,
+        { field: 'afterSeq' }
+      );
+      return null;
+    }
+    return { mode: 'channel', channelId, afterSeq, for: forRaw, timeoutMs };
+  }
+
+  function matchesWaitFor(
+    state: ChannelAsyncRun['state'],
+    waitFor: ChannelRunWaitFor
+  ): boolean {
+    if (!runTerminalState(state)) return false;
+    if (waitFor === 'any') return true;
+    if (waitFor === 'completed') return state === 'completed';
+    // failed: includes completed_unmet (#1569 contract failure is a terminal failure)
+    return (
+      state === 'failed' ||
+      state === 'cancelled' ||
+      state === 'rejected' ||
+      state === 'completed_unmet'
+    );
+  }
+
+  async function respondWaitByRunId(
+    req: Request,
+    res: Response,
+    store: ChannelMessageStore,
+    input: Extract<ParsedWait, { mode: 'run' }>
+  ): Promise<void> {
+    const run = store.getAsyncRun(input.runId);
+    if (!run) {
+      sendGatewayError(res, 'NOT_FOUND', 'run not found', false, {
+        runId: input.runId,
+      });
+      return;
+    }
+    if (denyOutOfScopeChannel(req, res, run.channelId)) return;
+    if (denyNonMemberChannel(req, res, deps.store, run.channelId)) return;
+    if (!requirePersistedChannelById(res, run.channelId)) return;
+
+    const deadline = Date.now() + input.timeoutMs;
+    const serverRestartCancelGraceMs = 2000;
+    let serverRestartCancelledAt: number | null = null;
+    while (Date.now() < deadline) {
+      const latest = store.getAsyncRun(run.id);
+      if (!latest) break;
+      if (
+        latest.state === 'cancelled' &&
+        latest.reason === 'server-restarted'
+      ) {
+        if (serverRestartCancelledAt === null)
+          serverRestartCancelledAt = Date.now();
+        if (
+          Date.now() - serverRestartCancelledAt <
+          serverRestartCancelGraceMs
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          continue;
+        }
+      } else {
+        serverRestartCancelledAt = null;
+      }
+      if (runTerminalState(latest.state)) {
+        const final = finalAssistantTextForRun(store, latest);
+        res.json({
+          run: {
+            id: latest.id,
+            state: latest.state,
+            ...(latest.reason ? { reason: latest.reason } : {}),
+          },
+          outcome: latest.state,
+          finalText: final.finalText ?? '',
+          contract: contractSummaryForRun(latest),
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const latest = store.getAsyncRun(run.id);
+    res.json({
+      run: latest
+        ? {
+            id: latest.id,
+            state: latest.state,
+            ...(latest.reason ? { reason: latest.reason } : {}),
+          }
+        : {
+            id: run.id,
+            state: run.state,
+            ...(run.reason ? { reason: run.reason } : {}),
+          },
+      outcome: 'timeout',
+      finalText: '',
+      contract: latest ? contractSummaryForRun(latest) : null,
+    });
+  }
+
+  async function respondWaitByChannel(
+    req: Request,
+    res: Response,
+    store: ChannelMessageStore,
+    input: Extract<ParsedWait, { mode: 'channel' }>
+  ): Promise<void> {
+    const channelId = input.channelId;
+    if (denyOutOfScopeChannel(req, res, channelId)) return;
+    if (denyNonMemberChannel(req, res, deps.store, channelId)) return;
+    if (!requirePersistedChannelById(res, channelId)) return;
+
+    const deadline = Date.now() + input.timeoutMs;
+    const serverRestartCancelGraceMs = 2000;
+    const serverRestartCancelledSince = new Map<string, number>();
+    while (Date.now() < deadline) {
+      const runs = store.listAsyncRuns(channelId, 200);
+      for (const candidate of runs) {
+        if (
+          candidate.state === 'cancelled' &&
+          candidate.reason === 'server-restarted'
+        ) {
+          const since =
+            serverRestartCancelledSince.get(candidate.id) ?? Date.now();
+          serverRestartCancelledSince.set(candidate.id, since);
+          if (Date.now() - since < serverRestartCancelGraceMs) continue;
+        } else {
+          serverRestartCancelledSince.delete(candidate.id);
+        }
+        if (!matchesWaitFor(candidate.state, input.for)) continue;
+        const final = finalAssistantTextForRun(store, candidate);
+        if (final.finalMessageSeq === null) continue;
+        if (final.finalMessageSeq <= input.afterSeq) continue;
+        res.json({
+          run: {
+            id: candidate.id,
+            state: candidate.state,
+            ...(candidate.reason ? { reason: candidate.reason } : {}),
+          },
+          outcome: candidate.state,
+          finalText: final.finalText ?? '',
+          contract: contractSummaryForRun(candidate),
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    res.json({ run: null, outcome: 'timeout', finalText: '', contract: null });
+  }
+
+  router.get('/channels/wait', runWaitAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const parsed = parseChannelsWait(req, res);
+    if (!parsed) return;
+    void (async () => {
+      if (parsed.mode === 'run') {
+        await respondWaitByRunId(req, res, store, parsed);
+        return;
+      }
+      await respondWaitByChannel(req, res, store, parsed);
+    })().catch((error) => mapStoreError(res, error));
   });
 
   // #1308 slice 3 item 1: the operator's durable last-read marks.
@@ -1957,6 +2293,106 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       return;
     }
     res.json({ run });
+  });
+
+  // #1570: inspect lane — ordered items (text + detail cards) emitted for one
+  // correlated run, with optional coarse kind filters.
+  router.get('/channels/runs/:runId/history', runHistoryAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const runId = req.params['runId'] ?? '';
+    if (!runId.startsWith('chrun:')) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'runId must be a Relay run id',
+        false,
+        {
+          field: 'runId',
+        }
+      );
+      return;
+    }
+    const run = store.getAsyncRun(runId as ChannelAsyncRun['id']);
+    if (!run) {
+      sendGatewayError(res, 'NOT_FOUND', 'run not found', false, { runId });
+      return;
+    }
+    if (denyOutOfScopeChannel(req, res, run.channelId)) return;
+    if (denyNonMemberChannel(req, res, deps.store, run.channelId)) return;
+    if (!requirePersistedChannelById(res, run.channelId)) return;
+
+    const kindsRaw =
+      typeof req.query['kinds'] === 'string' ? req.query['kinds'] : '';
+    const kinds = new Set(
+      kindsRaw
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean)
+    );
+    const allowAll = kinds.size === 0;
+    const allow = (k: string) => allowAll || kinds.has(k);
+
+    const turnIds = run.targets.map((target) =>
+      channelTurnId(run.requestMessageId, target.targetId)
+    );
+    const turnMessages = store.listMessagesForTurns({
+      channelId: run.channelId,
+      turnIds,
+      limit: 2000,
+    });
+    const request = store.getMessage(run.requestMessageId);
+    const system = store.listSystemMessagesForParent({
+      channelId: run.channelId,
+      parentMessageId: run.requestMessageId,
+      limit: 200,
+    });
+
+    const byId = new Map<string, ChannelMessage>();
+    for (const msg of [request, ...system, ...turnMessages]) {
+      if (!msg) continue;
+      byId.set(msg.id, msg);
+    }
+    const ordered = [...byId.values()].sort((a, b) => a.seq - b.seq);
+
+    const classify = (
+      message: ChannelMessage
+    ): 'text' | 'thought' | 'tool' | 'system' | null => {
+      if (message.id === run.requestMessageId) return 'system';
+      if (message.kind === 'system') return 'system';
+      const cardKind = message.agentDetail?.card?.kind;
+      if (cardKind === 'thought') return 'thought';
+      if (
+        cardKind === 'tool_call' ||
+        cardKind === 'output' ||
+        cardKind === 'diff'
+      )
+        return 'tool';
+      if (
+        message.sender.kind === 'agent' &&
+        message.asyncRun?.runId === run.id &&
+        channelMessageIsPrincipalProse(message)
+      ) {
+        return 'text';
+      }
+      return null;
+    };
+
+    const items = ordered.filter((message) => {
+      const kind = classify(message);
+      if (!kind) return false;
+      return allow(kind);
+    });
+
+    res.json({
+      run: {
+        id: run.id,
+        state: run.state,
+        ...(run.reason ? { reason: run.reason } : {}),
+      },
+      items,
+    });
   });
 
   // Typed delivery receipts (#1442): bounded server-side query surface for the

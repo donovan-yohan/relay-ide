@@ -20,6 +20,9 @@ export const OPERATOR_CLIENT_GATEWAY_HEADER = 'x-relay-cli-gateway' as const;
 export const OPERATOR_CLIENT_CHANNEL_COMMANDS = [
   'channels.list',
   'channels.get',
+  'channels.run.get',
+  'channels.run.wait',
+  'channels.run.history',
   'channels.history',
   'channels.receipts',
   'channels.subscribe',

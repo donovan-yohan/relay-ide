@@ -125,6 +125,31 @@ describe('channel read CLI gateway runtime wiring', () => {
       '/channels/product%2Fmain',
     ],
     [
+      ['wait', '--run', 'chrun:test'],
+      'channels.run.wait',
+      '/channels/wait?runId=chrun%3Atest&for=any',
+    ],
+    [
+      [
+        'wait',
+        '--channel-id',
+        'product/main',
+        '--after-seq',
+        '12',
+        '--for',
+        'completed',
+        '--timeout-ms',
+        '1000',
+      ],
+      'channels.run.wait',
+      '/channels/wait?channelId=product%2Fmain&afterSeq=12&for=completed&timeoutMs=1000',
+    ],
+    [
+      ['history', '--run', 'chrun:test', '--kinds', 'text,tool'],
+      'channels.run.history',
+      '/channels/runs/chrun%3Atest/history?kinds=text%2Ctool',
+    ],
+    [
       [
         'history',
         '--channel-id',

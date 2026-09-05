@@ -48,6 +48,18 @@ workflow.
   file mode `0600`) and restored on hub startup; expired credentials are pruned and
   revocations are maintained as typed `CLI_ACTOR_REVOKED` refusals (#1546)
 
+### Orchestrator wake signal for channel runs
+
+#### Added
+
+- `relay-ide v1 channels wait --run <chrun:…> | --channel-id <id> --after-seq <n> --json` blocks until a correlated run reaches a terminal state and returns only the final assistant text item, enabling orchestrators to wait without grepping `channels subscribe` (#1570).
+- `relay-ide v1 channels history --run <chrun:…> --kinds text,thought,tool,system --json` exposes an inspect lane for auditing one run’s ordered durable items (including agent detail cards) (#1570).
+
+#### Changed
+
+- Terminal `channel-run-lifecycle-v1` frames now include `finalMessageSeq`, a 2 KiB `finalTextPreview`, and a delivery contract summary when present (#1570).
+- `relay-ide v1 channels subscribe` accepts `--only run-terminal,system` to request a bounded server-side projection for orchestrators (#1570).
+
 ### Channel Adapters
 
 #### Fixed

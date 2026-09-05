@@ -78,6 +78,8 @@ describe('channels.subscribe CLI gateway command', () => {
         '<id>',
         '--after-seq',
         '<n>',
+        '--only',
+        '<run-terminal,system|run|message>',
         '--thread-id',
         '<id|root>',
         '--message-id',
