@@ -572,10 +572,10 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     const client = this.requireClient();
-    // Rejected BEFORE any turn patch, and before the queue: `initialize`
-    // reported `promptCapabilities.image: false` on this route, so accepting an
-    // attachment would silently drop the user's file. Nothing about that answer
-    // depends on the file, so the caller learns immediately.
+    // Rejected BEFORE any turn patch, and before the queue: this lane sends
+    // text-only prompts regardless of what `promptCapabilities` advertises, so
+    // accepting an attachment would silently drop the user's file. Nothing
+    // about that answer depends on the file, so the caller learns immediately.
     this.assertNoAttachments(input);
     if (this.activeTurnId) return this.queued.enqueue(input);
 
