@@ -34,12 +34,24 @@ describe('channel delivery contract parsing (#1569)', () => {
     expect(() => parseChannelDeliveryExpectation('text:(')).toThrow(
       ChannelDeliveryContractParseError
     );
+    expect(() => parseChannelDeliveryExpectation('text:(a+)+$')).toThrow(
+      ChannelDeliveryContractParseError
+    );
+    expect(() => parseChannelDeliveryExpectation('text:(a)\\1')).toThrow(
+      ChannelDeliveryContractParseError
+    );
   });
 
   it('rejects absolute file paths', () => {
     expect(() => parseChannelDeliveryExpectation('file:/etc/passwd')).toThrow(
       ChannelDeliveryContractParseError
     );
+  });
+
+  it('rejects file paths that escape the routing cwd', () => {
+    expect(() =>
+      parseChannelDeliveryExpectation('file:../../etc/passwd')
+    ).toThrow(ChannelDeliveryContractParseError);
   });
 
   it('parses a full contract and trims specs', () => {
@@ -62,14 +74,14 @@ describe('channel delivery contract evaluator (pure; injected probes)', () => {
       },
       {
         git: {
-          currentBranch: async () => 'feat/x',
-          aheadCount: async () => 0,
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
         },
         pr: {
-          hasOpenPrForBranch: async () => false,
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
         },
         fs: {
-          exists: async () => false,
+          exists: async () => ({ kind: 'ok', value: false }),
         },
       }
     );
@@ -80,6 +92,7 @@ describe('channel delivery contract evaluator (pure; injected probes)', () => {
       'file:README.md',
       'text:done',
     ]);
+    expect(result.unknown).toEqual([]);
   });
 
   it('reports met when all expectations pass', async () => {
@@ -91,17 +104,69 @@ describe('channel delivery contract evaluator (pure; injected probes)', () => {
       },
       {
         git: {
-          currentBranch: async () => 'feat/y',
-          aheadCount: async () => 1,
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/y' }),
+          aheadCount: async () => ({ kind: 'ok', value: 1 }),
         },
         pr: {
-          hasOpenPrForBranch: async (branch) => branch === 'feat/y',
+          hasOpenPrForBranch: async (branch) => ({
+            kind: 'ok',
+            value: branch === 'feat/y',
+          }),
         },
         fs: {
-          exists: async (p) => p === 'out.txt',
+          exists: async (p) => ({ kind: 'ok', value: p === 'out.txt' }),
         },
       }
     );
-    expect(result).toEqual({ met: true, unmet: [] });
+    expect(result).toEqual({ met: true, unmet: [], unknown: [] });
+  });
+
+  it('caps text matching at 64KiB', async () => {
+    const text = `${'a'.repeat(64 * 1024)}Z`;
+    const result = await evaluateDeliveryContract(
+      {
+        expect: ['text:Z$'],
+        cwd: '/tmp/repo',
+        finalAssistantText: text,
+      },
+      {
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: null }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+        },
+        fs: {
+          exists: async () => ({ kind: 'ok', value: false }),
+        },
+      }
+    );
+    expect(result.unmet).toEqual(['text:Z$']);
+  });
+
+  it('returns promptly for a pathological pattern under the match budget', async () => {
+    const start = Date.now();
+    const result = await evaluateDeliveryContract(
+      {
+        expect: ['text:^(a|aa)+$'],
+        cwd: '/tmp/repo',
+        finalAssistantText: 'a'.repeat(50_000),
+      },
+      {
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: null }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
+        },
+        fs: {
+          exists: async () => ({ kind: 'ok', value: false }),
+        },
+      }
+    );
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(typeof result.met).toBe('boolean');
   });
 });

@@ -88,6 +88,12 @@ export interface ChannelAsyncRun {
     result?: {
       met: boolean;
       unmet: string[];
+      /**
+       * Expectations that could not be verified due to probe failures (e.g. git
+       * context unavailable, gh unauthenticated, regex budget exceeded). These
+       * never count as unmet and must not force `completed_unmet`.
+       */
+      unknown?: Array<{ spec: string; reason: string }>;
       evaluatedAt: string;
     };
     followupPostedAt?: string;

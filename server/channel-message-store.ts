@@ -1505,7 +1505,12 @@ export interface ChannelMessageStore {
   /** Finalize the delivery contract on a settled run (#1569). */
   finalizeAsyncRunDeliveryContract(input: {
     runId: ChannelAsyncRunId;
-    result: { met: boolean; unmet: string[]; evaluatedAt: string };
+    result: {
+      met: boolean;
+      unmet: string[];
+      unknown?: Array<{ spec: string; reason: string }>;
+      evaluatedAt: string;
+    };
     followupPostedAt?: string;
   }): ChannelAsyncRun | null;
   beginStream(input: BeginStreamInput): ChannelMessage;
@@ -4527,7 +4532,12 @@ export function createChannelMessageStore(
   const finalizeAsyncRunDeliveryContractImpl = db.transaction(
     (input: {
       runId: ChannelAsyncRunId;
-      result: { met: boolean; unmet: string[]; evaluatedAt: string };
+      result: {
+        met: boolean;
+        unmet: string[];
+        unknown?: Array<{ spec: string; reason: string }>;
+        evaluatedAt: string;
+      };
       followupPostedAt?: string;
     }): ChannelAsyncRun | null => {
       const run = selectAsyncRun.get(input.runId) as AsyncRunRow | undefined;
@@ -4557,9 +4567,12 @@ export function createChannelMessageStore(
       };
 
       const met = next.result?.met === true;
+      const hasUnknown =
+        Array.isArray(next.result?.unknown) && next.result!.unknown.length > 0;
       const wantsUnmet =
         !met &&
         run.state === 'completed' &&
+        !hasUnknown &&
         Array.isArray(next.result?.unmet) &&
         next.result!.unmet.length > 0;
       const nextState: ChannelAsyncRunState = wantsUnmet

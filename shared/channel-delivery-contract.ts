@@ -27,6 +27,114 @@ function cleanSpec(spec: string): string {
   return spec.trim();
 }
 
+function isQuantifierChar(ch: string): boolean {
+  return ch === '*' || ch === '+' || ch === '?';
+}
+
+function isDigit(ch: string): boolean {
+  return ch >= '0' && ch <= '9';
+}
+
+function assertNoBackreferences(pattern: string, spec: string): void {
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i] ?? '';
+    if (ch === '\\') {
+      const next = pattern[i + 1] ?? '';
+      if (!inClass && next && isDigit(next) && next !== '0') {
+        throw new ChannelDeliveryContractParseError(
+          'text regex must not use backreferences',
+          { spec, regex: pattern }
+        );
+      }
+      if (!inClass && next === 'k' && (pattern[i + 2] ?? '') === '<') {
+        throw new ChannelDeliveryContractParseError(
+          'text regex must not use backreferences',
+          { spec, regex: pattern }
+        );
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      continue;
+    }
+    if (ch === ']' && inClass) {
+      inClass = false;
+      continue;
+    }
+  }
+}
+
+function assertNoNestedQuantifiers(pattern: string, spec: string): void {
+  type GroupState = { hasQuantifier: boolean };
+  const stack: GroupState[] = [{ hasQuantifier: false }];
+  let inClass = false;
+  const fail = (): never => {
+    throw new ChannelDeliveryContractParseError(
+      'text regex must not contain nested quantifiers',
+      { spec, regex: pattern }
+    );
+  };
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i] ?? '';
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      continue;
+    }
+    if (ch === ']' && inClass) {
+      inClass = false;
+      continue;
+    }
+    if (inClass) continue;
+
+    if (ch === '(') {
+      stack.push({ hasQuantifier: false });
+      continue;
+    }
+
+    if (ch === ')') {
+      const done = stack.pop() ?? { hasQuantifier: false };
+      const parent = stack[stack.length - 1];
+      if (parent) parent.hasQuantifier ||= done.hasQuantifier;
+
+      const next = pattern[i + 1] ?? '';
+      if (isQuantifierChar(next)) {
+        if (done.hasQuantifier) fail();
+        i += 1;
+        continue;
+      }
+      if (next === '{') {
+        const close = pattern.indexOf('}', i + 2);
+        const quantified = close !== -1;
+        if (quantified && done.hasQuantifier) fail();
+        if (quantified) i = close;
+      }
+      continue;
+    }
+
+    if (isQuantifierChar(ch) || ch === '{') {
+      const current = stack[stack.length - 1];
+      if (current) current.hasQuantifier = true;
+      if (ch === '{') {
+        const close = pattern.indexOf('}', i + 1);
+        if (close !== -1) i = close;
+      }
+      continue;
+    }
+  }
+}
+
+function assertSafeTextRegex(pattern: string, spec: string): void {
+  assertNoBackreferences(pattern, spec);
+  assertNoNestedQuantifiers(pattern, spec);
+}
+
 function ensureNonEmpty(value: string, label: string, spec: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -72,6 +180,12 @@ export function parseChannelDeliveryExpectation(
         { spec, path: rel }
       );
     }
+    if (normalized.split(path.sep).includes('..')) {
+      throw new ChannelDeliveryContractParseError(
+        'file path must not escape the routing cwd',
+        { spec, path: rel }
+      );
+    }
     return { kind: 'file', path: normalized };
   }
   if (spec.startsWith('text:')) {
@@ -80,6 +194,7 @@ export function parseChannelDeliveryExpectation(
       'text regex',
       spec
     );
+    assertSafeTextRegex(pattern, spec);
     try {
       // Validate compilation. We store the source string, not the RegExp instance.
       // Default flags are caller-controlled by embedding in the pattern itself.

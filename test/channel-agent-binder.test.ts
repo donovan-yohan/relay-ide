@@ -4629,11 +4629,11 @@ describe('channel-agent-binder — lifecycle', () => {
       agentProfileStore: profiles,
       deliveryContractProbeFactory: () => ({
         git: {
-          currentBranch: async () => 'feat/x',
-          aheadCount: async () => 0,
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({ kind: 'ok', value: 0 }),
         },
         pr: {
-          hasOpenPrForBranch: async () => false,
+          hasOpenPrForBranch: async () => ({ kind: 'ok', value: false }),
         },
       }),
     });
@@ -4659,6 +4659,7 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(run.state).toBe('completed_unmet');
     expect(run.deliveryContract?.result?.met).toBe(false);
     expect(run.deliveryContract?.result?.unmet).toEqual(['pr:feat/x']);
+    expect(run.deliveryContract?.result?.unknown ?? []).toEqual([]);
     expect(run.deliveryContract?.followupPostedAt).toBeTruthy();
 
     const sys = systemRows(store).map((m) => m.body.text);
@@ -4666,6 +4667,70 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(
       sys.filter((t) => t.includes('Turn ended with contract unmet')).length
     ).toBe(1);
+  });
+
+  it('keeps a run completed when the delivery contract cannot be verified (#1569)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+      deliveryContractProbeFactory: () => ({
+        git: {
+          currentBranch: async () => ({ kind: 'ok', value: 'feat/x' }),
+          aheadCount: async () => ({
+            kind: 'unknown',
+            reason: 'not a git repository',
+          }),
+        },
+        pr: {
+          hasOpenPrForBranch: async () => ({
+            kind: 'unknown',
+            reason: 'gh unauthenticated',
+          }),
+        },
+      }),
+    });
+
+    const mentions = parseMentions('@mock please ship', ['mock']);
+    const result = store.appendCompleteWithAsyncRun({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock please ship',
+      mentions,
+      targetIds: [builtInAgentProfileId('mock')],
+      deliveryContract: { expect: ['commit', 'pr:feat/x'] },
+      meta: { deliveryContract: { expect: ['commit', 'pr:feat/x'] } },
+    });
+    binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+
+    await waitFor(() => {
+      const run = store.getAsyncRun(result.run.id);
+      return (
+        run?.state === 'completed' && Boolean(run.deliveryContract?.result)
+      );
+    });
+
+    const run = store.getAsyncRun(result.run.id)!;
+    expect(run.state).toBe('completed');
+    expect(run.deliveryContract?.result?.unmet ?? []).toEqual([]);
+    expect(run.deliveryContract?.result?.unknown?.length ?? 0).toBeGreaterThan(
+      0
+    );
+    expect(run.deliveryContract?.followupPostedAt).toBeFalsy();
+
+    const sys = systemRows(store).map((m) => m.body.text);
+    expect(
+      sys.some((t) => t.includes('Delivery contract could not verify'))
+    ).toBe(true);
+    expect(sys.some((t) => t.includes('Turn ended with contract unmet'))).toBe(
+      false
+    );
   });
 });
 

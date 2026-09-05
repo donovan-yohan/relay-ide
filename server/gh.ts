@@ -187,8 +187,13 @@ function isAuthErrorText(text: string): boolean {
 }
 
 function isNoPrErrorText(text: string): boolean {
+  const t = text.toLowerCase();
   return (
-    text.includes('no pull requests found') || text.includes('Could not find')
+    t.includes('no pull requests found') ||
+    t.includes('no pull requests match') ||
+    t.includes('no pull requests') ||
+    t.includes('could not find pull request') ||
+    t.includes('could not find')
   );
 }
 
@@ -284,7 +289,6 @@ async function fetchCiStatus(
   branch: string,
   run: ExecFileAsyncLike
 ): Promise<CiStatusResult> {
-
   let stdout: string;
   let stderr: string;
 
@@ -320,13 +324,46 @@ async function getPrForBranch(
     exec?: ExecFileAsyncLike;
   } = {}
 ): Promise<PrInfo | null> {
+  const result = await getPrForBranchResult(repoPath, branch, options);
+  return result.kind === 'ok' ? result.pr : null;
+}
+
+export type GetPrForBranchResult =
+  | { kind: 'ok'; pr: PrInfo | null }
+  | { kind: 'unknown'; reason: string };
+
+function classifyGhFailure(err: unknown): { reason: string; stderr?: string } {
+  if (!err || typeof err !== 'object') return { reason: String(err) };
+  const rec = err as Record<string, unknown>;
+  const code = typeof rec['code'] === 'string' ? rec['code'] : undefined;
+  const stderr = typeof rec['stderr'] === 'string' ? rec['stderr'] : undefined;
+  if (code === 'ENOENT')
+    return stderr
+      ? { reason: 'gh not installed', stderr }
+      : { reason: 'gh not installed' };
+  if (stderr && isAuthErrorText(stderr))
+    return { reason: 'gh unauthenticated', stderr };
+  if (stderr && stderr.toLowerCase().includes('timeout'))
+    return { reason: 'gh request timed out', stderr };
+  return stderr
+    ? { reason: stderr.trim().slice(0, 400), stderr }
+    : { reason: 'gh request failed' };
+}
+
+export async function getPrForBranchResult(
+  repoPath: string,
+  branch: string,
+  options: {
+    exec?: ExecFileAsyncLike;
+  } = {}
+): Promise<GetPrForBranchResult> {
   const run: ExecFileAsyncLike =
     options.exec || (execFileAsync as ExecFileAsyncLike);
 
   let stdout: string;
-
+  let stderr: string;
   try {
-    ({ stdout } = await run(
+    const out = await run(
       'gh',
       [
         'pr',
@@ -336,12 +373,22 @@ async function getPrForBranch(
         'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
       ],
       { cwd: repoPath, timeout: 5000 }
-    ));
-  } catch {
-    return null;
+    );
+    stdout = out.stdout;
+    stderr = out.stderr;
+  } catch (err) {
+    const failure = classifyGhFailure(err);
+    if (failure.stderr && isNoPrErrorText(failure.stderr)) {
+      return { kind: 'ok', pr: null };
+    }
+    return { kind: 'unknown', reason: failure.reason };
   }
 
-  if (!stdout.trim()) return null;
+  if (stderr && isAuthErrorText(stderr)) {
+    return { kind: 'unknown', reason: 'gh unauthenticated' };
+  }
+
+  if (!stdout.trim()) return { kind: 'ok', pr: null };
 
   try {
     const data = JSON.parse(stdout) as {
@@ -360,22 +407,28 @@ async function getPrForBranch(
     };
 
     return {
-      number: data.number,
-      title: data.title,
-      url: data.url,
-      state: data.state as PrInfo['state'],
-      headRefName: data.headRefName,
-      baseRefName: data.baseRefName,
-      isDraft: data.isDraft,
-      reviewDecision: data.reviewDecision ?? null,
-      additions: data.additions ?? 0,
-      deletions: data.deletions ?? 0,
-      mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
-      unresolvedCommentCount: 0,
-      updatedAt: data.updatedAt ?? '',
+      kind: 'ok',
+      pr: {
+        number: data.number,
+        title: data.title,
+        url: data.url,
+        state: data.state as PrInfo['state'],
+        headRefName: data.headRefName,
+        baseRefName: data.baseRefName,
+        isDraft: data.isDraft,
+        reviewDecision: data.reviewDecision ?? null,
+        additions: data.additions ?? 0,
+        deletions: data.deletions ?? 0,
+        mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
+        unresolvedCommentCount: 0,
+        updatedAt: data.updatedAt ?? '',
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return {
+      kind: 'unknown',
+      reason: err instanceof Error ? err.message : 'invalid gh output',
+    };
   }
 }
 

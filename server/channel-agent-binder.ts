@@ -5,8 +5,11 @@ import { promisify } from 'node:util';
 import { createLogger } from './logger.js';
 import { resolveExecutablePath } from './frameworks.js';
 import { bindSessionToChannel } from './channel-agent-bridge.js';
-import { getPrForBranch } from './gh.js';
-import { evaluateDeliveryContract } from './channel-delivery-contract-evaluator.js';
+import { getPrForBranchResult } from './gh.js';
+import {
+  evaluateDeliveryContract,
+  type DeliveryContractProbeOutcome,
+} from './channel-delivery-contract-evaluator.js';
 import {
   buildMentionContextPacketEnvelope,
   PACKET_MAX_ROWS,
@@ -3962,7 +3965,16 @@ export function createChannelAgentBinder(
         changed.state === 'completed' &&
         changed.deliveryContract?.expect?.length
       ) {
-        void evaluateDeliveryContractForCompletedRun(binding, turnId, changed);
+        void evaluateDeliveryContractForCompletedRun(
+          binding,
+          turnId,
+          changed
+        ).catch((err) => {
+          logger.warn(
+            'channel binder delivery-contract evaluation failed:',
+            err instanceof Error ? err.message : String(err)
+          );
+        });
       }
     }
   }
@@ -3972,159 +3984,229 @@ export function createChannelAgentBinder(
     turnId: string,
     run: import('../shared/channel-chat-protocol.js').ChannelAsyncRun
   ): Promise<void> {
-    // Idempotent: once evaluated, never re-evaluate.
-    if (run.deliveryContract?.result) return;
-    const expect = run.deliveryContract?.expect ?? [];
-    if (expect.length === 0) return;
+    try {
+      // Idempotent: once evaluated, never re-evaluate.
+      if (run.deliveryContract?.result) return;
+      const expect = run.deliveryContract?.expect ?? [];
+      if (expect.length === 0) return;
 
-    const runtime = binding.runtimeId
-      ? deps.runtimes.get(binding.runtimeId)
-      : undefined;
-    const cwd =
-      runtime?.cwd ??
-      deps.topicStore?.get(binding.channelId)?.routingDefaults.cwd ??
-      os.homedir();
-    const finalText = binding.finalMessageByTurn.get(turnId)?.body.text ?? '';
+      const runtime = binding.runtimeId
+        ? deps.runtimes.get(binding.runtimeId)
+        : undefined;
+      const cwd =
+        runtime?.cwd ??
+        deps.topicStore?.get(binding.channelId)?.routingDefaults.cwd ??
+        os.homedir();
+      const finalText = binding.finalMessageByTurn.get(turnId)?.body.text ?? '';
 
-    const gitProbe = {
-      currentBranch: async (): Promise<string | null> => {
-        try {
-          const { stdout } = await execFileAsync(
-            'git',
-            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-            { cwd, timeout: 5000 }
-          );
-          const name = stdout.trim();
-          return name ? name : null;
-        } catch {
-          return null;
-        }
-      },
-      aheadCount: async (): Promise<number> => {
-        const resolveDefaultBase = async (): Promise<string | null> => {
+      function notGitRepoReason(err: unknown): string | null {
+        const rec = err as { stderr?: string; message?: string };
+        const text =
+          `${rec?.stderr ?? ''}\n${rec?.message ?? ''}`.toLowerCase();
+        return text.includes('not a git repository')
+          ? 'not a git repository'
+          : null;
+      }
+
+      const gitProbe = {
+        currentBranch: async (): Promise<
+          DeliveryContractProbeOutcome<string | null>
+        > => {
           try {
             const { stdout } = await execFileAsync(
               'git',
-              ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+              ['symbolic-ref', '--quiet', '--short', 'HEAD'],
               { cwd, timeout: 5000 }
             );
-            const upstream = stdout.trim();
-            if (upstream) return upstream;
-          } catch {
-            /* no upstream */
+            const name = stdout.trim();
+            return { kind: 'ok', value: name ? name : null };
+          } catch (err) {
+            const reason = notGitRepoReason(err);
+            if (reason) return { kind: 'unknown', reason };
+            // Detached/unborn HEAD is normal; treat as "no branch".
+            return { kind: 'ok', value: null };
+          }
+        },
+        aheadCount: async (): Promise<DeliveryContractProbeOutcome<number>> => {
+          const resolveDefaultBase = async (): Promise<
+            DeliveryContractProbeOutcome<string | null>
+          > => {
+            try {
+              const { stdout } = await execFileAsync(
+                'git',
+                ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+                { cwd, timeout: 5000 }
+              );
+              const upstream = stdout.trim();
+              if (upstream) return { kind: 'ok', value: upstream };
+            } catch (err) {
+              const reason = notGitRepoReason(err);
+              if (reason) return { kind: 'unknown', reason };
+              /* no upstream */
+            }
+            try {
+              const { stdout } = await execFileAsync(
+                'git',
+                ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+                { cwd, timeout: 5000 }
+              );
+              const ref = stdout.trim();
+              const prefix = 'refs/remotes/origin/';
+              if (ref.startsWith(prefix)) {
+                return {
+                  kind: 'ok',
+                  value: `origin/${ref.slice(prefix.length)}`,
+                };
+              }
+            } catch (err) {
+              const reason = notGitRepoReason(err);
+              if (reason) return { kind: 'unknown', reason };
+              /* no origin/HEAD */
+            }
+            return { kind: 'ok', value: null };
+          };
+
+          const base = await resolveDefaultBase();
+          if (base.kind === 'unknown') return base;
+          if (!base.value) {
+            return {
+              kind: 'unknown',
+              reason: 'no upstream or origin/HEAD to compare against',
+            };
           }
           try {
             const { stdout } = await execFileAsync(
               'git',
-              ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+              ['rev-list', '--count', `${base.value}..HEAD`],
               { cwd, timeout: 5000 }
             );
-            const ref = stdout.trim();
-            const prefix = 'refs/remotes/origin/';
-            if (ref.startsWith(prefix))
-              return `origin/${ref.slice(prefix.length)}`;
-          } catch {
-            /* no origin/HEAD */
+            const raw = stdout.trim();
+            const n = Number.parseInt(raw, 10);
+            if (!Number.isFinite(n) || n < 0) {
+              return {
+                kind: 'unknown',
+                reason: 'unable to parse git ahead count',
+              };
+            }
+            return { kind: 'ok', value: n };
+          } catch (err) {
+            const reason = notGitRepoReason(err);
+            if (reason) return { kind: 'unknown', reason };
+            return {
+              kind: 'unknown',
+              reason: 'git ahead-count probe failed',
+            };
           }
-          return null;
-        };
-        const base = await resolveDefaultBase();
-        if (!base) return 0;
-        try {
-          const { stdout } = await execFileAsync(
-            'git',
-            ['rev-list', '--count', `${base}..HEAD`],
-            { cwd, timeout: 5000 }
-          );
-          const raw = stdout.trim();
-          const n = Number.parseInt(raw, 10);
-          return Number.isFinite(n) && n > 0 ? n : 0;
-        } catch {
-          return 0;
-        }
-      },
-    };
+        },
+      };
 
-    const prProbe = {
-      hasOpenPrForBranch: async (branch: string): Promise<boolean> => {
-        type ExecLike = (
-          file: string,
-          args: string[],
-          options: { cwd: string; timeout?: number }
-        ) => Promise<{ stdout: string; stderr: string }>;
-        const pr = await getPrForBranch(cwd, branch, {
-          exec: execFileAsync as unknown as ExecLike,
-        });
-        return Boolean(pr && pr.state === 'OPEN');
-      },
-    };
+      const prProbe = {
+        hasOpenPrForBranch: async (
+          branch: string
+        ): Promise<DeliveryContractProbeOutcome<boolean>> => {
+          type ExecLike = (
+            file: string,
+            args: string[],
+            options: { cwd: string; timeout?: number }
+          ) => Promise<{ stdout: string; stderr: string }>;
+          const pr = await getPrForBranchResult(cwd, branch, {
+            exec: execFileAsync as unknown as ExecLike,
+          });
+          if (pr.kind === 'unknown')
+            return { kind: 'unknown', reason: pr.reason };
+          return {
+            kind: 'ok',
+            value: Boolean(pr.pr && pr.pr.state === 'OPEN'),
+          };
+        },
+      };
 
-    const evaluation = await evaluateDeliveryContract(
-      { expect, cwd, finalAssistantText: finalText },
-      deps.deliveryContractProbeFactory
-        ? deps.deliveryContractProbeFactory({ cwd })
-        : { git: gitProbe, pr: prProbe }
-    );
-    const evaluatedAt = new Date(now()).toISOString();
-    const updated = store.finalizeAsyncRunDeliveryContract({
-      runId: run.id,
-      result: {
-        met: evaluation.met,
-        unmet: evaluation.unmet,
-        evaluatedAt,
-      },
-    });
-    if (updated) hub.broadcastRunLifecycle(updated);
-
-    if (evaluation.met) return;
-
-    const parentMessageId = parentForTurn(binding, turnId);
-    postSystemRow(
-      binding.channelId,
-      `Delivery contract unmet: ${evaluation.unmet.join(', ')}`,
-      { parentMessageId }
-    );
-
-    // Attention is a metadata topic; keep payload redaction-safe.
-    deps.events?.publish({
-      topic: 'attention',
-      type: 'delivery-contract.unmet',
-      ...(runtime?.repoPath ? { repoPath: runtime.repoPath } : {}),
-      payload: {
-        channelId: binding.channelId,
+      const evaluation = await evaluateDeliveryContract(
+        { expect, cwd, finalAssistantText: finalText },
+        deps.deliveryContractProbeFactory
+          ? deps.deliveryContractProbeFactory({ cwd })
+          : { git: gitProbe, pr: prProbe }
+      );
+      const evaluatedAt = new Date(now()).toISOString();
+      const updated = store.finalizeAsyncRunDeliveryContract({
         runId: run.id,
+        result: {
+          met: evaluation.met,
+          unmet: evaluation.unmet,
+          unknown: evaluation.unknown,
+          evaluatedAt,
+        },
+      });
+      if (updated) hub.broadcastRunLifecycle(updated);
+
+      const parentMessageId = parentForTurn(binding, turnId);
+
+      if (evaluation.unknown.length > 0) {
+        postSystemRow(
+          binding.channelId,
+          `Delivery contract could not verify: ${evaluation.unknown
+            .map((u) => `${u.spec}: ${u.reason}`)
+            .join(', ')}`,
+          { parentMessageId }
+        );
+        return;
+      }
+
+      if (evaluation.met) return;
+
+      postSystemRow(
+        binding.channelId,
+        `Delivery contract unmet: ${evaluation.unmet.join(', ')}`,
+        { parentMessageId }
+      );
+
+      // Attention is a metadata topic; keep payload redaction-safe.
+      deps.events?.publish({
+        topic: 'attention',
+        type: 'delivery-contract.unmet',
+        ...(runtime?.repoPath ? { repoPath: runtime.repoPath } : {}),
+        payload: {
+          channelId: binding.channelId,
+          runId: run.id,
+          targetProfileId: binding.profileActorId,
+          unmet: evaluation.unmet,
+        },
+      });
+
+      const alreadyFollowedUp = Boolean(
+        updated?.deliveryContract?.followupPostedAt ??
+        run.deliveryContract?.followupPostedAt
+      );
+      if (alreadyFollowedUp) return;
+
+      const followupText = `Turn ended with contract unmet: ${evaluation.unmet.join(
+        ', '
+      )}. @${binding.displayName} finish it.`;
+      postDeliveryContractFollowupTrigger({
+        channelId: binding.channelId,
+        text: followupText,
         targetProfileId: binding.profileActorId,
-        unmet: evaluation.unmet,
-      },
-    });
-
-    const alreadyFollowedUp = Boolean(
-      updated?.deliveryContract?.followupPostedAt ??
-      run.deliveryContract?.followupPostedAt
-    );
-    if (alreadyFollowedUp) return;
-
-    const followupText = `Turn ended with contract unmet: ${evaluation.unmet.join(
-      ', '
-    )}. @${binding.displayName} finish it.`;
-    postDeliveryContractFollowupTrigger({
-      channelId: binding.channelId,
-      text: followupText,
-      targetProfileId: binding.profileActorId,
-      ...(parentMessageId ? { parentMessageId } : {}),
-      runId: run.id,
-    });
-    const followupPostedAt = new Date(now()).toISOString();
-    const withFollowup = store.finalizeAsyncRunDeliveryContract({
-      runId: run.id,
-      result: {
-        met: evaluation.met,
-        unmet: evaluation.unmet,
-        evaluatedAt,
-      },
-      followupPostedAt,
-    });
-    if (withFollowup) hub.broadcastRunLifecycle(withFollowup);
+        ...(parentMessageId ? { parentMessageId } : {}),
+        runId: run.id,
+      });
+      const followupPostedAt = new Date(now()).toISOString();
+      const withFollowup = store.finalizeAsyncRunDeliveryContract({
+        runId: run.id,
+        result: {
+          met: evaluation.met,
+          unmet: evaluation.unmet,
+          unknown: evaluation.unknown,
+          evaluatedAt,
+        },
+        followupPostedAt,
+      });
+      if (withFollowup) hub.broadcastRunLifecycle(withFollowup);
+    } catch (err) {
+      logger.warn(
+        'channel binder delivery-contract evaluation failed:',
+        err instanceof Error ? err.message : String(err)
+      );
+    }
   }
 
   function handleApprovalStarted(

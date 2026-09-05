@@ -3695,6 +3695,18 @@ const channelAsyncRunSchema: RelayJsonSchema = {
               properties: {
                 met: booleanSchema,
                 unmet: { type: 'array', items: stringSchema },
+                unknown: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      spec: stringSchema,
+                      reason: stringSchema,
+                    },
+                    required: ['spec', 'reason'],
+                  },
+                },
                 evaluatedAt: { type: 'string', format: 'date-time' },
               },
               required: ['met', 'unmet', 'evaluatedAt'],
