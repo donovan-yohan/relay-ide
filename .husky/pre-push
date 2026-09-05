@@ -59,8 +59,6 @@ if [ "$IS_WORKTREE" = "yes" ]; then
   # Worktree: run only changed tests, exclude env-sensitive
   # Single quotes required: prevents ! history expansion + preserves \[ for regex
   echo "relay-ide: worktree detected, running changed tests only"
-  echo "relay-ide: ensuring dist is up-to-date (npm run build:server)"
-  npm run build:server
   # shellcheck disable=SC2086 # word splitting intentional for --exclude flags
   npx vitest run --changed "$CHANGED_BASE" $PREPUSH_VITEST_EXCLUDES --testNamePattern '^(?!.*\[needs:git-init\])'
 else

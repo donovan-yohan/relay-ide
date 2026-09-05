@@ -3474,6 +3474,11 @@ function runSchemaMigrations(db: Database.Database): void {
           reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           completed_at TEXT
         );
+        -- Some callers can construct a head-schema DB while leaving an older
+        -- schema_version row (e.g. interrupted upgrades / hand-built fixtures).
+        -- In those cases channel_async_runs may already include newer columns
+        -- (like v19's delivery_contract_json). Use an explicit column list so
+        -- this rebuild stays compatible with both v15 rows and head-schema rows.
         INSERT INTO channel_async_runs_v16 (
           id, channel_id, thread_id, request_message_id, requester_id,
           state, reason, created_at, updated_at, completed_at
@@ -3547,6 +3552,8 @@ function runSchemaMigrations(db: Database.Database): void {
     db.transaction(() => {
       // #1569: delivery contract for channel turns — widen run terminal states
       // and persist the declared contract + its evaluation result on the run.
+      // Note: `completed_unmet` is a RUN aggregate outcome only; per-target
+      // states remain in `channel_async_run_targets` and never take this value.
       db.exec(`
         DROP INDEX IF EXISTS idx_char_channel_created;
         CREATE TABLE channel_async_runs_v19 (

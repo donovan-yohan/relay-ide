@@ -192,8 +192,7 @@ function isNoPrErrorText(text: string): boolean {
     t.includes('no pull requests found') ||
     t.includes('no pull requests match') ||
     t.includes('no pull requests') ||
-    t.includes('could not find pull request') ||
-    t.includes('could not find')
+    t.includes('could not find pull request')
   );
 }
 

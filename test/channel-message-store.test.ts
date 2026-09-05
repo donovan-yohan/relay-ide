@@ -1037,6 +1037,18 @@ describe('channel-message-store schema migration', () => {
       ALTER TABLE channel_async_runs_v18 RENAME TO channel_async_runs;
       CREATE INDEX idx_char_channel_created
         ON channel_async_runs(channel_id, created_at, id);
+
+      INSERT INTO channel_async_runs
+        (id, channel_id, thread_id, request_message_id, requester_id, state, reason, created_at, updated_at, completed_at)
+      VALUES
+        ('chrun:legacy-v18', 'topic:run-v19', NULL, 'chm:legacy', 'human:operator', 'completed', NULL,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO channel_async_run_targets
+        (run_id, target_id, state, reason, approval_state, updated_at, completed_at)
+      VALUES
+        ('chrun:legacy-v18', 'agent-profile:mock:default', 'completed', NULL, NULL,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+
       UPDATE schema_version SET version = 18;
     `);
     legacy.close();
@@ -1057,8 +1069,9 @@ describe('channel-message-store schema migration', () => {
       deliveryContract: { expect: ['file:missing.txt'] },
       meta: { deliveryContract: { expect: ['file:missing.txt'] } },
     });
+    migrated.close();
 
-    const inspect = new Database(file, { readonly: true });
+    const inspect = new Database(file);
     cleanup.push(() => inspect.close());
     expect(
       (
@@ -1076,6 +1089,30 @@ describe('channel-message-store schema migration', () => {
         }>
       ).map((c) => c.name)
     ).toContain('delivery_contract_json');
+
+    expect(
+      inspect
+        .prepare(
+          `SELECT id, state, delivery_contract_json FROM channel_async_runs WHERE id = ?`
+        )
+        .get('chrun:legacy-v18')
+    ).toEqual({
+      id: 'chrun:legacy-v18',
+      state: 'completed',
+      delivery_contract_json: null,
+    });
+
+    expect(() => {
+      inspect
+        .prepare(
+          `INSERT INTO channel_async_runs
+            (id, channel_id, thread_id, request_message_id, requester_id, state, reason, delivery_contract_json, created_at, updated_at, completed_at)
+          VALUES
+            ('chrun:unmet', 'topic:run-v19', NULL, 'chm:unmet', 'human:operator', 'completed_unmet', 'delivery-contract-unmet', NULL,
+             '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`
+        )
+        .run();
+    }).not.toThrow();
   });
 });
 
