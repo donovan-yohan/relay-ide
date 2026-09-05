@@ -26,6 +26,9 @@ function harness(options: {
   initResult: Record<string, unknown>;
   resumeStrategy?: AcpHarnessProfile['resumeStrategy'];
   onLoadReplay?: (client: AcpClient) => void;
+  authMethodId?: string | null;
+  permissionPolicy?: AcpHarnessProfile['permissionPolicy'];
+  firstUpdateTimeoutMs?: number;
 }) {
   const client = new AcpClient({ command: 'acp-test' });
   client.setMaxListeners(50);
@@ -92,6 +95,15 @@ function harness(options: {
     command: 'acp-test',
     args: ['acp'],
     resumeStrategy: options.resumeStrategy ?? 'auto',
+    ...(options.authMethodId !== undefined
+      ? { authMethodId: options.authMethodId }
+      : {}),
+    ...(options.permissionPolicy
+      ? { permissionPolicy: options.permissionPolicy }
+      : {}),
+    ...(options.firstUpdateTimeoutMs !== undefined
+      ? { firstUpdateTimeoutMs: options.firstUpdateTimeoutMs }
+      : {}),
   };
 
   const adapter = new AcpProtocolAdapter(profile, (factoryOptions) => {
@@ -187,6 +199,205 @@ describe('AcpProtocolAdapter (base)', () => {
       expect.anything()
     );
     await h.adapter.disconnect();
+  });
+
+  it('posts a transcript fallback error when resuming is requested without a capability', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [],
+      },
+      resumeStrategy: 'load',
+    });
+    await h.adapter.connect({ ...config, resumeSessionId: 'stale-session' });
+    expect(h.request).toHaveBeenCalledWith('session/new', {
+      cwd: '/repo',
+      mcpServers: [],
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes(
+            'could not resume the previous session (session/load capability unavailable)'
+          )
+      )
+    ).toBe(true);
+    await h.adapter.disconnect();
+  });
+
+  it('posts a transcript fallback error when resume is explicitly disabled by strategy', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [],
+      },
+      resumeStrategy: 'none',
+    });
+    await h.adapter.connect({ ...config, resumeSessionId: 'stale-session' });
+    expect(h.request).toHaveBeenCalledWith('session/new', {
+      cwd: '/repo',
+      mcpServers: [],
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes(
+            'could not resume the previous session (resume strategy is none)'
+          )
+      )
+    ).toBe(true);
+    await h.adapter.disconnect();
+  });
+
+  it('fails the handshake when session/new returns no sessionId', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [],
+      },
+    });
+    h.request.mockImplementation(async (method: string) => {
+      if (method === 'session/new') return {};
+      return {};
+    });
+    await expect(h.adapter.connect(config)).rejects.toThrow(/no sessionid/i);
+    expect(h.adapter.status).toBe('disconnected');
+    expect(h.stop).toHaveBeenCalled();
+  });
+
+  it('fails the handshake when authenticate fails (auth gates connect)', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [{ id: 'login', name: 'Login' }],
+      },
+      authMethodId: 'login',
+    });
+    h.request.mockImplementation(async (method: string) => {
+      if (method === 'authenticate') throw new Error('Not logged in');
+      if (method === 'session/new') return { sessionId: SESSION_ID };
+      return {};
+    });
+    await expect(h.adapter.connect(config)).rejects.toThrow(/not logged in/i);
+    expect(h.request).toHaveBeenCalledWith('authenticate', {
+      methodId: 'login',
+    });
+    expect(h.request).not.toHaveBeenCalledWith(
+      'session/new',
+      expect.anything()
+    );
+    expect(h.stop).toHaveBeenCalled();
+  });
+
+  it('yolo auto-approves permission requests at the base level when policy enables it', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {}, resume: {} } },
+        authMethods: [],
+      },
+      permissionPolicy: () => ({ yoloAutoApprove: true }),
+    });
+    await h.adapter.connect({ ...config, permissionMode: 'yolo' } as any);
+    await h.adapter.sendMessage({ turnId: 't1', content: 'go' });
+
+    h.client.emit('peerRequest', {
+      id: 12,
+      method: 'session/request_permission',
+      params: {
+        sessionId: SESSION_ID,
+        toolCall: {
+          toolCallId: 'tool-1',
+          title: '`echo YOLO`',
+          kind: 'execute',
+        },
+        options: [{ optionId: 'allow-once', kind: 'allow_once' }],
+      },
+    });
+
+    expect(h.respond).toHaveBeenCalledWith(12, {
+      outcome: { outcome: 'selected', optionId: 'allow-once' },
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          (p.item as any).type === 'approval'
+      )
+    ).toBe(false);
+
+    h.settlePrompt('end_turn');
+    await h.adapter.disconnect();
+  });
+
+  it('posts a transcript fallback error when the resume capability is wholly absent', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: {},
+        authMethods: [],
+      },
+      resumeStrategy: 'load',
+    });
+    await h.adapter.connect({ ...config, resumeSessionId: 'stale-session' });
+    expect(h.request).toHaveBeenCalledWith('session/new', {
+      cwd: '/repo',
+      mcpServers: [],
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes(
+            'could not resume the previous session (session/load capability unavailable)'
+          )
+      )
+    ).toBe(true);
+    await h.adapter.disconnect();
+  });
+
+  it('fails a turn that produces no session/update within firstUpdateTimeoutMs', async () => {
+    vi.useFakeTimers();
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {}, resume: {} } },
+        authMethods: [],
+      },
+      firstUpdateTimeoutMs: 50,
+    });
+    await h.adapter.connect(config);
+    await h.adapter.sendMessage({ turnId: 't1', content: 'go' });
+
+    await vi.advanceTimersByTimeAsync(55);
+    await vi.waitFor(() =>
+      expect(
+        h.patches.some(
+          (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 't1'
+        )
+      ).toBe(true)
+    );
+    expect(h.notify).toHaveBeenCalledWith('session/cancel', {
+      sessionId: SESSION_ID,
+    });
+    expect(
+      h.patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' &&
+          String(p.message).includes('no session/update')
+      )
+    ).toBe(true);
+
+    // Let the in-flight prompt settle without affecting the already-failed turn.
+    h.settlePrompt('end_turn');
+    await h.adapter.disconnect();
+    vi.useRealTimers();
   });
 
   it('drops session/load history replay because no turn is active', async () => {

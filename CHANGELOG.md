@@ -26,7 +26,11 @@ workflow.
 
 #### Changed
 
-- Extract shared Agent Client Protocol (`acp`) adapter choreography into `AcpProtocolAdapter` with per-harness `AcpHarnessProfile` hooks, and migrate the dsh and cursor adapters onto it with unchanged behavior and fixtures (#1554).
+- Extract shared Agent Client Protocol (`acp`) adapter choreography into `AcpProtocolAdapter` with per-harness `AcpHarnessProfile` hooks, and migrate the dsh and cursor adapters onto it with unchanged behavior and fixtures (#1554). The harness profiles now carry explicit tool-classification and extension wiring (`otherKindHeuristics`, `commandToolNames`, `fileToolNames`, `extensionNamespace`) and launch policy (`permissionPolicy.yoloArgs`) instead of adapter-local copies.
+
+#### Fixed
+
+- ACP adapters now fail closed on connect when the authenticate step fails, and refuse to report connected if `session/new`, `session/load`, or `session/resume` returns no `sessionId` (#1554).
 
 ### Scoped CLI actor credentials across hub restart
 

@@ -1,16 +1,10 @@
 import { DSH_CHANNEL_COMMAND } from './launch-commands.js';
 import { buildChildEnv } from './adapter-utils.js';
-import {
-  isRecord,
-  nowIso,
-  objectField as record,
-  stringField as string,
-} from './wire-values.js';
+import { objectField as record, stringField as string } from './wire-values.js';
 import type { AdapterConfig } from '../protocol-adapter-v2.js';
 import type {
   AgentApprovalSupportV2,
   AgentCapabilitySetV2,
-  AgentItemV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import {
   AcpProtocolAdapter,
@@ -86,10 +80,15 @@ const DSH_PROFILE: AcpHarnessProfile = {
   capabilities: CAPABILITIES,
   providerNamespace: 'dsh',
   providerSessionKey: 'dshSessionId',
+  extensionNamespace: 'dsh',
+  otherKindHeuristics: false,
+  commandToolNames: COMMAND_TOOL_NAMES,
+  fileToolNames: FILE_TOOL_NAMES,
   approvalSupport: DSH_APPROVAL_SUPPORT,
   command: DSH_CHANNEL_COMMAND,
   args: () => ['--profile', 'acp'],
   resumeStrategy: 'resume',
+  firstUpdateTimeoutMs: 20_000,
   buildEnv: (config: AdapterConfig) => {
     // No provider extras in the denylist: the harness reads its credentials
     // from `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`, which a named profile MUST
@@ -108,48 +107,6 @@ const DSH_PROFILE: AcpHarnessProfile = {
     if (decision.kind === 'accept') return DSH_ALLOW_OPTION_ID;
     if (decision.kind === 'decline') return DSH_REJECT_OPTION_ID;
     return null;
-  },
-  mapToolCall: (update): AgentItemV2 | undefined => {
-    const id = string(update.toolCallId);
-    const name = string(update.title, 'tool');
-    const args = isRecord(update.rawInput) ? update.rawInput : {};
-
-    if (COMMAND_TOOL_NAMES.has(name))
-      return {
-        type: 'commandExecution',
-        id,
-        command: string(args.command, JSON.stringify(args)),
-        ...(string(args.cwd) ? { cwd: string(args.cwd) } : {}),
-        output: '',
-        status: 'running',
-        startedAt: nowIso(),
-      };
-
-    const filePath = string(args.file_path ?? args.path);
-    if (FILE_TOOL_NAMES.has(name) && filePath)
-      return {
-        type: 'fileChange',
-        id,
-        paths: [
-          {
-            path: filePath,
-            status: name === 'write' ? 'added' : 'edited',
-          },
-        ],
-        applyStatus: 'pending',
-        status: 'running',
-        startedAt: nowIso(),
-      };
-
-    return {
-      type: 'dynamicToolCall',
-      id,
-      namespace: 'dsh',
-      tool: name,
-      arguments: isRecord(update.rawInput) ? update.rawInput : {},
-      status: 'running',
-      startedAt: nowIso(),
-    };
   },
   onNotification: (notification, context) => {
     if (notification.method !== 'session/update') return;

@@ -83,24 +83,7 @@ export const DEFAULT_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
   canCancel: true,
 };
 
-export const DEFAULT_COMMAND_TOOL_NAMES = new Set([
-  'bash',
-  'pwsh',
-  'terminal_bash',
-  'shell',
-  'command',
-  'exec',
-]);
-
-export const DEFAULT_FILE_TOOL_NAMES = new Set([
-  'write',
-  'edit',
-  'str_replace_editor',
-  'str_replace_based_edit_tool',
-  'file_edit',
-  'create_file',
-  'delete_file',
-]);
+const EMPTY_TOOL_NAMES = new Set<string>();
 
 const DEV_NULL = '/dev/null';
 const OLD_DEV_NULL = '-- /dev/null';
@@ -121,12 +104,6 @@ export interface PendingInputRequest {
   turnId: string;
   peerRequestId: string | number;
   card: AgentQuestionItemV2;
-}
-
-export interface AcpToolCallContext {
-  turnId: string;
-  sessionId: string;
-  agentType: string;
 }
 
 export interface AcpNotificationContext {
@@ -168,6 +145,22 @@ export interface AcpHarnessProfile {
   approvalSupport?: AgentApprovalSupportV2;
   providerSessionKey?: string;
   providerNamespace?: string;
+  /**
+   * Namespace for dynamic tools and provider extensions emitted by the base
+   * ACP adapter. Defaults to `providerNamespace` and then `agentType`.
+   */
+  extensionNamespace?: string;
+  /**
+   * When true, treat missing/unlabeled `tool_call.kind` values as a signal to
+   * apply heuristics (diff content, locations, known tool titles). Cursor's ACP
+   * stream frequently uses `kind: other` for both file and command tools; dsh
+   * uses stable tool-title sets and does not need the heuristics.
+   */
+  otherKindHeuristics?: boolean;
+  /** Native tool titles that should render as a command card. */
+  commandToolNames?: ReadonlySet<string>;
+  /** Native tool titles that should render as a file-change card. */
+  fileToolNames?: ReadonlySet<string>;
   command: string | ((config: AdapterConfig) => string);
   args?: string[] | ((config: AdapterConfig) => string[]);
   authMethodId?: string | null;
@@ -176,6 +169,12 @@ export interface AcpHarnessProfile {
   readinessTimeoutMs?: number;
   promptTimeoutMs?: number;
   requestTimeoutMs?: number;
+  /**
+   * Fail a turn if the provider never delivers a `session/update` notification
+   * after the prompt begins. This guards against wedged transports that accept
+   * `session/prompt` but never stream updates.
+   */
+  firstUpdateTimeoutMs?: number;
   clientInfo?: { name: string; version: string };
   clientCapabilities?: Record<string, unknown>;
   resumeStrategy?: 'resume' | 'load' | 'none' | 'auto';
@@ -184,33 +183,40 @@ export interface AcpHarnessProfile {
     yoloStrategy?: 'root-flag' | 'auto-allow' | 'none';
     yoloFlag?: boolean;
     yoloAutoApprove?: boolean;
+    yoloArgs?: readonly string[];
   };
   /**
    * QUIRK hook: map an approval decision to an ACP optionId.
    *
    * - Returning an optionId selects it on the wire.
    * - Returning null fails closed with an ACP cancelled outcome.
-   *
-   * Cursor uses option-kind matching with fail-closed once-scope; dsh hard-codes
-   * its two option ids and does not consult the options array.
    */
   selectPermissionOptionId?: (input: {
     decision: AgentApprovalResponseInputV2['decision'];
     options: Array<{ optionId: string; kind?: string; name?: string }>;
   }) => string | null;
-  mapToolCall?: (
-    update: Record<string, unknown>,
-    context: AcpToolCallContext
-  ) => AgentItemV2 | undefined;
   onNotification?: (
     notification: AcpNotification,
     context: AcpNotificationContext
-  ) => Promise<boolean | void> | boolean | void;
+  ) => boolean | void;
   onPeerRequest?: (
     request: AcpPeerRequest,
     context: AcpPeerRequestContext
   ) => Promise<boolean | void> | boolean | void;
 }
+
+type NormalizedAcpHarnessProfile = Omit<
+  AcpHarnessProfile,
+  | 'extensionNamespace'
+  | 'otherKindHeuristics'
+  | 'commandToolNames'
+  | 'fileToolNames'
+> & {
+  extensionNamespace: string;
+  otherKindHeuristics: boolean;
+  commandToolNames: ReadonlySet<string>;
+  fileToolNames: ReadonlySet<string>;
+};
 
 export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   private readonly patchSink = createPatchSink(
@@ -241,7 +247,9 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     PendingInputRequest
   >();
   private resumeFallbackReason: string | null = null;
-  private sessionConfigOptions: unknown[] | null = null;
+  protected readonly profile: NormalizedAcpHarnessProfile;
+  private sawSessionUpdateThisTurn = false;
+  private firstUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly queued = createTurnQueue<AgentSendMessageInputV2>({
     canDrain: () =>
@@ -260,12 +268,22 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   });
 
   constructor(
-    protected readonly profile: AcpHarnessProfile,
+    profile: AcpHarnessProfile,
     protected readonly clientFactory: ClientFactory = (options) =>
       new AcpClient({ ...options, spawn: nodeSpawn })
   ) {
     super();
-    this.agentType = profile.agentType;
+    this.profile = {
+      ...profile,
+      otherKindHeuristics: profile.otherKindHeuristics ?? false,
+      commandToolNames: profile.commandToolNames ?? EMPTY_TOOL_NAMES,
+      fileToolNames: profile.fileToolNames ?? EMPTY_TOOL_NAMES,
+      extensionNamespace:
+        profile.extensionNamespace ??
+        profile.providerNamespace ??
+        profile.agentType,
+    } satisfies NormalizedAcpHarnessProfile;
+    this.agentType = this.profile.agentType;
     this.capabilities = profile.capabilities;
   }
 
@@ -341,31 +359,18 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       }
 
       if (this.profile.authMethodId) {
-        try {
-          await client.request('authenticate', {
-            methodId: this.profile.authMethodId,
-          });
-        } catch (authError) {
-          logger.debug(`[${this.agentType}] authenticate step notice`, {
-            error:
-              authError instanceof Error
-                ? authError.message
-                : String(authError),
-          });
-        }
+        await client.request('authenticate', {
+          methodId: this.profile.authMethodId,
+        });
       }
 
       const opened = await this.openSession(client, config, initResult);
-      const providerSessionId =
-        string(opened.sessionId) || config.resumeSessionId || null;
+      const providerSessionId = string(opened.sessionId) || null;
       if (!providerSessionId)
         throw new Error(
           `${this.agentType} ACP handshake returned no sessionId; refusing to report connected`
         );
       this.providerSessionId = providerSessionId;
-      this.sessionConfigOptions = Array.isArray(opened.configOptions)
-        ? opened.configOptions
-        : null;
     } catch (error) {
       this._status = 'disconnected';
       this.client = null;
@@ -389,16 +394,16 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private buildLaunchArgs(config: AdapterConfig): string[] {
-    if (typeof this.profile.args === 'function') {
-      return this.profile.args(config);
-    }
     const args: string[] = [];
     if (config.model && this.profile.modelArgs) {
       args.push(...this.profile.modelArgs(config.model));
     }
     if (config.permissionMode === 'yolo') {
       const policy = this.profile.permissionPolicy?.(config.permissionMode);
-      if (
+      const yoloArgs = policy?.yoloArgs;
+      if (Array.isArray(yoloArgs)) {
+        args.push(...yoloArgs);
+      } else if (
         policy &&
         ('yoloFlag' in policy
           ? policy.yoloFlag
@@ -410,7 +415,9 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     }
     if (Array.isArray(this.profile.args)) {
       args.push(...this.profile.args);
-    } else if (!this.profile.args) {
+    } else if (typeof this.profile.args === 'function') {
+      args.push(...this.profile.args(config));
+    } else {
       args.push('acp');
     }
     return args;
@@ -426,22 +433,38 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       return record(await client.request('session/new', params));
 
     const strategy = this.profile.resumeStrategy ?? 'auto';
+    const hasResume = hasResumeCapability(initResult);
+    const hasLoad = hasLoadCapability(initResult);
     let resumeMethod: 'session/resume' | 'session/load' | null;
     if (strategy === 'resume') {
-      resumeMethod = hasResumeCapability(initResult) ? 'session/resume' : null;
+      resumeMethod = hasResume ? 'session/resume' : null;
     } else if (strategy === 'load') {
-      resumeMethod = hasLoadCapability(initResult) ? 'session/load' : null;
+      resumeMethod = hasLoad ? 'session/load' : null;
     } else if (strategy === 'none') {
       resumeMethod = null;
     } else {
-      if (hasResumeCapability(initResult)) {
+      if (hasResume) {
         resumeMethod = 'session/resume';
-      } else if (hasLoadCapability(initResult)) {
+      } else if (hasLoad) {
         resumeMethod = 'session/load';
       } else resumeMethod = null;
     }
 
     if (!resumeMethod) {
+      if (strategy === 'resume') {
+        this.resumeFallbackReason = 'session/resume capability unavailable';
+      } else if (strategy === 'load') {
+        this.resumeFallbackReason = 'session/load capability unavailable';
+      } else if (strategy === 'none') {
+        this.resumeFallbackReason = 'resume strategy is none';
+      } else if (hasResume) {
+        this.resumeFallbackReason = 'session/load capability unavailable';
+      } else if (hasLoad) {
+        this.resumeFallbackReason = 'session/resume capability unavailable';
+      } else {
+        this.resumeFallbackReason =
+          'session/resume and session/load capabilities unavailable';
+      }
       return record(await client.request('session/new', params));
     }
 
@@ -534,11 +557,48 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private beginPrompt(client: AcpClient, input: AgentSendMessageInputV2): void {
+    this.armFirstUpdateDeadline(client, input.turnId);
     void this.runPrompt(client, input).catch((error: unknown) => {
       this.handleTransportClose(
         error instanceof Error ? error : new Error(String(error))
       );
     });
+  }
+
+  // ── First update deadline ────────────────────────────────────────────────
+
+  /**
+   * Some ACP servers can accept `session/prompt` but then wedge without
+   * producing a `session/update`. When configured
+   * (`profile.firstUpdateTimeoutMs`), the adapter fails the turn and cancels on
+   * the wire if that happens.
+   */
+  private armFirstUpdateDeadline(client: AcpClient, turnId: string): void {
+    const timeoutMs = this.profile.firstUpdateTimeoutMs;
+    if (!timeoutMs || timeoutMs <= 0) return;
+    this.clearFirstUpdateDeadline();
+    this.firstUpdateTimer = setTimeout(() => {
+      if (this.activeTurnId !== turnId) return;
+      if (this.sawSessionUpdateThisTurn) return;
+      const message = `${this.agentType} produced no session/update within ${timeoutMs}ms; cancelling the turn.`;
+      try {
+        if (this.providerSessionId)
+          client.notify('session/cancel', {
+            sessionId: this.providerSessionId,
+          });
+      } catch {
+        // best-effort; the turn failure is still surfaced below
+      }
+      this.emitError(message);
+      this.completeTurn('failed', message);
+      this.queued.drain();
+    }, timeoutMs);
+  }
+
+  private clearFirstUpdateDeadline(): void {
+    if (!this.firstUpdateTimer) return;
+    clearTimeout(this.firstUpdateTimer);
+    this.firstUpdateTimer = null;
   }
 
   private async runPrompt(
@@ -683,6 +743,45 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   ): Promise<void> {
     const { method, params } = notification;
 
+    if (method !== 'session/update') {
+      if (this.profile.onNotification) {
+        const context: AcpNotificationContext = {
+          turnId: this.activeTurnId,
+          sessionId: this.sessionId,
+          agentType: this.agentType,
+          ensureItem: (id, item) => this.ensureItem(id, item),
+          emitItemUpdated: (item) => this.emitItemUpdated(item),
+          emitLiveStateUpdate: () => this.emitLiveStateUpdate(),
+          emitProviderExtension: (payload, visibility) =>
+            this.emitProviderExtension(payload, visibility),
+        };
+        const handled = this.profile.onNotification(notification, context);
+        if (handled === true) return;
+      }
+
+      logger.debug(`[${this.agentType}] unmapped native notification`, {
+        method,
+      });
+      return;
+    }
+
+    const sessionId = string(params.sessionId);
+    if (
+      this.providerSessionId &&
+      sessionId &&
+      sessionId !== this.providerSessionId
+    ) {
+      logger.debug(`[${this.agentType}] ignoring update for another session`, {
+        sessionId,
+      });
+      return;
+    }
+
+    if (this.activeTurnId && !this.sawSessionUpdateThisTurn) {
+      this.sawSessionUpdateThisTurn = true;
+      this.clearFirstUpdateDeadline();
+    }
+
     if (this.profile.onNotification) {
       const context: AcpNotificationContext = {
         turnId: this.activeTurnId,
@@ -696,29 +795,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       };
       const handled = this.profile.onNotification(notification, context);
       if (handled === true) return;
-      if (isPromiseLike(handled)) {
-        const awaited = await handled;
-        if (awaited === true) return;
-      }
     }
 
-    if (method !== 'session/update') {
-      logger.debug(`[${this.agentType}] unmapped native notification`, {
-        method,
-      });
-      return;
-    }
-    const sessionId = string(params.sessionId);
-    if (
-      this.providerSessionId &&
-      sessionId &&
-      sessionId !== this.providerSessionId
-    ) {
-      logger.debug(`[${this.agentType}] ignoring update for another session`, {
-        sessionId,
-      });
-      return;
-    }
     const update = record(params.update);
     const kind = string(update.sessionUpdate);
     switch (kind) {
@@ -738,11 +816,13 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
         this.applyUsage(update);
         return;
       case 'config_option_update':
-        this.sessionConfigOptions = Array.isArray(update.configOptions)
-          ? update.configOptions
-          : this.sessionConfigOptions;
         this.emitProviderExtension(
-          { kind: 'configOptions', options: this.sessionConfigOptions ?? [] },
+          {
+            kind: 'configOptions',
+            options: Array.isArray(update.configOptions)
+              ? update.configOptions
+              : [],
+          },
           'debug'
         );
         return;
@@ -945,18 +1025,6 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     const id = string(update.toolCallId);
     if (!id || this.items.has(id)) return;
 
-    if (this.profile.mapToolCall) {
-      const customItem = this.profile.mapToolCall(update, {
-        turnId,
-        sessionId: this.sessionId,
-        agentType: this.agentType,
-      });
-      if (customItem) {
-        this.ensureItem(id, customItem);
-        return;
-      }
-    }
-
     const kind = string(update.kind);
     const title = string(update.title, 'tool');
     const args = isRecord(update.rawInput) ? update.rawInput : {};
@@ -964,13 +1032,26 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     const hasDiffContent =
       Array.isArray(update.content) &&
       update.content.some((c) => isRecord(c) && c.type === 'diff');
+    const isUnlabeledKind = !kind || kind === 'other';
+    const isFileHeuristic = this.profile.otherKindHeuristics
+      ? isUnlabeledKind &&
+        (hasDiffContent ||
+          typeof args.path === 'string' ||
+          typeof args.file_path === 'string' ||
+          locations.length > 0 ||
+          this.profile.fileToolNames.has(title))
+      : this.profile.fileToolNames.has(title) &&
+        (typeof args.path === 'string' || typeof args.file_path === 'string');
+    const isCommandHeuristic = this.profile.otherKindHeuristics
+      ? isUnlabeledKind &&
+        (this.profile.commandToolNames.has(title) ||
+          typeof args.command === 'string')
+      : this.profile.commandToolNames.has(title);
 
     let item: AgentItemV2;
     if (
-      kind === 'execute' ||
-      ((!kind || kind === 'other') &&
-        (DEFAULT_COMMAND_TOOL_NAMES.has(title) ||
-          typeof args.command === 'string'))
+      (this.profile.otherKindHeuristics && kind === 'execute') ||
+      isCommandHeuristic
     ) {
       const command = string(args.command) || stripBackticks(title);
       item = {
@@ -983,15 +1064,9 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
         startedAt: nowIso(),
       };
     } else if (
-      kind === 'edit' ||
-      kind === 'delete' ||
-      kind === 'move' ||
-      ((!kind || kind === 'other') &&
-        (hasDiffContent ||
-          typeof args.path === 'string' ||
-          typeof args.file_path === 'string' ||
-          locations.length > 0 ||
-          DEFAULT_FILE_TOOL_NAMES.has(title)))
+      (this.profile.otherKindHeuristics &&
+        (kind === 'edit' || kind === 'delete' || kind === 'move')) ||
+      isFileHeuristic
     ) {
       const targetPath =
         string(args.path ?? args.file_path) ||
@@ -1029,7 +1104,10 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       item = {
         type: 'dynamicToolCall',
         id,
-        namespace: this.profile.providerNamespace ?? this.agentType,
+        namespace:
+          this.profile.extensionNamespace ??
+          this.profile.providerNamespace ??
+          this.agentType,
         tool: title,
         arguments: args,
         status: 'running',
@@ -1147,6 +1225,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeStartedMs = Date.now();
     this.abortRequested = false;
     this.turnUsage = undefined;
+    this.sawSessionUpdateThisTurn = false;
+    this.clearFirstUpdateDeadline();
     this.items.clear();
     const timestamp = nowIso();
     emitTurnStartedPatch(this.patchSink, {
@@ -1175,6 +1255,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   ): void {
     const turnId = this.activeTurnId;
     if (!turnId) return;
+    this.clearFirstUpdateDeadline();
     this.releasePendingRequests(TURN_ENDED_APPROVAL_REASON);
     this.terminalizeRunningItems(
       status === 'completed'
@@ -1442,6 +1523,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   private handleTransportClose(error: Error): void {
     if (this._status === 'disconnected') return;
     this.releasePendingRequests(ABANDONED_APPROVAL_REASON);
+    this.clearFirstUpdateDeadline();
     if (this.activeTurnId) this.completeTurn('failed', error.message);
     this.queued.rejectAll(
       new Error(
@@ -1583,13 +1665,17 @@ export function hasResumeCapability(init: AcpInitializeResult): boolean {
   if (
     caps &&
     isRecord(caps.sessionCapabilities) &&
-    caps.sessionCapabilities.resume !== undefined
+    (caps.sessionCapabilities.resume === true ||
+      isRecord(caps.sessionCapabilities.resume))
   ) {
     return true;
   }
   const topSessionCaps = (init as unknown as Record<string, unknown>)
     .sessionCapabilities;
-  if (isRecord(topSessionCaps) && topSessionCaps.resume !== undefined) {
+  if (
+    isRecord(topSessionCaps) &&
+    (topSessionCaps.resume === true || isRecord(topSessionCaps.resume))
+  ) {
     return true;
   }
   return false;

@@ -1,19 +1,14 @@
 import { CURSOR_CHANNEL_COMMAND } from './launch-commands.js';
-import { isRecord, nowIso, stringField as string } from './wire-values.js';
+import { nowIso, stringField as string } from './wire-values.js';
 import type {
   AgentApprovalSupportV2,
   AgentCapabilitySetV2,
-  AgentItemV2,
   AgentPlanItemV2,
   AgentQuestionItemV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import type { AcpPeerRequest } from '../acp-client.js';
 import {
   AcpProtocolAdapter,
-  DEFAULT_COMMAND_TOOL_NAMES,
-  DEFAULT_FILE_TOOL_NAMES,
-  extractFilePathFromTitle,
-  stripBackticks,
   type AcpHarnessProfile,
   type ClientFactory,
 } from './acp-adapter.js';
@@ -50,6 +45,25 @@ const CURSOR_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
   canCancel: true,
 };
 
+const CURSOR_COMMAND_TOOL_NAMES = new Set([
+  'bash',
+  'pwsh',
+  'terminal_bash',
+  'shell',
+  'command',
+  'exec',
+]);
+
+const CURSOR_FILE_TOOL_NAMES = new Set([
+  'write',
+  'edit',
+  'str_replace_editor',
+  'str_replace_based_edit_tool',
+  'file_edit',
+  'create_file',
+  'delete_file',
+]);
+
 const CURSOR_PROFILE: AcpHarnessProfile = {
   agentType: 'cursor',
   displayName: 'Cursor',
@@ -61,14 +75,18 @@ const CURSOR_PROFILE: AcpHarnessProfile = {
   authMethodId: 'cursor_login',
   clientInfo: { name: 'relay-ide', version: '0.1.0' },
   resumeStrategy: 'load',
+  firstUpdateTimeoutMs: 20_000,
   modelArgs: (model) => ['--model', model],
   permissionPolicy: () => ({
     // `cursor-agent --yolo acp` is inert (still raises permission frames), but
-    // the adapter preserves the flag and also auto-approves on the wire.
-    yoloStrategy: 'root-flag',
-    yoloFlag: true,
+    // Relay preserves the flag and also auto-approves on the wire.
+    yoloArgs: ['--yolo'],
     yoloAutoApprove: true,
   }),
+  extensionNamespace: 'cursor',
+  otherKindHeuristics: true,
+  commandToolNames: CURSOR_COMMAND_TOOL_NAMES,
+  fileToolNames: CURSOR_FILE_TOOL_NAMES,
   selectPermissionOptionId: ({ decision, options }) => {
     if (decision.kind === 'accept') {
       const targetKinds =
@@ -91,88 +109,6 @@ const CURSOR_PROFILE: AcpHarnessProfile = {
     }
 
     return null;
-  },
-  mapToolCall: (update): AgentItemV2 | undefined => {
-    const id = string(update.toolCallId);
-    const kind = string(update.kind);
-    const title = string(update.title, 'tool');
-    const args = isRecord(update.rawInput) ? update.rawInput : {};
-    const locations = Array.isArray(update.locations) ? update.locations : [];
-    const hasDiffContent =
-      Array.isArray(update.content) &&
-      update.content.some((c) => isRecord(c) && c.type === 'diff');
-
-    if (
-      kind === 'execute' ||
-      (!kind &&
-        (DEFAULT_COMMAND_TOOL_NAMES.has(title) ||
-          typeof args.command === 'string'))
-    ) {
-      const command = string(args.command) || stripBackticks(title);
-      return {
-        type: 'commandExecution',
-        id,
-        command,
-        ...(string(args.cwd) ? { cwd: string(args.cwd) } : {}),
-        output: '',
-        status: 'running',
-        startedAt: nowIso(),
-      };
-    }
-
-    if (
-      kind === 'edit' ||
-      kind === 'delete' ||
-      kind === 'move' ||
-      (!kind &&
-        (hasDiffContent ||
-          typeof args.path === 'string' ||
-          typeof args.file_path === 'string' ||
-          locations.length > 0 ||
-          DEFAULT_FILE_TOOL_NAMES.has(title)))
-    ) {
-      const targetPath =
-        string(args.path ?? args.file_path) ||
-        (isRecord(locations[0]) ? string(locations[0].path) : '') ||
-        extractFilePathFromTitle(title);
-      const isAdd =
-        title.toLowerCase().startsWith('create') ||
-        args.is_creation === true ||
-        (Array.isArray(update.content) &&
-          update.content.some(
-            (c) =>
-              isRecord(c) &&
-              c.type === 'diff' &&
-              (c.oldText === null ||
-                c.oldText === '' ||
-                c.oldText === '/dev/null' ||
-                String(c.oldText).startsWith('-- /dev/null'))
-          ));
-      return {
-        type: 'fileChange',
-        id,
-        paths: [
-          {
-            path: targetPath,
-            status:
-              kind === 'delete' ? 'deleted' : isAdd ? 'added' : 'modified',
-          },
-        ],
-        applyStatus: 'pending',
-        status: 'running',
-        startedAt: nowIso(),
-      };
-    }
-
-    return {
-      type: 'dynamicToolCall',
-      id,
-      namespace: 'cursor',
-      tool: title,
-      arguments: args,
-      status: 'running',
-      startedAt: nowIso(),
-    };
   },
   onNotification: (notification, context) => {
     if (!context.turnId) return;

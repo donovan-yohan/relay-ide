@@ -49,20 +49,26 @@ Relay has one shared ACP choreography layer:
 
 **Quirk containment rule:** anything that depends on a specific harness’s ACP behavior stays in the `AcpHarnessProfile` (not a second adapter copy). The base owns the sequencing, queueing, replay suppression (no-active-turn guard), prompt boundaries, teardown, and the canonical item mapping defaults.
 
+The base also supports one liveness guard for harnesses that can wedge after
+accepting a prompt: `AcpHarnessProfile.firstUpdateTimeoutMs` fails the turn if
+no `session/update` notification arrives within the configured window.
+
 Hooks used by shipped ACP harnesses today:
 
 - **dsh (`dsh --profile acp`)**:
   - `resumeStrategy: 'resume'` (ACP `session/resume` lane).
   - `buildEnv` (translates Relay permission mode into `DSH_PERMISSION_MODE`, and preserves env-only credentials).
   - `selectPermissionOptionId` (dsh hard-codes `allow-once` / `reject-once` option ids).
-  - `mapToolCall` (dsh tool names are `bash`/`write`/`edit` plus dynamic tools).
+  - `commandToolNames` / `fileToolNames` (dsh tool titles map directly to canonical command/file cards).
+  - `extensionNamespace` (dynamic tools render under the `dsh` namespace).
   - `onNotification` (surfaces `config_option_update` as a debug provider extension).
 - **cursor (`cursor-agent acp`)**:
   - `authMethodId: 'cursor_login'`.
   - `resumeStrategy: 'load'` (ACP `session/load` lane; history replay suppressed by the base no-active-turn guard).
   - `permissionPolicy` (Cursor `--yolo` is inert on the ACP lane, so yolo auto-approval happens in the adapter).
   - `selectPermissionOptionId` (permission selection is by `options[].kind` with fail-closed once-scope).
-  - `mapToolCall` (kind-based tool discrimination and unified-diff patch parsing).
+  - `otherKindHeuristics` + `commandToolNames` / `fileToolNames` (Cursor tool calls often arrive as `kind: other`; the base maps them into canonical cards via harness-provided name sets and diff/location heuristics).
+  - `extensionNamespace` (Cursor dynamic tools render under the `cursor` namespace).
   - `onPeerRequest` / `onNotification` (Cursor vendor extension methods `cursor/*`).
 
 ### Prime Agent
@@ -285,7 +291,7 @@ Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor C
 
 The Cursor channel transport is installed-tested with `cursor-agent` 2026.08.31-4057e58. The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
 
-Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
+Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Authentication is a connect gate: if it fails, Relay disconnects and reports the error rather than starting an unauthenticated session. Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`); those calls must return a `sessionId`, or connect fails closed. Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
 
 The adapter maps:
 

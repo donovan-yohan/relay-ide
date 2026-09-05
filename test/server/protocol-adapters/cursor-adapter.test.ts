@@ -740,7 +740,7 @@ describe('CursorProtocolAdapter', () => {
     expect(h.stop).toHaveBeenCalled();
   });
 
-  it('accepts a session/load handshake that echoes only the resumed id', async () => {
+  it('fails the handshake when session/load returns no sessionId', async () => {
     const h = harness();
     h.request.mockImplementation(async (method) => {
       if (method === 'authenticate') return { authenticated: true };
@@ -748,9 +748,13 @@ describe('CursorProtocolAdapter', () => {
       return {};
     });
 
-    // resumeSessionId still satisfies the handshake: the id is known.
-    await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
-    expect(h.adapter.status).toBe('connected');
+    // A sessionId-less result would leave every subsequent session/prompt failing
+    // while the adapter reported connected.
+    await expect(
+      h.adapter.connect({ ...config, resumeSessionId: 'existing-session' })
+    ).rejects.toThrow(/no sessionid/i);
+    expect(h.adapter.status).toBe('disconnected');
+    expect(h.stop).toHaveBeenCalled();
   });
 
   it('falls back to session/new when session/load fails', async () => {
