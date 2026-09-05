@@ -748,9 +748,17 @@ describe('CursorProtocolAdapter', () => {
       return {};
     });
 
-    // resumeSessionId still satisfies the handshake: the id is known.
     await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
     expect(h.adapter.status).toBe('connected');
+    const snapshot = h.patches.find(
+      (patch) => patch.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshot).toMatchObject({
+      session: {
+        provider: 'cursor',
+        providerSession: { cursorSessionId: 'existing-session' },
+      },
+    });
   });
 
   it('falls back to session/new when session/load fails', async () => {

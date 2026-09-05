@@ -24,6 +24,19 @@ workflow.
 
 - First-class Cursor CLI channel adapter over the Agent Client Protocol (`cursor-agent acp`), enabling `@cursor` participation in channels, threads, and DMs with streaming text, reasoning thoughts, command executions, file changes, permission approvals, structured questions, canonical plans, and native session resumes (#1552).
 
+#### Changed
+
+- Extract shared Agent Client Protocol (`acp`) adapter choreography into `AcpProtocolAdapter` with per-harness `AcpHarnessProfile` hooks, and migrate the dsh and cursor adapters onto it with behavior-preserving semantics on the captured wire (#1554). The harness profiles now carry explicit tool-classification and extension wiring (`otherKindHeuristics`, `commandToolNames`, `fileToolNames`, `extensionNamespace`) and launch policy (`permissionPolicy.yoloArgs`) instead of adapter-local copies.
+
+  Deltas that are outside that guarantee (dsh-specific):
+  - `session/resume` is capability-gated: if the server does not advertise resume, Relay falls back to `session/new` and emits a resume-fallback notice.
+  - When a command tool call has no `rawInput.command`, Relay falls back to the tool title rather than serializing the full raw input object.
+  - `dynamicToolCall` result text is omitted when no textual/raw output is supplied, rather than emitting an empty string.
+
+#### Fixed
+
+- ACP adapters now fail closed on connect when the authenticate step fails, and refuse to report connected if `session/new` returns no `sessionId` (#1554). For resume lanes (`session/load` / `session/resume`), a session id-less success response is accepted and the requested resume id is treated as the provider session id (per the captured Cursor `session/load` wire).
+
 ### Scoped CLI actor credentials across hub restart
 
 #### Fixed
