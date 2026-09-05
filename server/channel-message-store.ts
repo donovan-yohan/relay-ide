@@ -3474,7 +3474,14 @@ function runSchemaMigrations(db: Database.Database): void {
           reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           completed_at TEXT
         );
-        INSERT INTO channel_async_runs_v16 SELECT * FROM channel_async_runs;
+        INSERT INTO channel_async_runs_v16 (
+          id, channel_id, thread_id, request_message_id, requester_id,
+          state, reason, created_at, updated_at, completed_at
+        )
+        SELECT
+          id, channel_id, thread_id, request_message_id, requester_id,
+          state, reason, created_at, updated_at, completed_at
+        FROM channel_async_runs;
         DROP TABLE channel_async_runs;
         ALTER TABLE channel_async_runs_v16 RENAME TO channel_async_runs;
         CREATE INDEX idx_char_channel_created

@@ -1962,6 +1962,13 @@ async function resolveGatewayActorToken(
     // Flag path: explicit per-invocation, no persistence side effects.
     return { token: flag, source: 'flag' };
   }
+  // Browser-token precedence (#1467): if the operator is running with an
+  // authenticated browser token, never implicitly shadow it with the stored
+  // actor credential. The actor lane remains available via --actor-token or
+  // RELAY_IDE_ACTOR_TOKEN when explicitly requested.
+  if (process.env['RELAY_IDE_BROWSER_TOKEN']) {
+    return { token: '', source: 'env' };
+  }
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return { token: env, source: 'env' };
 
@@ -2102,6 +2109,7 @@ function gatewayActorToken(
 function gatewayActorTokenSync(commandName?: RelayCliGatewayCommand): string {
   const flag = getArg('--actor-token');
   if (flag) return flag;
+  if (process.env['RELAY_IDE_BROWSER_TOKEN']) return '';
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return env;
   const stored = loadStoredActorCredential(actorTokenConfigDir());
