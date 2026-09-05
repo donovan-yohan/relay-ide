@@ -273,6 +273,12 @@ The hub coalesces text deltas and applies socket watermarks. A lagging client
 can reconnect from its last durable sequence instead of requiring an
 unbounded in-memory queue.
 
+The durable sequence is DB-backed (`MAX(seq)` per channel in the chat store),
+so it is a cold-resume fact, not an in-memory counter: after a hub restart a
+client that resumes with `--after-seq <the durable seq it already consumed>`
+gets no replay of committed rows and no sequence-namespace reset — the next
+committed row continues the same per-channel namespace.
+
 External agents use the separate actor-authenticated NDJSON adapter:
 
 ```sh

@@ -1222,6 +1222,44 @@ describe('channel-message-store seq allocation', () => {
   });
 });
 
+describe('channel-message-store restart continuity (#1570 item 6)', () => {
+  it('resumes `channels subscribe --after-seq <durable seq>` with no replay and no seq-namespace reset', () => {
+    const file = dbPath();
+    const before = createChannelMessageStore(file);
+    for (let i = 1; i <= 3; i++) {
+      before.appendComplete({
+        channelId: 'topic:restart',
+        sender: HUMAN,
+        text: `before${i}`,
+      });
+    }
+    // The durable head a live `channels subscribe` client has already consumed.
+    const durableSeq = before.latestSeq('topic:restart');
+    expect(durableSeq).toBe(3);
+    // Hub restart: close the store handle and reopen on the same db file.
+    before.close();
+
+    const after = store(file);
+    // No seq-namespace reset: the durable head is unchanged after reopen.
+    expect(after.latestSeq('topic:restart')).toBe(3);
+    // The next durable row continues the SAME namespace, not 0..1.
+    const resumed = after.appendComplete({
+      channelId: 'topic:restart',
+      sender: HUMAN,
+      text: 'after-restart',
+    });
+    expect(resumed.seq).toBe(4);
+    // A resume from the pre-restart durable seq re-sends ONLY the new row —
+    // no replay of rows the live subscription already delivered.
+    const catchUp = after.history('topic:restart', {
+      afterSeq: durableSeq,
+      limit: 10,
+    });
+    expect(catchUp.map((m) => m.seq)).toEqual([4]);
+    expect(catchUp.map((m) => m.body?.text)).toEqual(['after-restart']);
+  });
+});
+
 describe('channel-message-store streaming lifecycle', () => {
   it('keeps id/seq stable through begin → flush → finalize', () => {
     const s = store();
