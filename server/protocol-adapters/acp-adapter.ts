@@ -53,6 +53,7 @@ const logger = createLogger('acp-adapter');
 
 /** The ACP major version this adapter speaks. */
 export const ACP_PROTOCOL_VERSION = 1;
+const DEFAULT_FIRST_UPDATE_TIMEOUT_MS = 120_000;
 
 /**
  * Deterministic native-event -> AgentPatchV2 mapping table for ACP:
@@ -180,8 +181,6 @@ export interface AcpHarnessProfile {
   resumeStrategy?: 'resume' | 'load' | 'none' | 'auto';
   modelArgs?: (model: string) => string[];
   permissionPolicy?: (permissionMode: string | undefined) => {
-    yoloStrategy?: 'root-flag' | 'auto-allow' | 'none';
-    yoloFlag?: boolean;
     yoloAutoApprove?: boolean;
     yoloArgs?: readonly string[];
   };
@@ -203,6 +202,12 @@ export interface AcpHarnessProfile {
     request: AcpPeerRequest,
     context: AcpPeerRequestContext
   ) => Promise<boolean | void> | boolean | void;
+
+  /**
+   * File-change status to use for non-creation edits. DeepSeek Harness used
+   * `edited` for non-write tools historically; Cursor uses `modified`.
+   */
+  fileEditStatus?: 'edited' | 'modified';
 }
 
 type NormalizedAcpHarnessProfile = Omit<
@@ -211,11 +216,13 @@ type NormalizedAcpHarnessProfile = Omit<
   | 'otherKindHeuristics'
   | 'commandToolNames'
   | 'fileToolNames'
+  | 'fileEditStatus'
 > & {
   extensionNamespace: string;
   otherKindHeuristics: boolean;
   commandToolNames: ReadonlySet<string>;
   fileToolNames: ReadonlySet<string>;
+  fileEditStatus: 'edited' | 'modified';
 };
 
 export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
@@ -278,6 +285,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       otherKindHeuristics: profile.otherKindHeuristics ?? false,
       commandToolNames: profile.commandToolNames ?? EMPTY_TOOL_NAMES,
       fileToolNames: profile.fileToolNames ?? EMPTY_TOOL_NAMES,
+      fileEditStatus: profile.fileEditStatus ?? 'modified',
       extensionNamespace:
         profile.extensionNamespace ??
         profile.providerNamespace ??
@@ -359,13 +367,25 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       }
 
       if (this.profile.authMethodId) {
+        const authMethods = Array.isArray(initResult.authMethods)
+          ? (initResult.authMethods as Array<unknown>)
+          : [];
+        const advertised = authMethods.some((m) => {
+          if (!isRecord(m)) return false;
+          return string(m.id) === this.profile.authMethodId;
+        });
+        if (!advertised) {
+          throw new Error(
+            `${this.agentType} ACP initialize did not advertise auth method ${this.profile.authMethodId}`
+          );
+        }
         await client.request('authenticate', {
           methodId: this.profile.authMethodId,
         });
       }
 
       const opened = await this.openSession(client, config, initResult);
-      const providerSessionId = string(opened.sessionId) || null;
+      const providerSessionId = opened.providerSessionId;
       if (!providerSessionId)
         throw new Error(
           `${this.agentType} ACP handshake returned no sessionId; refusing to report connected`
@@ -401,17 +421,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     if (config.permissionMode === 'yolo') {
       const policy = this.profile.permissionPolicy?.(config.permissionMode);
       const yoloArgs = policy?.yoloArgs;
-      if (Array.isArray(yoloArgs)) {
-        args.push(...yoloArgs);
-      } else if (
-        policy &&
-        ('yoloFlag' in policy
-          ? policy.yoloFlag
-          : policy.yoloStrategy === 'root-flag' ||
-            policy.yoloStrategy === 'auto-allow')
-      ) {
-        args.push('--yolo');
-      }
+      if (Array.isArray(yoloArgs)) args.push(...yoloArgs);
     }
     if (Array.isArray(this.profile.args)) {
       args.push(...this.profile.args);
@@ -427,10 +437,15 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     client: AcpClient,
     config: AdapterConfig,
     initResult: AcpInitializeResult
-  ): Promise<Record<string, unknown>> {
+  ): Promise<{
+    opened: Record<string, unknown>;
+    providerSessionId: string | null;
+  }> {
     const params = { cwd: config.cwd, mcpServers: [] };
-    if (!config.resumeSessionId)
-      return record(await client.request('session/new', params));
+    if (!config.resumeSessionId) {
+      const opened = record(await client.request('session/new', params));
+      return { opened, providerSessionId: string(opened.sessionId) || null };
+    }
 
     const strategy = this.profile.resumeStrategy ?? 'auto';
     const hasResume = hasResumeCapability(initResult);
@@ -465,16 +480,22 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
         this.resumeFallbackReason =
           'session/resume and session/load capabilities unavailable';
       }
-      return record(await client.request('session/new', params));
+      const opened = record(await client.request('session/new', params));
+      return { opened, providerSessionId: string(opened.sessionId) || null };
     }
 
     try {
-      return record(
+      const opened = record(
         await client.request(resumeMethod, {
           sessionId: config.resumeSessionId,
           ...params,
         })
       );
+      return {
+        opened,
+        providerSessionId:
+          string(opened.sessionId) || config.resumeSessionId || null,
+      };
     } catch (error) {
       this.resumeFallbackReason =
         error instanceof Error ? error.message : String(error);
@@ -482,7 +503,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
         `[${this.agentType}] ${resumeMethod} failed; starting a fresh session`,
         { message: this.resumeFallbackReason }
       );
-      return record(await client.request('session/new', params));
+      const opened = record(await client.request('session/new', params));
+      return { opened, providerSessionId: string(opened.sessionId) || null };
     }
   }
 
@@ -501,6 +523,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   protected async onDisconnect(): Promise<void> {
     this._status = 'disconnected';
     this.releasePendingRequests(ABANDONED_APPROVAL_REASON);
+    this.clearFirstUpdateDeadline();
     await this.teardownClient();
     this.activeTurnId = null;
     this.providerSessionId = null;
@@ -549,6 +572,10 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     const client = this.requireClient();
+    // Rejected BEFORE any turn patch, and before the queue: `initialize`
+    // reported `promptCapabilities.image: false` on this route, so accepting an
+    // attachment would silently drop the user's file. Nothing about that answer
+    // depends on the file, so the caller learns immediately.
     this.assertNoAttachments(input);
     if (this.activeTurnId) return this.queued.enqueue(input);
 
@@ -574,10 +601,11 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
    * the wire if that happens.
    */
   private armFirstUpdateDeadline(client: AcpClient, turnId: string): void {
-    const timeoutMs = this.profile.firstUpdateTimeoutMs;
+    const timeoutMs =
+      this.profile.firstUpdateTimeoutMs ?? DEFAULT_FIRST_UPDATE_TIMEOUT_MS;
     if (!timeoutMs || timeoutMs <= 0) return;
     this.clearFirstUpdateDeadline();
-    this.firstUpdateTimer = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (this.activeTurnId !== turnId) return;
       if (this.sawSessionUpdateThisTurn) return;
       const message = `${this.agentType} produced no session/update within ${timeoutMs}ms; cancelling the turn.`;
@@ -593,6 +621,10 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       this.completeTurn('failed', message);
       this.queued.drain();
     }, timeoutMs);
+    // Do not hold the process open on a watchdog.
+    const maybeUnref = (timer as unknown as { unref?: () => void }).unref;
+    if (typeof maybeUnref === 'function') maybeUnref();
+    this.firstUpdateTimer = timer;
   }
 
   private clearFirstUpdateDeadline(): void {
@@ -631,6 +663,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     const client = this.client;
     if (!client || !this.providerSessionId) return;
     this.abortRequested = true;
+    // An outstanding approval owns the turn; answering it first releases the
+    // agent so the cancel is not queued behind a question nobody will answer.
     this.releasePendingRequests(TURN_ENDED_APPROVAL_REASON);
     client.notify('session/cancel', { sessionId: this.providerSessionId });
   }
@@ -871,6 +905,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     logger.debug(`[${this.agentType}] unmapped native peer request`, {
       method: request.method,
     });
+    // JSON-RPC "method not found": the server learns immediately instead of
+    // waiting on an answer this client cannot form.
     client.respondError(
       request.id,
       -32601,
@@ -902,11 +938,7 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
       const policy = this.profile.permissionPolicy?.(
         this.config.permissionMode
       );
-      const shouldAutoApprove =
-        policy &&
-        ('yoloAutoApprove' in policy
-          ? policy.yoloAutoApprove
-          : policy.yoloStrategy === 'auto-allow');
+      const shouldAutoApprove = policy?.yoloAutoApprove === true;
       if (shouldAutoApprove) {
         const allowOnce = options.find(
           (o) =>
@@ -1029,31 +1061,29 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     const title = string(update.title, 'tool');
     const args = isRecord(update.rawInput) ? update.rawInput : {};
     const locations = Array.isArray(update.locations) ? update.locations : [];
+    const rawFilePath = string(args.path ?? args.file_path);
+    const rawCommand = string(args.command);
     const hasDiffContent =
       Array.isArray(update.content) &&
       update.content.some((c) => isRecord(c) && c.type === 'diff');
     const isUnlabeledKind = !kind || kind === 'other';
-    const isFileHeuristic = this.profile.otherKindHeuristics
-      ? isUnlabeledKind &&
-        (hasDiffContent ||
-          typeof args.path === 'string' ||
-          typeof args.file_path === 'string' ||
-          locations.length > 0 ||
-          this.profile.fileToolNames.has(title))
-      : this.profile.fileToolNames.has(title) &&
-        (typeof args.path === 'string' || typeof args.file_path === 'string');
-    const isCommandHeuristic = this.profile.otherKindHeuristics
-      ? isUnlabeledKind &&
-        (this.profile.commandToolNames.has(title) ||
-          typeof args.command === 'string')
-      : this.profile.commandToolNames.has(title);
+    const isFileFallback = isUnlabeledKind
+      ? this.profile.otherKindHeuristics
+        ? this.profile.fileToolNames.has(title) ||
+          hasDiffContent ||
+          Boolean(rawFilePath) ||
+          locations.length > 0
+        : this.profile.fileToolNames.has(title) && Boolean(rawFilePath)
+      : false;
+    const isCommandFallback = isUnlabeledKind
+      ? this.profile.otherKindHeuristics
+        ? this.profile.commandToolNames.has(title) || Boolean(rawCommand)
+        : this.profile.commandToolNames.has(title)
+      : false;
 
     let item: AgentItemV2;
-    if (
-      (this.profile.otherKindHeuristics && kind === 'execute') ||
-      isCommandHeuristic
-    ) {
-      const command = string(args.command) || stripBackticks(title);
+    if (kind === 'execute' || isCommandFallback) {
+      const command = rawCommand || stripBackticks(title);
       item = {
         type: 'commandExecution',
         id,
@@ -1064,14 +1094,33 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
         startedAt: nowIso(),
       };
     } else if (
-      (this.profile.otherKindHeuristics &&
-        (kind === 'edit' || kind === 'delete' || kind === 'move')) ||
-      isFileHeuristic
+      kind === 'edit' ||
+      kind === 'delete' ||
+      kind === 'move' ||
+      isFileFallback
     ) {
       const targetPath =
-        string(args.path ?? args.file_path) ||
+        rawFilePath ||
         (isRecord(locations[0]) ? string(locations[0].path) : '') ||
         extractFilePathFromTitle(title);
+      if (!targetPath) {
+        // ACP spec kinds are authoritative, but an empty/missing path cannot be
+        // rendered as a file card; fall back to a dynamic tool instead.
+        item = {
+          type: 'dynamicToolCall',
+          id,
+          namespace:
+            this.profile.extensionNamespace ??
+            this.profile.providerNamespace ??
+            this.agentType,
+          tool: title,
+          arguments: args,
+          status: 'running',
+          startedAt: nowIso(),
+        };
+        this.ensureItem(id, item);
+        return;
+      }
       const isAdd =
         title.toLowerCase().startsWith('create') ||
         title.toLowerCase() === 'write' ||
@@ -1093,7 +1142,11 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
           {
             path: targetPath,
             status:
-              kind === 'delete' ? 'deleted' : isAdd ? 'added' : 'modified',
+              kind === 'delete'
+                ? 'deleted'
+                : isAdd
+                  ? 'added'
+                  : this.profile.fileEditStatus,
           },
         ],
         applyStatus: 'pending',
@@ -1124,6 +1177,12 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!item) return;
 
     const acpStatus = string(update.status);
+    // ACP streams tool PROGRESS through the same `tool_call_update` it uses to
+    // report the result, distinguished only by `status`. Terminalizing the item
+    // on a progress update told the channel binder the tool had finished while
+    // it was still running, which (#1548) reopens the inactivity watchdog on a
+    // turn that is busy. The result update that follows carries the full output
+    // anyway, so nothing is lost by ignoring the progress ones.
     if (acpStatus === 'pending' || acpStatus === 'in_progress') return;
     const failed = acpStatus === 'failed';
 
@@ -1299,6 +1358,8 @@ export class AcpProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private assertNoAttachments(input: AgentSendMessageInputV2): void {
+    // Cursor ACP does not accept attachment payloads. Reject eagerly before
+    // emitting any turn patches so we never leave a broken or partial turn.
     if (input.attachments && input.attachments.length > 0)
       throw new Error(
         `${this.agentType} channel runtime does not accept attachments on this lane`

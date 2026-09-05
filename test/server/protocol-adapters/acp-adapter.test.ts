@@ -253,6 +253,41 @@ describe('AcpProtocolAdapter (base)', () => {
     await h.adapter.disconnect();
   });
 
+  it('does not call authenticate when authMethods is empty and the profile has no auth method', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [],
+      },
+    });
+    await h.adapter.connect(config);
+    expect(h.request).not.toHaveBeenCalledWith(
+      'authenticate',
+      expect.anything()
+    );
+    await h.adapter.disconnect();
+  });
+
+  it('fails connect when the profile names an auth method the agent did not advertise', async () => {
+    const h = harness({
+      initResult: {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [{ id: 'other', name: 'Other' }],
+      },
+      authMethodId: 'login',
+    });
+    await expect(h.adapter.connect(config)).rejects.toThrow(
+      /did not advertise auth method/i
+    );
+    expect(h.request).not.toHaveBeenCalledWith(
+      'authenticate',
+      expect.anything()
+    );
+    expect(h.stop).toHaveBeenCalled();
+  });
+
   it('fails the handshake when session/new returns no sessionId', async () => {
     const h = harness({
       initResult: {

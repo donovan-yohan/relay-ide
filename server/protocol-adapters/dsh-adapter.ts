@@ -84,11 +84,12 @@ const DSH_PROFILE: AcpHarnessProfile = {
   otherKindHeuristics: false,
   commandToolNames: COMMAND_TOOL_NAMES,
   fileToolNames: FILE_TOOL_NAMES,
+  fileEditStatus: 'edited',
   approvalSupport: DSH_APPROVAL_SUPPORT,
   command: DSH_CHANNEL_COMMAND,
   args: () => ['--profile', 'acp'],
   resumeStrategy: 'resume',
-  firstUpdateTimeoutMs: 20_000,
+  firstUpdateTimeoutMs: 120_000,
   buildEnv: (config: AdapterConfig) => {
     // No provider extras in the denylist: the harness reads its credentials
     // from `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`, which a named profile MUST

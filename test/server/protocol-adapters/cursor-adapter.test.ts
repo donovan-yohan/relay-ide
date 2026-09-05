@@ -740,7 +740,7 @@ describe('CursorProtocolAdapter', () => {
     expect(h.stop).toHaveBeenCalled();
   });
 
-  it('fails the handshake when session/load returns no sessionId', async () => {
+  it('accepts a session/load handshake that echoes only the resumed id', async () => {
     const h = harness();
     h.request.mockImplementation(async (method) => {
       if (method === 'authenticate') return { authenticated: true };
@@ -748,13 +748,17 @@ describe('CursorProtocolAdapter', () => {
       return {};
     });
 
-    // A sessionId-less result would leave every subsequent session/prompt failing
-    // while the adapter reported connected.
-    await expect(
-      h.adapter.connect({ ...config, resumeSessionId: 'existing-session' })
-    ).rejects.toThrow(/no sessionid/i);
-    expect(h.adapter.status).toBe('disconnected');
-    expect(h.stop).toHaveBeenCalled();
+    await h.adapter.connect({ ...config, resumeSessionId: 'existing-session' });
+    expect(h.adapter.status).toBe('connected');
+    const snapshot = h.patches.find(
+      (patch) => patch.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshot).toMatchObject({
+      session: {
+        provider: 'cursor',
+        providerSession: { cursorSessionId: 'existing-session' },
+      },
+    });
   });
 
   it('falls back to session/new when session/load fails', async () => {

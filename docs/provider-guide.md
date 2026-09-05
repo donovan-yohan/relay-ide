@@ -51,7 +51,8 @@ Relay has one shared ACP choreography layer:
 
 The base also supports one liveness guard for harnesses that can wedge after
 accepting a prompt: `AcpHarnessProfile.firstUpdateTimeoutMs` fails the turn if
-no `session/update` notification arrives within the configured window.
+no `session/update` notification arrives within the configured window
+(defaults to 120,000 ms).
 
 Hooks used by shipped ACP harnesses today:
 
@@ -291,7 +292,7 @@ Cursor is a first-class channel provider (#1552). Its adapter boots the Cursor C
 
 The Cursor channel transport is installed-tested with `cursor-agent` 2026.08.31-4057e58. The `cursor-agent` executable is also available as a normal terminal launch, but that surface stays a generic PTY: Relay does not parse terminal output or infer channel capabilities from it.
 
-Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Authentication is a connect gate: if it fails, Relay disconnects and reports the error rather than starting an unauthenticated session. Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`); those calls must return a `sessionId`, or connect fails closed. Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
+Lifecycle: `initialize` is the readiness barrier (`clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }`), followed by an authentication request (`authenticate { methodId: 'cursor_login' }`). Authentication is a connect gate: if it fails, Relay disconnects and reports the error rather than starting an unauthenticated session. Relay then opens a session with `session/new`, or `session/load` when resuming an existing session id (`cursorSessionId`). `session/new` must return a `sessionId`, or connect fails closed; Cursor’s captured `session/load` success response can omit it, in which case Relay treats the requested resume id as the provider session id. Historical notifications emitted during `session/load` replay are dropped because no turn is active while a session loads: every notification handler returns early without an `activeTurnId`, and `reconnect`/`resumeSession` complete the in-flight turn before reconnecting.
 
 The adapter maps:
 
