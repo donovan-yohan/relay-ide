@@ -87,7 +87,7 @@ workflow.
 
 ### Channels
 
-#### Fixed
+#### Added
 
 - Channel turns can now declare a delivery contract (`channels post --expect pr[:branch] | commit | file:<path> | text:<regex>`). On completion, Relay evaluates the contract and marks the run `completed_unmet` when any item is missing, posts one system row naming the unmet items, emits an `attention` event, and sends exactly one automatic follow-up to the same profile so the turn cannot silently end after a summary (#1569).
 - An agent turn is no longer interrupted while it sits inside one long, silent

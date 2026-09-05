@@ -4746,6 +4746,19 @@ export function createChannelAgentBinder(
         ] as string;
         const profile = deps.agentProfileStore?.get(targetProfileId) ?? null;
         if (profile) {
+          const scopeKey = conversationScopeKey(
+            message.channelId,
+            message.threadId
+          );
+          const state = consecutiveAgentTurns.get(scopeKey);
+          if (state?.paused) {
+            postSystemRow(
+              message.channelId,
+              `Mention chain paused — ${state.count} agent turns without a human.`,
+              { parentMessageId: parentForTrigger(message) }
+            );
+            return;
+          }
           void routeOne(message, profile);
         }
       }

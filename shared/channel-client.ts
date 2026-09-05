@@ -785,33 +785,24 @@ export function createRelayChannelClient(
   // or human operator-client credential needs its own explicit marker so Relay
   // never confuses a human post with an agent post.
   const configuredToken = config.token;
-  const envOperatorClientToken = env['RELAY_IDE_OPERATOR_CLIENT_TOKEN'];
-  const envActorToken = env['RELAY_IDE_ACTOR_TOKEN'];
-  const envBrowserToken = env['RELAY_IDE_BROWSER_TOKEN'];
-
-  // If the caller supplied a token, it MUST win over environment defaults.
-  // Tests and non-CLI consumers rely on this override to stay hermetic.
-  const operatorClientToken = configuredToken?.startsWith('relay-occ-v1.')
+  const configuredOperatorClient = configuredToken?.startsWith('relay-occ-v1.')
     ? configuredToken
-    : configuredToken
-      ? undefined
-      : envOperatorClientToken;
-  const actorToken =
-    !operatorClientToken && configuredToken?.startsWith('relay-sac-v1.')
+    : undefined;
+  const operatorClientToken =
+    configuredOperatorClient ?? env['RELAY_IDE_OPERATOR_CLIENT_TOKEN'];
+  const configuredActor =
+    !configuredOperatorClient && configuredToken?.startsWith('relay-sac-v1.')
       ? configuredToken
-      : configuredToken
-        ? undefined
-        : envActorToken;
+      : undefined;
+  const actorToken =
+    configuredActor ??
+    (operatorClientToken ? undefined : env['RELAY_IDE_ACTOR_TOKEN']);
   const browserToken =
-    operatorClientToken || actorToken
+    configuredOperatorClient || configuredActor
       ? undefined
-      : configuredToken
-        ? configuredToken
-        : operatorClientToken
-          ? undefined
-          : envBrowserToken;
-  const token =
-    configuredToken ?? operatorClientToken ?? actorToken ?? browserToken;
+      : (configuredToken ??
+        (operatorClientToken ? undefined : env['RELAY_IDE_BROWSER_TOKEN']));
+  const token = operatorClientToken ?? actorToken ?? browserToken;
   const fetcher = config.fetch ?? globalThis.fetch;
   const staticHeaders = new Headers(config.headers);
 

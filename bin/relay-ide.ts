@@ -1962,13 +1962,6 @@ async function resolveGatewayActorToken(
     // Flag path: explicit per-invocation, no persistence side effects.
     return { token: flag, source: 'flag' };
   }
-  // Browser-token precedence (#1467): if the operator is running with an
-  // authenticated browser token, never implicitly shadow it with the stored
-  // actor credential. The actor lane remains available via --actor-token or
-  // RELAY_IDE_ACTOR_TOKEN when explicitly requested.
-  if (process.env['RELAY_IDE_BROWSER_TOKEN']) {
-    return { token: '', source: 'env' };
-  }
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return { token: env, source: 'env' };
 
@@ -2109,7 +2102,6 @@ function gatewayActorToken(
 function gatewayActorTokenSync(commandName?: RelayCliGatewayCommand): string {
   const flag = getArg('--actor-token');
   if (flag) return flag;
-  if (process.env['RELAY_IDE_BROWSER_TOKEN']) return '';
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return env;
   const stored = loadStoredActorCredential(actorTokenConfigDir());
@@ -6666,8 +6658,7 @@ type ChannelCliValueFlag =
   | '--format'
   | '--parent-message-id'
   | '--client-message-id'
-  | '--input-json'
-  | '--expect';
+  | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
 function parseChannelCliFlags(
@@ -6703,53 +6694,6 @@ function parseChannelCliFlags(
     index += 1;
   }
   return values;
-}
-
-function parseChannelCliFlagsWithRepeats(
-  commandName: RelayCliGatewayCommand,
-  commandArgs: readonly string[],
-  valueFlags: readonly ChannelCliValueFlag[],
-  repeatableFlags: readonly ChannelCliValueFlag[]
-): {
-  values: ReadonlyMap<ChannelCliValueFlag, string>;
-  repeats: ReadonlyMap<ChannelCliValueFlag, string[]>;
-} {
-  const allowed = new Set<string>(['--json', ...valueFlags]);
-  const repeatable = new Set<string>(repeatableFlags);
-  const seen = new Set<string>();
-  const values = new Map<ChannelCliValueFlag, string>();
-  const repeats = new Map<ChannelCliValueFlag, string[]>();
-  for (let index = 0; index < commandArgs.length; index += 1) {
-    const flag = commandArgs[index];
-    if (!flag || !allowed.has(flag)) {
-      gatewayInvalid(commandName, `unsupported ${commandName} argument`, {
-        argument: flag,
-        allowed: [...allowed],
-      });
-    }
-    if (flag === '--json') continue;
-    const value = commandArgs[index + 1];
-    if (!value || value.startsWith('--')) {
-      gatewayInvalid(commandName, `${flag} requires a value`, {
-        argument: flag,
-      });
-    }
-    if (repeatable.has(flag)) {
-      const bucket = repeats.get(flag as ChannelCliValueFlag) ?? [];
-      bucket.push(value);
-      repeats.set(flag as ChannelCliValueFlag, bucket);
-    } else {
-      if (seen.has(flag)) {
-        gatewayInvalid(commandName, `duplicate ${flag} is not allowed`, {
-          argument: flag,
-        });
-      }
-      seen.add(flag);
-      values.set(flag as ChannelCliValueFlag, value);
-    }
-    index += 1;
-  }
-  return { values, repeats };
 }
 
 function requiredChannelCliString(
@@ -6905,20 +6849,6 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
       'threadId must be a non-empty string or null',
       { field: 'threadId' }
     );
-  }
-  if (input['expect'] !== undefined) {
-    if (
-      !Array.isArray(input['expect']) ||
-      (input['expect'] as unknown[]).some(
-        (spec) => typeof spec !== 'string' || spec.trim().length === 0
-      )
-    ) {
-      gatewayInvalid(
-        'channels.post',
-        'expect must be an array of non-empty strings',
-        { field: 'expect' }
-      );
-    }
   }
 }
 
@@ -7127,23 +7057,51 @@ async function runGatewayChannelsMembership(
 }
 
 async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
-  const parsed = parseChannelCliFlagsWithRepeats(
-    'channels.post',
-    channelArgs,
-    [
-      '--input-json',
-      '--channel-id',
-      '--text',
-      '--format',
-      '--thread-id',
-      '--parent-message-id',
-      '--client-message-id',
-      '--expect',
-    ],
-    ['--expect']
-  );
-  const values = parsed.values;
-  const expectSpecs = parsed.repeats.get('--expect') ?? [];
+  const deliveryExpect: string[] = [];
+  const filteredArgs: string[] = [];
+  for (let i = 0; i < channelArgs.length; i += 1) {
+    const arg = channelArgs[i];
+    if (arg === undefined) continue;
+    if (arg === '--expect') {
+      const value = channelArgs[i + 1];
+      if (value === undefined) {
+        gatewayInvalid('channels.post', '--expect requires a value', {
+          field: 'expect',
+        });
+        return;
+      }
+      if (!value.trim()) {
+        gatewayInvalid('channels.post', '--expect must be non-empty', {
+          field: 'expect',
+        });
+        return;
+      }
+      deliveryExpect.push(value);
+      i += 1;
+      continue;
+    }
+    if (arg?.startsWith('--expect=')) {
+      const value = arg.slice('--expect='.length);
+      if (!value.trim()) {
+        gatewayInvalid('channels.post', '--expect must be non-empty', {
+          field: 'expect',
+        });
+      }
+      deliveryExpect.push(value);
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  const values = parseChannelCliFlags('channels.post', filteredArgs, [
+    '--input-json',
+    '--channel-id',
+    '--text',
+    '--format',
+    '--thread-id',
+    '--parent-message-id',
+    '--client-message-id',
+  ]);
   const inputJson = values.get('--input-json');
   const flagFormFlags = [
     '--channel-id',
@@ -7153,8 +7111,7 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
     '--parent-message-id',
     '--client-message-id',
   ] as const;
-  const hasFlagForm =
-    flagFormFlags.some((flag) => values.has(flag)) || expectSpecs.length > 0;
+  const hasFlagForm = flagFormFlags.some((flag) => values.has(flag));
   if (inputJson !== undefined && hasFlagForm) {
     gatewayInvalid(
       'channels.post',
@@ -7190,8 +7147,8 @@ async function runGatewayChannelsPost(channelArgs: string[]): Promise<void> {
       const value = values.get(flag);
       if (value !== undefined) input[key] = value;
     }
-    if (expectSpecs.length > 0) input['expect'] = expectSpecs;
   }
+  if (deliveryExpect.length > 0) input['expect'] = deliveryExpect;
   validateChannelPostCliInput(input);
   const channelId = input['channelId'] as string;
   const body = { ...input };
