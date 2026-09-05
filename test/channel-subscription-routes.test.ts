@@ -996,6 +996,89 @@ describe('channel subscription route', () => {
     resumedAbort.abort();
   });
 
+  it('resumes from durable afterSeq across a store reopen with no replay or seq reset (#1570)', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-subscribe-reopen-')
+    );
+    const dbPath = path.join(dir, 'channel-chat.db');
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const store1 = createChannelMessageStore(dbPath);
+    const hub1 = createChannelHub({
+      store: store1,
+      channelExists: (id) => id === 'topic:a',
+      coalesceMs: 5,
+    });
+
+    const first = store1.appendComplete({
+      channelId: 'topic:a',
+      sender: { kind: 'human', id: 'human:one' },
+      text: 'first',
+    });
+    hub1.broadcastCreated(first, first.mentions ?? []);
+
+    const port1 = await listen({ channelIds: ['topic:a'], hub: hub1 });
+    const headers = { 'x-relay-cli-gateway': 'v1' };
+    const abort1 = new AbortController();
+    const response1 = await fetch(
+      `http://127.0.0.1:${port1}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      { headers, signal: abort1.signal }
+    );
+    const read1 = createNdjsonReader(response1);
+    await read1(); // open
+    const snapshotFrame1 = (await read1()) as { payload: ChannelEventV1 };
+    expect(snapshotFrame1.payload.type).toBe('channel-snapshot-v1');
+    if (snapshotFrame1.payload.type !== 'channel-snapshot-v1') {
+      throw new Error('expected snapshot');
+    }
+    expect(snapshotFrame1.payload.messages.map((m) => m.id)).toContain(
+      first.id
+    );
+    abort1.abort();
+    await pause(0);
+
+    hub1.close();
+    store1.close();
+
+    const store2 = createChannelMessageStore(dbPath);
+    const hub2 = createChannelHub({
+      store: store2,
+      channelExists: (id) => id === 'topic:a',
+      coalesceMs: 5,
+    });
+    cleanup.push(() => hub2.close());
+    cleanup.push(() => store2.close());
+
+    const second = store2.appendComplete({
+      channelId: 'topic:a',
+      sender: { kind: 'human', id: 'human:one' },
+      text: 'second',
+    });
+    expect(second.seq).toBeGreaterThan(first.seq);
+    hub2.broadcastCreated(second, second.mentions ?? []);
+
+    const port2 = await listen({ channelIds: ['topic:a'], hub: hub2 });
+    const abort2 = new AbortController();
+    const response2 = await fetch(
+      `http://127.0.0.1:${port2}/channels/topic%3Aa/subscribe?afterSeq=${first.seq}`,
+      { headers, signal: abort2.signal }
+    );
+    const read2 = createNdjsonReader(response2);
+    await read2(); // open
+    const snapshotFrame2 = (await read2()) as { payload: ChannelEventV1 };
+    expect(snapshotFrame2.payload.type).toBe('channel-snapshot-v1');
+    if (snapshotFrame2.payload.type !== 'channel-snapshot-v1') {
+      throw new Error('expected snapshot');
+    }
+    expect(snapshotFrame2.payload.messages.map((m) => m.id)).not.toContain(
+      first.id
+    );
+    expect(snapshotFrame2.payload.messages.map((m) => m.id)).toContain(
+      second.id
+    );
+    abort2.abort();
+  });
+
   it('keeps full snapshots when the cursor is omitted or requires a reset', async () => {
     const subscribe = (sink: ChannelEventSink) => {
       sink.send({
