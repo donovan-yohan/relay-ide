@@ -61,6 +61,7 @@ import {
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
+  channelTurnId,
   parseChannelSearchSnippet,
   type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
@@ -1871,6 +1872,12 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.get')).toEqual([
       'context:read',
     ]);
+    expect(cliGatewayActorCommandCapabilities('channels.run.wait')).toEqual([
+      'context:read',
+    ]);
+    expect(cliGatewayActorCommandCapabilities('channels.run.history')).toEqual([
+      'context:read',
+    ]);
     expect(cliGatewayActorCommandCapabilities('channels.history')).toEqual([
       'context:read',
     ]);
@@ -1880,6 +1887,149 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
+  });
+
+  describe('channels.run.wait route', () => {
+    it('uses the channels.run.wait read-auth middleware and returns timeout outcome', async () => {
+      const commands: string[] = [];
+      const h = await harness({
+        withAuth: true,
+        requireReadActorAuth: (command) => (_req, _res, next) => {
+          commands.push(command);
+          next();
+        },
+      });
+      const { run } = h.store.appendCompleteWithAsyncRun({
+        channelId: h.channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: 'hello @codex',
+        targetIds: [builtInAgentProfileId('codex')],
+      });
+
+      const res = await req<{
+        run: { id: string; state: string };
+        outcome: string;
+        finalText: string;
+        contract: unknown;
+      }>({
+        port: h.port,
+        method: 'GET',
+        url: `/channels/wait?runId=${encodeURIComponent(run.id)}&for=any&timeoutMs=5`,
+        headers: { Authorization: 'Bearer test' },
+      });
+      expect(res.status).toBe(200);
+      expect(commands).toEqual(['channels.run.wait']);
+      expect(res.body).toMatchObject({
+        run: { id: run.id },
+        outcome: 'timeout',
+        finalText: '',
+      });
+    });
+
+    it('returns completed outcome and only the final assistant text', async () => {
+      const h = await harness({ withAuth: true });
+      const targetId = builtInAgentProfileId('codex');
+      const { message: trigger, run } = h.store.appendCompleteWithAsyncRun({
+        channelId: h.channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: 'ship it @codex',
+        targetIds: [targetId],
+      });
+      const turnId = channelTurnId(trigger.id, targetId);
+      const started = h.store.beginStream({
+        channelId: h.channelId,
+        sender: { kind: 'agent', id: targetId, providerId: 'codex' },
+        source: { runtimeId: 'rt', turnId, itemId: 'item-final' },
+        text: 'working…',
+        meta: { asyncRun: { runId: run.id, targetId } },
+      });
+      h.store.finalizeStream(started.id, {
+        text: 'final summary',
+        status: 'complete',
+      });
+      h.store.transitionAsyncRunTarget({
+        runId: run.id,
+        targetId,
+        state: 'completed',
+      });
+
+      const res = await req<{
+        run: { id: string; state: string };
+        outcome: string;
+        finalText: string;
+        contract: unknown;
+      }>({
+        port: h.port,
+        method: 'GET',
+        url: `/channels/wait?runId=${encodeURIComponent(run.id)}&for=any&timeoutMs=200`,
+        headers: { Authorization: 'Bearer test' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        run: { id: run.id, state: 'completed' },
+        outcome: 'completed',
+        finalText: 'final summary',
+      });
+    });
+  });
+
+  describe('channels.run.history route', () => {
+    it('returns ordered run items and filters by coarse kinds', async () => {
+      const commands: string[] = [];
+      const h = await harness({
+        withAuth: true,
+        requireReadActorAuth: (command) => (_req, _res, next) => {
+          commands.push(command);
+          next();
+        },
+      });
+      const targetId = builtInAgentProfileId('codex');
+      const { message: trigger, run } = h.store.appendCompleteWithAsyncRun({
+        channelId: h.channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: '@codex do thing',
+        targetIds: [targetId],
+      });
+      const turnId = channelTurnId(trigger.id, targetId);
+      const detail = h.store.beginStream({
+        channelId: h.channelId,
+        sender: { kind: 'agent', id: targetId, providerId: 'codex' },
+        source: { runtimeId: 'rt', turnId, itemId: 'tool-1' },
+        agentDetail: {
+          itemId: 'tool-1',
+          card: {
+            kind: 'tool_call',
+            title: 'Shell',
+            status: 'completed',
+            content: 'echo ok',
+          },
+        },
+      });
+      h.store.finalizeStream(detail.id, { text: '', status: 'complete' });
+      const prose = h.store.beginStream({
+        channelId: h.channelId,
+        sender: { kind: 'agent', id: targetId, providerId: 'codex' },
+        source: { runtimeId: 'rt', turnId, itemId: 'msg-1' },
+        text: 'final',
+        meta: { asyncRun: { runId: run.id, targetId } },
+      });
+      h.store.finalizeStream(prose.id, { text: 'final', status: 'complete' });
+
+      const toolOnly = await req<{
+        run: { id: string };
+        items: Array<{ agentDetail?: unknown; body?: unknown }>;
+      }>({
+        port: h.port,
+        method: 'GET',
+        url: `/channels/runs/${encodeURIComponent(run.id)}/history?kinds=tool`,
+        headers: { Authorization: 'Bearer test' },
+      });
+      expect(toolOnly.status).toBe(200);
+      expect(commands).toEqual(['channels.run.history']);
+      expect(toolOnly.body.run.id).toBe(run.id);
+      expect(toolOnly.body.items.length).toBe(1);
+      expect(toolOnly.body.items[0]?.agentDetail).toBeTruthy();
+    });
   });
 
   // #1410: search opened to in-scope actors under its OWN verb. The actor lane

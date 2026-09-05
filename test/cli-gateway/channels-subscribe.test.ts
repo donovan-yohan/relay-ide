@@ -20,7 +20,11 @@ function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
     execFile(
       process.execPath,
       [RELAY_BIN, ...args],
-      { encoding: 'utf8', env, timeout: 10_000 },
+      {
+        encoding: 'utf8',
+        env: { ...env, RELAY_IDE_URL: '' },
+        timeout: 10_000,
+      },
       (error, stdout, stderr) => {
         if (error) reject(new Error(stderr || stdout));
         else resolve(stdout);
@@ -35,7 +39,7 @@ function runCliAndCloseStdout(
 ): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [RELAY_BIN, ...args], {
-      env,
+      env: { ...env, RELAY_IDE_URL: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -78,6 +82,8 @@ describe('channels.subscribe CLI gateway command', () => {
         '<id>',
         '--after-seq',
         '<n>',
+        '--only',
+        '<run-terminal,system|run|message>',
         '--thread-id',
         '<id|root>',
         '--message-id',

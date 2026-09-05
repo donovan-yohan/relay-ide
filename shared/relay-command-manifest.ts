@@ -174,6 +174,8 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'channels.list': 'list channels',
   'channels.get': 'channel details',
   'channels.run.get': 'correlated channel run',
+  'channels.run.wait': 'wait for correlated channel run',
+  'channels.run.history': 'correlated channel run history',
   'channels.history': 'channel message history',
   'channels.receipts': 'channel delivery receipts',
   'channels.subscribe': 'subscribe to channel messages',

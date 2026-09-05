@@ -59,31 +59,41 @@ globalThis.fetch = async (url, init = {}) => {
         }
       : String(url).includes('/agent-profiles')
         ? { profile: agentProfile, profiles: [agentProfile] }
-        : String(url).includes('/channels/')
+        : String(url).includes('/channels/wait')
           ? {
-              message: { id: 'chm:test' },
-              run: {
-                id: 'chrun:test',
-                channelId: 'topic:test',
-                threadId: null,
-                requestMessageId: 'chm:test',
-                requesterId: 'actor:test',
-                state: 'submitted',
-                targets: [],
-                createdAt: '2026-08-12T00:00:00.000Z',
-                updatedAt: '2026-08-12T00:00:00.000Z',
-              },
+              run: { id: 'chrun:test', state: 'completed' },
+              outcome: 'completed',
+              finalText: 'ok',
+              contract: null,
             }
-          : {
-              id: 'worker-session',
-              type: 'terminal',
-              mode: 'pty',
-              agent: 'terminal',
-              cwd: '/repo',
-              status: 'active',
-            };
+          : String(url).includes('/channels/runs/') &&
+              String(url).includes('/history')
+            ? { run: { id: 'chrun:test', state: 'completed' }, items: [] }
+            : String(url).includes('/channels/')
+              ? {
+                  message: { id: 'chm:test' },
+                  run: {
+                    id: 'chrun:test',
+                    channelId: 'topic:test',
+                    threadId: null,
+                    requestMessageId: 'chm:test',
+                    requesterId: 'actor:test',
+                    state: 'submitted',
+                    targets: [],
+                    createdAt: '2026-08-12T00:00:00.000Z',
+                    updatedAt: '2026-08-12T00:00:00.000Z',
+                  },
+                }
+              : {
+                  id: 'worker-session',
+                  type: 'terminal',
+                  mode: 'pty',
+                  agent: 'terminal',
+                  cwd: '/repo',
+                  status: 'active',
+                };
   return new Response(JSON.stringify(data), {
-    status: 201,
+    status: 200,
     headers: { 'content-type': 'application/json' },
   });
 };

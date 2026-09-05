@@ -142,8 +142,9 @@ and rejects actor-token markers or caller sender/source fields.
 
 `relay-mcp` is an optional local stdio façade for hosts that speak MCP. It
 exposes only `channels.list`, `channels.get`, `channels.run.get`,
-`channels.history`, `channels.subscribe`, `channels.threads.history`,
-`channels.roster`, and `channels.post`; it does not inject unsolicited work
+`channels.run.wait`, `channels.run.history`, `channels.history`,
+`channels.subscribe`, `channels.threads.history`, `channels.roster`, and
+`channels.post`; it does not inject unsolicited work
 into a Codex host and it cannot invoke shell, terminal, or provider-runtime
 commands. Configure the local Relay URL and credential only through process
 environment (`RELAY_IDE_URL`/`RELAY_IDE_PORT` and
@@ -180,8 +181,9 @@ clean local cancellation and promptly cancels the upstream reader. The stream us
 
 Subscriptions can reduce semantic noise at the server boundary without changing
 their resume semantics: `--thread-id <id|root>`, `--message-id`, `--sender-id`,
-`--mention-target-id`, `--status`, `--run-id`, `--terminal-only`, and
-`--principal-only` combine with AND. `root` selects top-level message/run
+`--mention-target-id`, `--status`, `--run-id`, `--terminal-only`,
+`--principal-only`, and `--only run-terminal,system|run|message`
+combine with AND. `root` selects top-level message/run
 scope; a concrete thread id selects that canonical root and its replies.
 `principal-only` excludes agent detail and image/tool rows; `terminal-only`
 selects terminal message or run state. A filtered-out committed row still
@@ -211,6 +213,17 @@ correlation.
 `context:read`. The actor must be scoped to the exact channel; when supplied,
 `threadId` must exactly equal the run's immutable scope or the command returns
 `NOT_FOUND`.
+
+`relay-ide v1 channels wait --run <chrun:...> | --channel-id <id> --after-seq <n>
+[--for completed|failed|any] [--timeout-ms <n>] --json` blocks until a run reaches
+a terminal state (or times out) and returns an orchestration-friendly envelope:
+`{ run: { id, state, reason }, outcome, finalText, contract }`. `finalText` is
+**only** the last assistant principal text item for that run (no thoughts, tool
+cards, or interim progress).
+
+`relay-ide v1 channels history --run <chrun:...> [--kinds text,thought,tool,system]
+--json` is the inspect lane: it returns that run’s ordered durable items (including
+agent detail cards) for auditing/debugging.
 
 Use a stable `clientMessageId` when retrying a post after an ambiguous
 transport outcome. The same `(channelId, authenticated sender,

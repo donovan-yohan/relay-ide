@@ -4132,6 +4132,59 @@ describe('channel-agent-binder — lifecycle', () => {
     }
   });
 
+  it('keeps one post → one run even when native steering is available (#1570)', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const first = postWithAsyncRun(
+      store,
+      binder,
+      '@steer first',
+      ['steer'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as SteerableAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    const second = postWithAsyncRun(
+      store,
+      binder,
+      '@steer second',
+      ['steer'],
+      OPERATOR,
+      root.id
+    );
+    // Correlated runs must not be collapsed into the provider-native steer lane.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(adapter.steerAttempts.length).toBe(0);
+
+    adapter.completeLatest('first done');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    adapter.completeLatest('second done');
+
+    await waitFor(() => store.getAsyncRun(first.run.id)?.state === 'completed');
+    await waitFor(
+      () => store.getAsyncRun(second.run.id)?.state === 'completed'
+    );
+    expect(store.getAsyncRun(first.run.id)?.targets[0]?.state).toBe(
+      'completed'
+    );
+    expect(store.getAsyncRun(second.run.id)?.targets[0]?.state).toBe(
+      'completed'
+    );
+  });
+
   it('retains a bounded exact-turn tombstone across a bare-idle successor', async () => {
     const { binder, store, sessions } = makeBinder({
       build: (agentType) => new ManualBareIdleAdapter(agentType),

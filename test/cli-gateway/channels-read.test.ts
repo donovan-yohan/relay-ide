@@ -26,6 +26,7 @@ function runCli(args: string[]): Promise<{
           ...process.env,
           NODE_OPTIONS: `--import=${FETCH_PRELOAD}`,
           RELAY_TEST_FETCH_CAPTURE: capturePath,
+          RELAY_IDE_URL: '',
           RELAY_IDE_PORT: '4567',
           RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
           RELAY_IDE_BROWSER_TOKEN: '',
@@ -75,6 +76,7 @@ function runCliFailure(args: string[]): Promise<{
           ...process.env,
           NODE_OPTIONS: `--import=${FETCH_PRELOAD}`,
           RELAY_TEST_FETCH_CAPTURE: capturePath,
+          RELAY_IDE_URL: '',
           RELAY_IDE_PORT: '4567',
           RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
           RELAY_IDE_BROWSER_TOKEN: '',
@@ -123,6 +125,31 @@ describe('channel read CLI gateway runtime wiring', () => {
       ['get', '--channel-id', 'product/main'],
       'channels.get',
       '/channels/product%2Fmain',
+    ],
+    [
+      ['wait', '--run', 'chrun:test'],
+      'channels.run.wait',
+      '/channels/wait?runId=chrun%3Atest&for=any',
+    ],
+    [
+      [
+        'wait',
+        '--channel-id',
+        'product/main',
+        '--after-seq',
+        '12',
+        '--for',
+        'completed',
+        '--timeout-ms',
+        '1000',
+      ],
+      'channels.run.wait',
+      '/channels/wait?channelId=product%2Fmain&afterSeq=12&for=completed&timeoutMs=1000',
+    ],
+    [
+      ['history', '--run', 'chrun:test', '--kinds', 'text,tool'],
+      'channels.run.history',
+      '/channels/runs/chrun%3Atest/history?kinds=text%2Ctool',
     ],
     [
       [

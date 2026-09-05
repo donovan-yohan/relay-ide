@@ -107,6 +107,8 @@ export type RelayCliGatewayCommand =
   | 'channels.list'
   | 'channels.get'
   | 'channels.run.get'
+  | 'channels.run.wait'
+  | 'channels.run.history'
   | 'channels.history'
   | 'channels.receipts'
   | 'channels.subscribe'
@@ -3780,6 +3782,99 @@ const channelRunGetInputSchema: RelayJsonSchema = {
   required: ['channelId', 'runId'],
 };
 
+const channelRunWaitInputSchema: RelayJsonSchema = {
+  title: 'ChannelRunWaitInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    runId: stringSchema,
+    channelId: stringSchema,
+    afterSeq: { type: 'integer', minimum: 0 },
+    for: { type: 'string', enum: ['any', 'completed', 'failed'] },
+    timeoutMs: { type: 'integer', minimum: 1, maximum: 3_600_000 },
+  },
+  oneOf: [
+    { required: ['runId'], not: { required: ['channelId'] } },
+    { required: ['channelId', 'afterSeq'], not: { required: ['runId'] } },
+  ],
+};
+
+const channelRunHistoryInputSchema: RelayJsonSchema = {
+  title: 'ChannelRunHistoryInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    runId: stringSchema,
+    kinds: {
+      type: 'array',
+      items: { type: 'string', enum: ['text', 'thought', 'tool', 'system'] },
+    },
+  },
+  required: ['runId'],
+};
+
+const channelRunWaitOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelRunWaitOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    run: {
+      oneOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: stringSchema,
+            state: channelAsyncRunStateSchema,
+            reason: stringSchema,
+          },
+          required: ['id', 'state'],
+        },
+      ],
+    },
+    outcome: stringSchema,
+    finalText: stringSchema,
+    contract: {
+      oneOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            met: booleanSchema,
+            unmet: { type: 'array', items: stringSchema },
+          },
+        },
+      ],
+    },
+  },
+  required: ['run', 'outcome', 'finalText', 'contract'],
+};
+
+const channelRunHistoryOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelRunHistoryOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    run: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        state: channelAsyncRunStateSchema,
+        reason: stringSchema,
+      },
+      required: ['id', 'state'],
+    },
+    items: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
+  },
+  required: ['run', 'items'],
+};
+
 const channelHistoryInputSchema: RelayJsonSchema = {
   title: 'ChannelsHistoryInput',
   type: 'object',
@@ -3930,6 +4025,7 @@ const channelSubscribeInputSchema: RelayJsonSchema = {
     afterSeq: { type: 'integer', minimum: 0 },
     maxEvents: { type: 'integer', minimum: 1, maximum: 10000 },
     idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 300000 },
+    only: stringSchema,
     filter: channelSubscriptionFilterSchema,
   },
   required: ['channelId'],
@@ -3982,6 +4078,9 @@ const channelSubscribeFrameSchema: RelayJsonSchema = {
                 channelId: stringSchema,
                 timestamp: stringSchema,
                 run: channelAsyncRunSchema,
+                finalMessageSeq: { type: 'integer', minimum: 0 },
+                finalTextPreview: stringSchema,
+                contract: { type: 'object', additionalProperties: true },
               },
               required: ['type', 'channelId', 'timestamp', 'run'],
             },
@@ -7616,6 +7715,77 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     ],
   },
   {
+    name: 'channels.run.wait',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'wait',
+      '--run',
+      '<chrun:…>',
+      '--channel-id',
+      '<id>',
+      '--after-seq',
+      '<n>',
+      '--for',
+      '<completed|failed|any>',
+      '--timeout-ms',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Block until a correlated channel run reaches a terminal state and return its outcome plus only the final assistant text item for the run.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelRunWaitInputSchema,
+    outputSchema: okOutput(
+      'ChannelRunWaitOutput',
+      channelRunWaitOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'channels.run.history',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'history',
+      '--run',
+      '<chrun:…>',
+      '--kinds',
+      '<text,thought,tool,system>',
+      '--json',
+    ],
+    summary:
+      'Inspect-lane: ordered durable items emitted for a correlated run, including agent detail cards, optionally filtered by coarse kind.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelRunHistoryInputSchema,
+    outputSchema: okOutput(
+      'ChannelRunHistoryOutput',
+      channelRunHistoryOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
     name: 'channels.history',
     cli: [
       'relay-ide',
@@ -7700,6 +7870,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<id>',
       '--after-seq',
       '<n>',
+      '--only',
+      '<run-terminal,system|run|message>',
       '--thread-id',
       '<id|root>',
       '--message-id',

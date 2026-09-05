@@ -86,6 +86,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'channels.list',
   'channels.get',
   'channels.run.get',
+  'channels.run.wait',
+  'channels.run.history',
   'channels.history',
   'channels.receipts',
   'channels.subscribe',
@@ -522,6 +524,8 @@ export function cliGatewayActorCommandCapabilities(
     command === 'channels.list' ||
     command === 'channels.get' ||
     command === 'channels.run.get' ||
+    command === 'channels.run.wait' ||
+    command === 'channels.run.history' ||
     command === 'channels.history' ||
     command === 'channels.receipts' ||
     command === 'channels.subscribe' ||
