@@ -269,4 +269,110 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
       server.close();
     }
   });
+
+  it('times out the /health probe after 500ms and does not hang', async () => {
+    const configDir = makeTmpDir();
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        // Accept the request and then never respond.
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected tcp addr');
+    const port = addr.port;
+    const configPath = path.join(configDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ port }), 'utf8');
+    const start = Date.now();
+    try {
+      await expect(
+        assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(configDir, {
+          configPath,
+          timeoutMs: 500,
+        })
+      ).resolves.toBeUndefined();
+    } finally {
+      server.close();
+    }
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it('prefers the configured port over fallbackPort when config.json is readable', async () => {
+    const configDir = makeTmpDir();
+
+    const answering = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      answering.listen(0, '127.0.0.1', resolve)
+    );
+    const addr = answering.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected tcp addr');
+    const listenerPort = addr.port;
+
+    // Config says "probe this other port that has no listener".
+    const configPath = path.join(configDir, 'config.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ port: listenerPort + 1, host: '127.0.0.1' }),
+      'utf8'
+    );
+
+    try {
+      await expect(
+        assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(configDir, {
+          configPath,
+          fallbackPort: listenerPort,
+          timeoutMs: 200,
+        })
+      ).resolves.toBeUndefined();
+    } finally {
+      answering.close();
+    }
+  });
+
+  it('probes using the explicit config.json path even when it is outside the default dir', async () => {
+    const outside = makeTmpDir();
+    const configDir = makeTmpDir();
+    const configPath = path.join(outside, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ port: 54321 }), 'utf8');
+
+    // Listener on 3456 must not matter when the explicit config points elsewhere.
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected tcp addr');
+    try {
+      await expect(
+        assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(configDir, {
+          configPath,
+          fallbackPort: addr.port,
+          timeoutMs: 200,
+        })
+      ).resolves.toBeUndefined();
+    } finally {
+      server.close();
+    }
+  });
 });
