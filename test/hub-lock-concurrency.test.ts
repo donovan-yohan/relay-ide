@@ -108,4 +108,71 @@ describe('hub.lock atomic acquisition (#1587)', () => {
     expect(successes[0]!.output).toContain('acquired');
     expect(failures[0]!.output).toContain('hub.lock');
   });
+
+  it('stale-lock clear race: loser refuses naming the live winner', async () => {
+    const configDir = makeTmpDir();
+    const moduleUrl = pathToFileURL(DIST_HUB_LOCK).href;
+
+    // Plant a stale lock (dead pid) that both racers will try to clear+wx.
+    fs.writeFileSync(
+      path.join(configDir, 'hub.lock'),
+      JSON.stringify(
+        {
+          pid: 999_999,
+          port: 0,
+          host: '127.0.0.1',
+          startedAt: new Date().toISOString(),
+          hostname: os.hostname(),
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const code = `
+      const configDir = process.env.CONFIG_DIR;
+      const moduleUrl = process.env.MODULE_URL;
+      const holdMs = Number(process.env.HOLD_MS || '1500');
+      const main = async () => {
+        const mod = await import(moduleUrl);
+        const owned = mod.acquireHubLockOrThrow(configDir, {
+          port: 0,
+          host: '127.0.0.1',
+        });
+        console.log('acquired pid=' + owned.pid);
+        setTimeout(() => process.exit(0), holdMs);
+      };
+      main().catch((err) => {
+        console.error(String(err && err.message ? err.message : err));
+        process.exit(1);
+      });
+    `;
+
+    const envBase = {
+      ...process.env,
+      CONFIG_DIR: configDir,
+      MODULE_URL: moduleUrl,
+      HOLD_MS: '1500',
+    };
+    const a = spawn(process.execPath, ['--input-type=module', '-e', code], {
+      env: envBase,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const b = spawn(process.execPath, ['--input-type=module', '-e', code], {
+      env: envBase,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const [ra, rb] = await Promise.all([collectExit(a), collectExit(b)]);
+    const successes = [ra, rb].filter((r) => r.code === 0);
+    const failures = [ra, rb].filter((r) => r.code !== 0);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(successes[0]!.output).toMatch(/acquired pid=\d+/);
+    const winnerPid = successes[0]!.output.match(/acquired pid=(\d+)/)?.[1];
+    expect(winnerPid).toBeTruthy();
+    expect(failures[0]!.output).toContain('hub.lock');
+    expect(failures[0]!.output).toContain(`pid=${winnerPid}`);
+  });
 });
