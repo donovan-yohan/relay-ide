@@ -53,7 +53,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
           configPath,
           timeoutMs: 500,
         })
-      ).rejects.toThrow(/hub is listening on/);
+      ).rejects.toThrow(/no hub\.lock present/);
     } finally {
       server.close();
     }
@@ -104,7 +104,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
           configPath,
           timeoutMs: 500,
         })
-      ).rejects.toThrow(/hub is listening on/);
+      ).rejects.toThrow(/stale hub\.lock \(pid=/);
     } finally {
       server.close();
     }

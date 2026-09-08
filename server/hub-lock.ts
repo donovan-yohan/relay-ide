@@ -165,6 +165,18 @@ export async function probeLiveHubHealth(
   }
 }
 
+function describeHubLockAbsence(configDir: string): string {
+  const lock = readHubLock(configDir);
+  if (!lock) return 'no hub.lock present';
+  if (lock.hostname !== os.hostname()) {
+    return `foreign-host hub.lock (hostname=${lock.hostname})`;
+  }
+  if (!isPidAlive(lock.pid)) {
+    return `stale hub.lock (pid=${lock.pid} not alive)`;
+  }
+  return 'hub.lock present';
+}
+
 export async function assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(
   configDir: string,
   opts: HubLivenessProbeConfig
@@ -174,7 +186,7 @@ export async function assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(
   if (!live) return;
   throw new Error(
     [
-      `Refusing to open Relay hub config dir: a hub is listening on :${live.port} (no hub.lock present).`,
+      `Refusing to open Relay hub config dir: a hub is listening on :${live.port} (${describeHubLockAbsence(configDir)}).`,
       `configDir: ${configDir}`,
       `health: http://127.0.0.1:${live.port}/health`,
       `Pass an isolated config path via --config /path/to/config.json. (#1587)`,
