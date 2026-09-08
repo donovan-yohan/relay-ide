@@ -146,6 +146,29 @@ Relay reads `<configDir>/config.json` for the port (default `3456`) and probes
 `http://127.0.0.1:<port>/health` with a 500 ms timeout; if a hub answers, the
 process refuses before opening any persistence.
 
+#### Boot tokens vs `hub.lock`
+
+`hub.lock` is **not** an authentication token. It is only an ownership marker
+used to prevent accidental store opens.
+
+Relay may mint per-boot credentials (for example a scoped browser/CLI bearer)
+as part of startup, and those can rotate across restarts. The lock exists so
+another process can refuse _before_ it opens any config-dir databases, not to
+grant access.
+
+#### SIGKILL and stale locks
+
+If the hub is terminated with `SIGKILL`/`kill -9`, shutdown handlers do not run,
+so `<configDir>/hub.lock` can be left behind. This is expected:
+
+- A subsequent boot treats a lock as authoritative only when the recorded PID
+  is alive **and** the hostname matches.
+- If the PID is dead, the lock is considered stale and the next boot replaces
+  it.
+
+If you ever see a refusal that names a PID you believe is stale, verify that
+PID is not a running Relay hub before deleting `hub.lock` manually.
+
 ### Inspect
 
 ```bash
