@@ -177,6 +177,52 @@ describe('findFixtureConfigIsolationViolation (#1214)', () => {
       })
     ).toBeNull();
   });
+
+  it('accepts a run-scoped /.config/relay-ide layout under os.tmpdir()', () => {
+    const configPath = path.join(
+      os.tmpdir(),
+      `relay-hub-lock-shape-${process.pid}`,
+      '.config',
+      'relay-ide',
+      'config.json'
+    );
+    expect(
+      findFixtureConfigIsolationViolation({
+        explicitConfigPath: configPath,
+        env: {},
+        homedir: home,
+      })
+    ).toBeNull();
+  });
+
+  it('accepts a path under an e2e prefix dir even when it contains /.config/relay-ide', () => {
+    const configPath = path.join(
+      '/var',
+      'relay-fixtures',
+      `${E2E_CONFIG_DIR_PREFIX}abc`,
+      '.config',
+      'relay-ide',
+      'config.json'
+    );
+    expect(
+      findFixtureConfigIsolationViolation({
+        explicitConfigPath: configPath,
+        env: {},
+        homedir: home,
+      })
+    ).toBeNull();
+  });
+
+  it('still refuses another user home /.config/relay-ide by shape', () => {
+    expect(
+      findFixtureConfigIsolationViolation({
+        explicitConfigPath:
+          '/home/other-operator/.config/relay-ide/config.json',
+        env: {},
+        homedir: home,
+      })
+    ).toContain('inside the shared Relay config root');
+  });
 });
 
 describe('e2e harness config resolution (#1214)', () => {

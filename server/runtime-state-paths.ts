@@ -201,12 +201,16 @@ export function findFixtureConfigIsolationViolation(
   // HOME/XDG env. A fixture runner can inherit a config path for another user
   // (e.g. /home/operator/.config/relay-ide/config.json) and we still must treat
   // it as "shared Relay config root" by shape.
+  //
+  // Exempt run-scoped layouts under os.tmpdir() and e2e prefix dirs: hub-lock
+  // / fixture tests intentionally build `$TMP/<run>/.config/relay-ide/...`.
   const marker = `${path.sep}.config${path.sep}relay-ide`;
   const markerIndex = resolved.lastIndexOf(marker);
   if (markerIndex !== -1) {
     const next = resolved[markerIndex + marker.length] ?? '';
     // Require a path segment boundary: ".../.config/relay-ide(/|$)".
     if (next !== '' && next !== path.sep) return null;
+    if (isRunScopedConfigPath(resolved)) return null;
     const sharedRootByShape = resolved.slice(0, markerIndex + marker.length);
     return (
       `${CONFIG_PATH_ENV_VAR}=${resolved} is inside the shared Relay config root ${sharedRootByShape}, ` +
@@ -215,4 +219,21 @@ export function findFixtureConfigIsolationViolation(
     );
   }
   return null;
+}
+
+/**
+ * Basename prefix for Playwright/e2e run-scoped config dirs
+ * (`test/e2e/isolated-config.ts`). Paths under a directory with this prefix
+ * are never treated as a shared hub root by shape.
+ */
+export const E2E_CONFIG_DIR_BASENAME_PREFIX = 'relay-ide-e2e-';
+
+function isRunScopedConfigPath(resolved: string): boolean {
+  if (isInside(os.tmpdir(), resolved)) return true;
+  return resolved
+    .split(path.sep)
+    .some(
+      (segment) =>
+        segment.startsWith(E2E_CONFIG_DIR_BASENAME_PREFIX) && segment.length > 0
+    );
 }
