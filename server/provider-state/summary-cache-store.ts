@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import * as path from 'node:path';
 
+import { assertConfigDirSafeForDbPath } from '../open-config-dir-database.js';
 import { createLogger } from '../logger.js';
 import type {
   FileDerivedCachePersistence,
@@ -181,6 +182,7 @@ function precreateRestricted(dbPath: string): void {
 
 function openDatabase(dbPath: string): Database.Database | null {
   const attempt = (): Database.Database => {
+    assertConfigDirSafeForDbPath(dbPath);
     precreateRestricted(dbPath);
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');

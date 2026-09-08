@@ -1,8 +1,13 @@
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import express, { type Request, type RequestHandler, type Response } from 'express';
+import express, {
+  type Request,
+  type RequestHandler,
+  type Response,
+} from 'express';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import {
@@ -40,7 +45,10 @@ function workspaceSurfacePriority(surface: WorkspaceSurface): number {
 
 // package.json script names that conventionally start a long-running web/dev
 // surface. Mapped to a surface kind so the dashboard can label them sensibly.
-const DEV_SCRIPT_KINDS: Array<{ pattern: RegExp; kind: WorkspaceSurface['kind'] }> = [
+const DEV_SCRIPT_KINDS: Array<{
+  pattern: RegExp;
+  kind: WorkspaceSurface['kind'];
+}> = [
   { pattern: /(^|:)docs?($|:)|storybook/i, kind: 'docs' },
   { pattern: /preview/i, kind: 'preview' },
   { pattern: /(^|:)(dev|serve|start|vite)($|:)/i, kind: 'web' },
@@ -85,12 +93,15 @@ function readJsonFile(file: string): Record<string, unknown> | null {
   }
 }
 
-function discoverPackageScripts(root: WorkspaceEvidenceRoot): WorkspaceSurface[] {
+function discoverPackageScripts(
+  root: WorkspaceEvidenceRoot
+): WorkspaceSurface[] {
   if (!root.path) return [];
   const pkg = readJsonFile(path.join(root.path, 'package.json'));
-  const scripts = pkg && typeof pkg['scripts'] === 'object' && pkg['scripts'] !== null
-    ? (pkg['scripts'] as Record<string, unknown>)
-    : null;
+  const scripts =
+    pkg && typeof pkg['scripts'] === 'object' && pkg['scripts'] !== null
+      ? (pkg['scripts'] as Record<string, unknown>)
+      : null;
   if (!scripts) return [];
   const surfaces: WorkspaceSurface[] = [];
   for (const [name, value] of Object.entries(scripts)) {
@@ -115,7 +126,12 @@ function discoverPackageScripts(root: WorkspaceEvidenceRoot): WorkspaceSurface[]
 // docker-compose published-port discovery via a tolerant line scan. Avoids a
 // YAML dependency: matches `- "3000:8080"` / `- 3000:8080` ports entries. Only
 // the host (published) port becomes a loopback URL.
-const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+const COMPOSE_FILES = [
+  'docker-compose.yml',
+  'docker-compose.yaml',
+  'compose.yml',
+  'compose.yaml',
+];
 const COMPOSE_PORT = /^\s*-\s*["']?(\d{2,5}):(\d{2,5})["']?\s*$/;
 
 function discoverComposePorts(root: WorkspaceEvidenceRoot): WorkspaceSurface[] {
@@ -260,13 +276,18 @@ function discoverConfiguredSurfaces(
   return surfaces;
 }
 
-export async function discoverWorkspaceSurfaces(config: Config): Promise<WorkspaceSurface[]> {
+export async function discoverWorkspaceSurfaces(
+  config: Config
+): Promise<WorkspaceSurface[]> {
   const roots = await listConfiguredWorkspaceEvidenceRoots(config);
   const surfaces: WorkspaceSurface[] = [];
   surfaces.push(...discoverConfiguredSurfaces(config, roots));
   for (const root of roots) {
     if (root.status !== 'available' || !root.path) continue;
-    surfaces.push(...discoverPackageScripts(root), ...discoverComposePorts(root));
+    surfaces.push(
+      ...discoverPackageScripts(root),
+      ...discoverComposePorts(root)
+    );
   }
   return surfaces;
 }
@@ -316,12 +337,15 @@ export function createWorkspaceSurfaceStore(input: {
   dbPath: string;
   now?: () => string;
 }): WorkspaceSurfaceStore {
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
   const clock = input.now ?? defaultClock;
 
-  const getStmt = db.prepare('SELECT record_json FROM workspace_surfaces WHERE id = ?');
+  const getStmt = db.prepare(
+    'SELECT record_json FROM workspace_surfaces WHERE id = ?'
+  );
   const upsertStmt = db.prepare(`
     INSERT INTO workspace_surfaces (
       id, node_id, workspace_id, root_id, repo_path, record_json, created_at, updated_at
@@ -386,7 +410,9 @@ export function createWorkspaceSurfaceStore(input: {
           source: 'agent-published',
           ...(parsed.actor ? { actor: parsed.actor } : {}),
           ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
-          ...(parsed.workContextId ? { workContextId: parsed.workContextId } : {}),
+          ...(parsed.workContextId
+            ? { workContextId: parsed.workContextId }
+            : {}),
         },
         openMode: 'unavailable',
         createdAt: existing?.createdAt ?? now,
@@ -405,7 +431,9 @@ export function createWorkspaceSurfaceStore(input: {
       });
       const count = (countStmt.get() as { n: number }).n;
       if (count > WORKSPACE_SURFACES_MAX_PUBLISHED_ENTRIES) {
-        trimStmt.run({ over: count - WORKSPACE_SURFACES_MAX_PUBLISHED_ENTRIES });
+        trimStmt.run({
+          over: count - WORKSPACE_SURFACES_MAX_PUBLISHED_ENTRIES,
+        });
       }
       return record;
     },
@@ -493,13 +521,23 @@ function parseCapabilityHeader(value: string | undefined): Set<string> {
   );
 }
 
-function denyMissingCapability(req: Request, res: Response, required: string[]): boolean {
+function denyMissingCapability(
+  req: Request,
+  res: Response,
+  required: string[]
+): boolean {
   const caps = parseCapabilityHeader(req.header('x-relay-capabilities'));
   const missing = required.filter((cap) => !caps.has(cap));
   if (missing.length === 0) return false;
-  sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing.join(', ')}`, false, {
-    capability: missing[0],
-  });
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    `missing required capability: ${missing.join(', ')}`,
+    false,
+    {
+      capability: missing[0],
+    }
+  );
   return true;
 }
 
@@ -508,7 +546,9 @@ function readQueryString(value: unknown): string | undefined {
 }
 
 function bodyRecord(req: Request): Record<string, unknown> {
-  return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+  return typeof req.body === 'object' &&
+    req.body !== null &&
+    !Array.isArray(req.body)
     ? (req.body as Record<string, unknown>)
     : {};
 }
@@ -540,7 +580,8 @@ function bindPublishedSurfaceToActor(
 
   const allowedNodeIds = credential.scope.nodeIds ?? [];
   const nodeId =
-    input.nodeId ?? (allowedNodeIds.length === 1 ? allowedNodeIds[0] : undefined);
+    input.nodeId ??
+    (allowedNodeIds.length === 1 ? allowedNodeIds[0] : undefined);
   if (!nodeId || !allowedNodeIds.includes(nodeId)) {
     sendGatewayError(
       res,
@@ -567,9 +608,9 @@ export interface WorkspaceSurfacesRouterOptions {
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
     options?: {
-      scopeForRequest?: (req: Request) =>
-        | { nodeIds?: string[]; workContextIds?: string[] }
-        | undefined;
+      scopeForRequest?: (
+        req: Request
+      ) => { nodeIds?: string[]; workContextIds?: string[] } | undefined;
     }
   ) => RequestHandler;
 }
@@ -605,8 +646,10 @@ export function createWorkspaceSurfacesRouter(
         discovered = [];
       }
       if (rootId) discovered = discovered.filter((s) => s.rootId === rootId);
-      if (workspaceId) discovered = discovered.filter((s) => s.workspaceId === workspaceId);
-      if (repoPath) discovered = discovered.filter((s) => s.repoPath === repoPath);
+      if (workspaceId)
+        discovered = discovered.filter((s) => s.workspaceId === workspaceId);
+      if (repoPath)
+        discovered = discovered.filter((s) => s.repoPath === repoPath);
     }
     const published = options.store
       ? options.store.list({
@@ -640,9 +683,15 @@ export function createWorkspaceSurfacesRouter(
   router.post('/workspace-surfaces', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     if (!options.store) {
-      sendGatewayError(res, 'SERVER_UNAVAILABLE', 'workspace surface store is unavailable', true, {
-        reasonCode: 'WORKSPACE_SURFACE_STORE_UNAVAILABLE',
-      });
+      sendGatewayError(
+        res,
+        'SERVER_UNAVAILABLE',
+        'workspace surface store is unavailable',
+        true,
+        {
+          reasonCode: 'WORKSPACE_SURFACE_STORE_UNAVAILABLE',
+        }
+      );
       return;
     }
     try {
@@ -659,7 +708,12 @@ export function createWorkspaceSurfacesRouter(
         });
         return;
       }
-      sendGatewayError(res, 'INTERNAL', 'workspace surface publish failed', true);
+      sendGatewayError(
+        res,
+        'INTERNAL',
+        'workspace surface publish failed',
+        true
+      );
     }
   });
 

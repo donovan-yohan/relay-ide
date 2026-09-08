@@ -15,10 +15,12 @@
 // inside a transaction, and an `init*(configDir)` / `create*(dbPath)` factory
 // split so the store is trivially unit-testable.
 
-import path from 'node:path';
-
 import Database from 'better-sqlite3';
 
+import {
+  assertConfigDirSafeForDbPath,
+  openConfigDirDatabase,
+} from './open-config-dir-database.js';
 import { createLogger } from './logger.js';
 import type {
   Workspace,
@@ -195,12 +197,18 @@ export class IaStoreError extends Error {
 
 /** Boot entry point: opens (and migrates) the IA store DB under `configDir`. */
 export function initIaStore(configDir: string): IaStore {
-  return createIaStore(path.join(configDir, 'ia.db'));
+  const db = openConfigDirDatabase(configDir, 'ia.db');
+  return createIaStoreWithDb(db);
 }
 
 /** Factory taking an explicit DB path. Used directly by unit tests. */
 export function createIaStore(dbPath: string): IaStore {
+  assertConfigDirSafeForDbPath(dbPath);
   const db = new Database(dbPath);
+  return createIaStoreWithDb(db);
+}
+
+function createIaStoreWithDb(db: Database.Database): IaStore {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
 

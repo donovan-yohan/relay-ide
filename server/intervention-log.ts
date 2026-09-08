@@ -1,5 +1,6 @@
-import path from 'node:path';
 import Database from 'better-sqlite3';
+
+import { openConfigDirDatabase } from './open-config-dir-database.js';
 import type {
   InterventionKind,
   InterventionRecord,
@@ -56,8 +57,7 @@ INSERT INTO interventions (
 
 export function initInterventionLog(configDir: string): void {
   if (db) closeInterventionLog();
-  const dbPath = path.join(configDir, 'interventions.db');
-  db = new Database(dbPath);
+  db = openConfigDirDatabase(configDir, 'interventions.db');
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.exec(SCHEMA);

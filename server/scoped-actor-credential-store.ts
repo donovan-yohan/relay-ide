@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import { isRelayCapabilityBit } from '../shared/security-policy.js';
 import type {
@@ -163,6 +164,7 @@ export function initScopedActorCredentialStore(
 export function createScopedActorCredentialStore(
   dbPath: string
 ): ScopedActorCredentialStore {
+  assertConfigDirSafeForDbPath(dbPath);
   precreateSecretFile(dbPath);
   const db = new Database(dbPath);
   restrictSecretFileMode(dbPath);

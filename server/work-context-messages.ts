@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   WORK_CONTEXT_MESSAGE_SCHEMA_VERSION,
   normalizeWorkContextMessageCreateInput,
@@ -128,31 +129,43 @@ function createMessageId(): WorkContextMessageId {
 }
 
 function cleanLimit(limit: unknown): number {
-  if (typeof limit !== 'number' || !Number.isFinite(limit)) return DEFAULT_LIMIT;
+  if (typeof limit !== 'number' || !Number.isFinite(limit))
+    return DEFAULT_LIMIT;
   return Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit)));
 }
 
-function parseRow(row: WorkContextMessageRow | undefined): WorkContextMessageEnvelope | null {
+function parseRow(
+  row: WorkContextMessageRow | undefined
+): WorkContextMessageEnvelope | null {
   if (!row) return null;
   try {
     return parseWorkContextMessageEnvelope(JSON.parse(row.message_json));
   } catch (error) {
-    throw new WorkContextMessageStoreError(500, 'message_corrupt', 'stored WorkContext message is corrupt', {
-      messageId: row.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    throw new WorkContextMessageStoreError(
+      500,
+      'message_corrupt',
+      'stored WorkContext message is corrupt',
+      {
+        messageId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    );
   }
 }
 
 function runMigrations(db: Database.Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
+  );
   const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
     | { version: number }
     | undefined;
   if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
   const current = row?.version ?? 0;
   if (current > SCHEMA_VERSION) {
-    throw new Error(`work-context-messages.db schema ${current} is newer than supported ${SCHEMA_VERSION}`);
+    throw new Error(
+      `work-context-messages.db schema ${current} is newer than supported ${SCHEMA_VERSION}`
+    );
   }
   if (current < 1) {
     db.transaction(() => {
@@ -162,7 +175,12 @@ function runMigrations(db: Database.Database): void {
   }
 }
 
-function addRef(refs: RefEntry[], kind: string, value: string | undefined, label?: string): void {
+function addRef(
+  refs: RefEntry[],
+  kind: string,
+  value: string | undefined,
+  label?: string
+): void {
   const trimmed = value?.trim();
   if (!trimmed) return;
   refs.push({ kind, value: trimmed, ...(label ? { label } : {}) });
@@ -194,11 +212,15 @@ function refsForMessage(message: WorkContextMessageEnvelope): RefEntry[] {
     addRef(out, 'globalSessionId', session.globalSessionId);
     addRef(out, 'nodeId', session.nodeId);
   }
-  for (const artifact of [...(message.refs.artifacts ?? []), ...(message.payload.artifactRefs ?? [])]) {
+  for (const artifact of [
+    ...(message.refs.artifacts ?? []),
+    ...(message.payload.artifactRefs ?? []),
+  ]) {
     addRef(out, 'artifactId', artifact.id, artifact.title);
     addRef(out, 'artifactUri', artifact.uri, artifact.title);
   }
-  for (const id of message.refs.workflowRunIds ?? []) addRef(out, 'workflowRunId', id);
+  for (const id of message.refs.workflowRunIds ?? [])
+    addRef(out, 'workflowRunId', id);
   for (const external of message.refs.external ?? []) {
     addRef(out, `external.${external.kind}`, external.id, external.label);
     addRef(out, 'external', `${external.kind}:${external.id}`, external.label);
@@ -214,11 +236,18 @@ function audienceRows(audience: WorkContextMessageAudience[]): RefEntry[] {
   return rows;
 }
 
-export function initWorkContextMessageStore(configDir: string): WorkContextMessageStore {
-  return createWorkContextMessageStore(path.join(configDir, 'work-context-messages.db'));
+export function initWorkContextMessageStore(
+  configDir: string
+): WorkContextMessageStore {
+  return createWorkContextMessageStore(
+    path.join(configDir, 'work-context-messages.db')
+  );
 }
 
-export function createWorkContextMessageStore(dbPath: string): WorkContextMessageStore {
+export function createWorkContextMessageStore(
+  dbPath: string
+): WorkContextMessageStore {
+  assertConfigDirSafeForDbPath(dbPath);
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
@@ -273,10 +302,19 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
       messageJson: JSON.stringify(message),
     });
     for (const ref of refsForMessage(message)) {
-      insertRef.run({ messageId: message.id, kind: ref.kind, value: ref.value, label: ref.label ?? null });
+      insertRef.run({
+        messageId: message.id,
+        kind: ref.kind,
+        value: ref.value,
+        label: ref.label ?? null,
+      });
     }
     for (const audience of audienceRows(message.audience)) {
-      insertAudience.run({ messageId: message.id, kind: audience.kind, value: audience.value });
+      insertAudience.run({
+        messageId: message.id,
+        kind: audience.kind,
+        value: audience.value,
+      });
     }
   });
 
@@ -285,29 +323,48 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
       db.close();
     },
     append(rawInput) {
-      let input: WorkContextMessageCreateInput & { redaction: WorkContextMessageRedactionMetadata };
+      let input: WorkContextMessageCreateInput & {
+        redaction: WorkContextMessageRedactionMetadata;
+      };
       try {
         input = normalizeWorkContextMessageCreateInput(rawInput);
       } catch (error) {
         const err = error as WorkContextMessageValidationError;
-        throw new WorkContextMessageStoreError(400, 'message_validation_failed', err.message, err.details);
+        throw new WorkContextMessageStoreError(
+          400,
+          'message_validation_failed',
+          err.message,
+          err.details
+        );
       }
       const id = createMessageId();
       const parentId = input.refs?.parentMessageId;
       let threadId = id;
       if (parentId) {
-        const parent = parseRow(selectById.get(parentId) as WorkContextMessageRow | undefined);
+        const parent = parseRow(
+          selectById.get(parentId) as WorkContextMessageRow | undefined
+        );
         if (!parent) {
-          throw new WorkContextMessageStoreError(404, 'parent_message_not_found', 'parent message not found', {
-            parentMessageId: parentId,
-          });
+          throw new WorkContextMessageStoreError(
+            404,
+            'parent_message_not_found',
+            'parent message not found',
+            {
+              parentMessageId: parentId,
+            }
+          );
         }
         if (parent.workContextId !== input.workContextId) {
-          throw new WorkContextMessageStoreError(409, 'parent_work_context_mismatch', 'parent message belongs to another WorkContext', {
-            parentMessageId: parentId,
-            parentWorkContextId: parent.workContextId,
-            workContextId: input.workContextId,
-          });
+          throw new WorkContextMessageStoreError(
+            409,
+            'parent_work_context_mismatch',
+            'parent message belongs to another WorkContext',
+            {
+              parentMessageId: parentId,
+              parentWorkContextId: parent.workContextId,
+              workContextId: input.workContextId,
+            }
+          );
         }
         threadId = parent.refs.threadId ?? parent.id;
       }
@@ -327,7 +384,12 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
         summary: input.summary,
         refs,
         ...(input.payloadSchema ? { payloadSchema: input.payloadSchema } : {}),
-        payload: input.payload ?? { mediaType: 'application/json', encoding: 'json', body: {}, byteCount: 2 },
+        payload: input.payload ?? {
+          mediaType: 'application/json',
+          encoding: 'json',
+          body: {},
+          byteCount: 2,
+        },
         visibility: input.visibility ?? 'internal',
         createdAt,
         updatedAt: createdAt,
@@ -337,9 +399,14 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
         appendTx(message);
       } catch (error) {
         if (String(error).includes('UNIQUE constraint failed')) {
-          throw new WorkContextMessageStoreError(409, 'message_already_exists', 'message id already exists', {
-            messageId: id,
-          });
+          throw new WorkContextMessageStoreError(
+            409,
+            'message_already_exists',
+            'message id already exists',
+            {
+              messageId: id,
+            }
+          );
         }
         throw error;
       }
@@ -366,7 +433,9 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
         );
       }
       const clauses: string[] = [];
-      const params: Record<string, unknown> = { limit: cleanLimit(filter.limit) };
+      const params: Record<string, unknown> = {
+        limit: cleanLimit(filter.limit),
+      };
       if (filter.workContextId) {
         clauses.push('m.work_context_id = @workContextId');
         params['workContextId'] = filter.workContextId;
@@ -409,10 +478,12 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
         if (filter.audienceId) params['audienceId'] = filter.audienceId;
       }
       const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-      const rows = db.prepare(
-        `SELECT m.* FROM work_context_messages m ${where}
+      const rows = db
+        .prepare(
+          `SELECT m.* FROM work_context_messages m ${where}
          ORDER BY m.created_at DESC, m.id DESC LIMIT @limit`
-      ).all(params) as WorkContextMessageRow[];
+        )
+        .all(params) as WorkContextMessageRow[];
       return rows.flatMap((row) => {
         const parsed = parseRow(row);
         return parsed ? [parsed] : [];

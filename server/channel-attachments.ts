@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Sharp } from 'sharp';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   CHANNEL_IMAGE_ALT_MAX_LENGTH,
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
@@ -274,6 +275,7 @@ export function createChannelAttachmentStore(input: {
 }): ChannelAttachmentStore {
   fs.mkdirSync(path.dirname(input.dbPath), { recursive: true });
   fs.mkdirSync(input.payloadRoot, { recursive: true });
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   try {
     db.pragma('journal_mode = WAL');

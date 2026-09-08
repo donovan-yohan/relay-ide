@@ -21,6 +21,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import { createLogger } from './logger.js';
 import {
   createContextPacketId,
@@ -212,6 +213,7 @@ export function initContextPacketStore(configDir: string): ContextPacketStore {
 
 /** Factory taking an explicit DB path. Used directly by unit tests. */
 export function createContextPacketStore(dbPath: string): ContextPacketStore {
+  assertConfigDirSafeForDbPath(dbPath);
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');

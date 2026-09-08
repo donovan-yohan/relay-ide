@@ -3,8 +3,13 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import type { SessionEvent, RateLimitSnapshot } from './types.js';
+import type {
+  SessionEvent,
+  RateLimitSnapshot,
+  RateLimitWindow,
+} from './types.js';
 import { createLogger } from './logger.js';
+import { openConfigDirDatabase } from './open-config-dir-database.js';
 
 let db: Database.Database | null = null;
 let insertStmt: Database.Statement | null = null;
@@ -125,8 +130,7 @@ export function initAnalytics(configDir: string): void {
   if (db) {
     closeAnalytics();
   }
-  const dbPath = path.join(configDir, 'analytics.db');
-  db = new Database(dbPath);
+  db = openConfigDirDatabase(configDir, 'analytics.db');
   db.pragma('journal_mode = WAL');
 
   // Schema version tracking
@@ -224,7 +228,7 @@ export function flushEventBuffer(sessionId?: string): void {
 }
 
 function findWindowPercent(
-  windows: import('./types.js').RateLimitWindow[],
+  windows: RateLimitWindow[],
   namePattern: string,
   targetMinutes: number
 ): number | null {

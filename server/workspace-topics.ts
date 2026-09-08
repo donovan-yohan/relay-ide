@@ -6,6 +6,7 @@ import express, {
   type Response,
 } from 'express';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
 import type { Config } from './types.js';
 import type { WorkContextStore } from './work-contexts.js';
@@ -210,6 +211,7 @@ export function createWorkspaceTopicStore(input: {
   dbPath: string;
   now?: () => string;
 }): WorkspaceTopicStore {
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
@@ -1332,6 +1334,9 @@ export function createWorkspaceTopicsRouter(
   options: WorkspaceTopicsRouterOptions
 ): express.Router {
   const router = express.Router();
+  const MSG_WORKSPACE_TOPIC_NOT_FOUND = 'workspace topic not found';
+  const MSG_WORKSPACE_TOPIC_STORE_UNAVAILABLE =
+    'workspace topic store is unavailable';
   const auth = options.requireAuth ?? ((_req, _res, next) => next());
   const readAuth = (
     command: CliGatewayActorReadCommand,
@@ -1483,9 +1488,15 @@ export function createWorkspaceTopicsRouter(
         ) ??
         null;
       if (!topic) {
-        sendGatewayError(res, 'NOT_FOUND', 'workspace topic not found', false, {
-          id,
-        });
+        sendGatewayError(
+          res,
+          'NOT_FOUND',
+          MSG_WORKSPACE_TOPIC_NOT_FOUND,
+          false,
+          {
+            id,
+          }
+        );
         return;
       }
       res.json({ topic });
@@ -1501,7 +1512,7 @@ export function createWorkspaceTopicsRouter(
         sendGatewayError(
           res,
           'SERVER_UNAVAILABLE',
-          'workspace topic store is unavailable',
+          MSG_WORKSPACE_TOPIC_STORE_UNAVAILABLE,
           true,
           {
             reasonCode: 'WORKSPACE_TOPIC_STORE_UNAVAILABLE',
@@ -1560,7 +1571,7 @@ export function createWorkspaceTopicsRouter(
         sendGatewayError(
           res,
           'SERVER_UNAVAILABLE',
-          'workspace topic store is unavailable',
+          MSG_WORKSPACE_TOPIC_STORE_UNAVAILABLE,
           true,
           {
             reasonCode: 'WORKSPACE_TOPIC_STORE_UNAVAILABLE',
@@ -1584,7 +1595,7 @@ export function createWorkspaceTopicsRouter(
           sendGatewayError(
             res,
             'NOT_FOUND',
-            'workspace topic not found',
+            MSG_WORKSPACE_TOPIC_NOT_FOUND,
             false,
             { id }
           );
@@ -1620,7 +1631,7 @@ export function createWorkspaceTopicsRouter(
         sendGatewayError(
           res,
           'SERVER_UNAVAILABLE',
-          'workspace topic store is unavailable',
+          MSG_WORKSPACE_TOPIC_STORE_UNAVAILABLE,
           true,
           {
             reasonCode: 'WORKSPACE_TOPIC_STORE_UNAVAILABLE',
@@ -1664,7 +1675,7 @@ export function createWorkspaceTopicsRouter(
           sendGatewayError(
             res,
             'NOT_FOUND',
-            'workspace topic not found',
+            MSG_WORKSPACE_TOPIC_NOT_FOUND,
             false,
             { id }
           );
@@ -1700,7 +1711,7 @@ export function createWorkspaceTopicsRouter(
         sendGatewayError(
           res,
           'SERVER_UNAVAILABLE',
-          'workspace topic store is unavailable',
+          MSG_WORKSPACE_TOPIC_STORE_UNAVAILABLE,
           true,
           {
             reasonCode: 'WORKSPACE_TOPIC_STORE_UNAVAILABLE',
@@ -1716,7 +1727,7 @@ export function createWorkspaceTopicsRouter(
           sendGatewayError(
             res,
             'NOT_FOUND',
-            'workspace topic not found',
+            MSG_WORKSPACE_TOPIC_NOT_FOUND,
             false,
             {
               id,

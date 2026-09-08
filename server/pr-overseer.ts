@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   PR_OVERSEER_SCHEMA_VERSION,
   boundPrObservation,
@@ -69,7 +70,11 @@ export interface PrOverseerStore {
    * snapshot, so a transient gh/auth/network blip never destroys evidence.
    * `undefined` is a bare heartbeat (refresh TTL only).
    */
-  observe(id: string, input: unknown, observation?: PrObservation): PrOverseerRecord;
+  observe(
+    id: string,
+    input: unknown,
+    observation?: PrObservation
+  ): PrOverseerRecord;
   retire(id: string, input: unknown): PrOverseerRecord;
   get(id: string, opts?: PrOverseerReadOptions): PrOverseerRecord | null;
   list(filter: PrOverseerListFilter): PrOverseerRecord[];
@@ -110,10 +115,14 @@ function finalizeRecord(
   const view = derivePrOverseerView(
     {
       pr: stored.pr,
-      ...(stored.expectedHeadSha ? { expectedHeadSha: stored.expectedHeadSha } : {}),
+      ...(stored.expectedHeadSha
+        ? { expectedHeadSha: stored.expectedHeadSha }
+        : {}),
       ...(stored.issue ? { issue: stored.issue } : {}),
       heartbeat: stored.heartbeat,
-      ...(stored.lastObservation ? { lastObservation: stored.lastObservation } : {}),
+      ...(stored.lastObservation
+        ? { lastObservation: stored.lastObservation }
+        : {}),
       ...(stored.lastFetch ? { lastFetch: stored.lastFetch } : {}),
       cleanup: stored.cleanup,
     },
@@ -134,12 +143,15 @@ export function createPrOverseerStore(input: {
   dbPath: string;
   now?: () => string;
 }): PrOverseerStore {
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
   const clock = input.now ?? defaultClock;
 
-  const getStmt = db.prepare('SELECT record_json FROM pr_overseers WHERE id = ?');
+  const getStmt = db.prepare(
+    'SELECT record_json FROM pr_overseers WHERE id = ?'
+  );
   const upsertStmt = db.prepare(`
     INSERT INTO pr_overseers (
       id, name, orchestrator, owner_repo, pr_number, repo_path, work_context_id,
@@ -188,8 +200,17 @@ export function createPrOverseerStore(input: {
       summary: '',
       blockers: [],
     },
-    handoff: { ready: false, exactHeadEvidenceCurrent: false, blockedBy: [], recommendedActor: 'operator' as const },
-    staleHeadRisk: { diverged: false, heartbeatExpired: false, lastFetchFailed: false },
+    handoff: {
+      ready: false,
+      exactHeadEvidenceCurrent: false,
+      blockedBy: [],
+      recommendedActor: 'operator' as const,
+    },
+    staleHeadRisk: {
+      diverged: false,
+      heartbeatExpired: false,
+      lastFetchFailed: false,
+    },
   };
 
   return {
@@ -213,13 +234,19 @@ export function createPrOverseerStore(input: {
           "a pr overseer's workContextId cannot change on re-registration",
           {
             prOverseerId: id,
-            ...(existing.workContextId ? { existingWorkContextId: existing.workContextId } : {}),
-            ...(parsed.workContextId ? { requestedWorkContextId: parsed.workContextId } : {}),
+            ...(existing.workContextId
+              ? { existingWorkContextId: existing.workContextId }
+              : {}),
+            ...(parsed.workContextId
+              ? { requestedWorkContextId: parsed.workContextId }
+              : {}),
           }
         );
       }
       const createdAt = parsed.createdAt ?? existing?.createdAt ?? now;
-      const heartbeatExpiresAt = new Date(Date.parse(now) + parsed.ttlSeconds * 1000).toISOString();
+      const heartbeatExpiresAt = new Date(
+        Date.parse(now) + parsed.ttlSeconds * 1000
+      ).toISOString();
       // Register (or re-register) is create-or-replace: it always resets to a live,
       // non-retired state and clears any prior observation (a new link starts fresh).
       const base: StoredPrOverseer = {
@@ -228,14 +255,22 @@ export function createPrOverseerStore(input: {
         name: parsed.name,
         owner: parsed.owner,
         ...(parsed.repoPath ? { repoPath: parsed.repoPath } : {}),
-        ...(parsed.workContextId ? { workContextId: parsed.workContextId } : {}),
+        ...(parsed.workContextId
+          ? { workContextId: parsed.workContextId }
+          : {}),
         ...(parsed.session ? { session: parsed.session } : {}),
         ...(parsed.issue ? { issue: parsed.issue } : {}),
         pr: parsed.pr,
-        ...(parsed.expectedHeadSha ? { expectedHeadSha: parsed.expectedHeadSha } : {}),
+        ...(parsed.expectedHeadSha
+          ? { expectedHeadSha: parsed.expectedHeadSha }
+          : {}),
         ...(parsed.links ? { links: parsed.links } : {}),
         ...PLACEHOLDER_DERIVED,
-        heartbeat: { ttlSeconds: parsed.ttlSeconds, lastObservedAt: now, expiresAt: heartbeatExpiresAt },
+        heartbeat: {
+          ttlSeconds: parsed.ttlSeconds,
+          lastObservedAt: now,
+          expiresAt: heartbeatExpiresAt,
+        },
         ...(parsed.observationSummary
           ? {
               lastObservation: {
@@ -264,9 +299,14 @@ export function createPrOverseerStore(input: {
     observe(id, rawInput, observation) {
       const existing = parseRow(getStmt.get(id) as PrOverseerRow | undefined);
       if (!existing) {
-        throw new PrOverseerStoreError(404, 'pr_overseer_not_found', 'pr overseer not found', {
-          prOverseerId: id,
-        });
+        throw new PrOverseerStoreError(
+          404,
+          'pr_overseer_not_found',
+          'pr overseer not found',
+          {
+            prOverseerId: id,
+          }
+        );
       }
       if (existing.cleanup.state === 'retired') {
         throw new PrOverseerStoreError(
@@ -279,7 +319,9 @@ export function createPrOverseerStore(input: {
       const parsed = parsePrOverseerObserveInput(rawInput);
       const now = clock();
       const ttlSeconds = parsed.ttlSeconds ?? existing.heartbeat.ttlSeconds;
-      const heartbeatExpiresAt = new Date(Date.parse(now) + ttlSeconds * 1000).toISOString();
+      const heartbeatExpiresAt = new Date(
+        Date.parse(now) + ttlSeconds * 1000
+      ).toISOString();
 
       let lastObservation = existing.lastObservation;
       let lastFetch: PrOverseerLastFetch | undefined = existing.lastFetch;
@@ -288,13 +330,15 @@ export function createPrOverseerStore(input: {
         lastFetch = {
           at: now,
           ok: snapshot.ok,
-          ...(snapshot.unavailableReason ? { unavailableReason: snapshot.unavailableReason } : {}),
+          ...(snapshot.unavailableReason
+            ? { unavailableReason: snapshot.unavailableReason }
+            : {}),
         };
         if (snapshot.ok) {
           // A successful fetch replaces the stored evidence with the new head.
           lastObservation = {
             observedAt: now,
-            ...(parsed.summary ?? existing.lastObservation?.summary
+            ...((parsed.summary ?? existing.lastObservation?.summary)
               ? { summary: parsed.summary ?? existing.lastObservation?.summary }
               : {}),
             snapshot,
@@ -314,7 +358,11 @@ export function createPrOverseerStore(input: {
           : existing.expectedHeadSha
             ? { expectedHeadSha: existing.expectedHeadSha }
             : {}),
-        heartbeat: { ttlSeconds, lastObservedAt: now, expiresAt: heartbeatExpiresAt },
+        heartbeat: {
+          ttlSeconds,
+          lastObservedAt: now,
+          expiresAt: heartbeatExpiresAt,
+        },
         ...(lastObservation ? { lastObservation } : {}),
         ...(lastFetch ? { lastFetch } : {}),
         cleanup: { state: 'none' },
@@ -332,9 +380,14 @@ export function createPrOverseerStore(input: {
     retire(id, rawInput) {
       const existing = parseRow(getStmt.get(id) as PrOverseerRow | undefined);
       if (!existing) {
-        throw new PrOverseerStoreError(404, 'pr_overseer_not_found', 'pr overseer not found', {
-          prOverseerId: id,
-        });
+        throw new PrOverseerStoreError(
+          404,
+          'pr_overseer_not_found',
+          'pr overseer not found',
+          {
+            prOverseerId: id,
+          }
+        );
       }
       const parsed = parsePrOverseerRetireInput(rawInput);
       // Idempotent: retiring an already-retired run returns it unchanged.

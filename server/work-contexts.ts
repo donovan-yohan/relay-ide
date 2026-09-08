@@ -1,11 +1,14 @@
 import * as crypto from 'node:crypto';
-import path from 'node:path';
 
 import Database from 'better-sqlite3';
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
 
 import { createLogger } from './logger.js';
+import {
+  assertConfigDirSafeForDbPath,
+  openConfigDirDatabase,
+} from './open-config-dir-database.js';
 import type { SessionSummary } from './types.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
@@ -349,7 +352,8 @@ export interface WorkContextRouterDeps {
 }
 
 export function initWorkContextStore(configDir: string): WorkContextStore {
-  return createWorkContextStore(path.join(configDir, 'work-contexts.db'));
+  const db = openConfigDirDatabase(configDir, 'work-contexts.db');
+  return createWorkContextStoreWithDb(db);
 }
 
 export type WorkContextStoreInitializer = (
@@ -405,7 +409,12 @@ export function createUnavailableWorkContextStore(
 }
 
 export function createWorkContextStore(dbPath: string): WorkContextStore {
+  assertConfigDirSafeForDbPath(dbPath);
   const db = new Database(dbPath);
+  return createWorkContextStoreWithDb(db);
+}
+
+function createWorkContextStoreWithDb(db: Database.Database): WorkContextStore {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');

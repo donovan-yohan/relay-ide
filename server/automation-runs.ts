@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   AUTOMATION_RUN_SCHEMA_VERSION,
   deriveAutomationRunStatus,
@@ -56,14 +57,20 @@ type StoredAutomationRun = AutomationRunRecord;
 
 export interface AutomationRunStore {
   close(): void;
-  register(input: unknown, resolver?: AutomationRunLivenessResolver): AutomationRunRecord;
+  register(
+    input: unknown,
+    resolver?: AutomationRunLivenessResolver
+  ): AutomationRunRecord;
   observe(
     id: string,
     input: unknown,
     resolver?: AutomationRunLivenessResolver
   ): AutomationRunRecord;
   retire(id: string, input: unknown): AutomationRunRecord;
-  get(id: string, resolver?: AutomationRunLivenessResolver): AutomationRunRecord | null;
+  get(
+    id: string,
+    resolver?: AutomationRunLivenessResolver
+  ): AutomationRunRecord | null;
   list(
     filter: AutomationRunListFilter,
     resolver?: AutomationRunLivenessResolver
@@ -91,7 +98,9 @@ function cleanLimit(limit: number | undefined): number {
   return Math.min(limit, 100);
 }
 
-function parseRow(row: AutomationRunRow | undefined): StoredAutomationRun | null {
+function parseRow(
+  row: AutomationRunRow | undefined
+): StoredAutomationRun | null {
   if (!row) return null;
   return JSON.parse(row.record_json) as StoredAutomationRun;
 }
@@ -136,12 +145,15 @@ export function createAutomationRunStore(input: {
   dbPath: string;
   now?: () => string;
 }): AutomationRunStore {
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
   const clock = input.now ?? defaultClock;
 
-  const getStmt = db.prepare('SELECT record_json FROM automation_runs WHERE id = ?');
+  const getStmt = db.prepare(
+    'SELECT record_json FROM automation_runs WHERE id = ?'
+  );
   const upsertStmt = db.prepare(`
     INSERT INTO automation_runs (
       id, name, kind, run_id, orchestrator, repo_path, work_context_id,
@@ -189,7 +201,9 @@ export function createAutomationRunStore(input: {
       const parsed = parseAutomationRunRegisterInput(rawInput);
       const now = clock();
       const id = parsed.id ?? `automation-run:${randomUUID()}`;
-      const existing = parseRow(getStmt.get(id) as AutomationRunRow | undefined);
+      const existing = parseRow(
+        getStmt.get(id) as AutomationRunRow | undefined
+      );
       // A run's workContextId is immutable across re-registration: the register
       // write-auth scope is checked against the request's workContextId, so
       // allowing it to change would let a credential scoped to one WorkContext
@@ -202,8 +216,12 @@ export function createAutomationRunStore(input: {
           "an automation run's workContextId cannot change on re-registration",
           {
             automationRunId: id,
-            ...(existing.workContextId ? { existingWorkContextId: existing.workContextId } : {}),
-            ...(parsed.workContextId ? { requestedWorkContextId: parsed.workContextId } : {}),
+            ...(existing.workContextId
+              ? { existingWorkContextId: existing.workContextId }
+              : {}),
+            ...(parsed.workContextId
+              ? { requestedWorkContextId: parsed.workContextId }
+              : {}),
           }
         );
       }
@@ -224,7 +242,9 @@ export function createAutomationRunStore(input: {
         ...(parsed.runId ? { runId: parsed.runId } : {}),
         owner: parsed.owner,
         ...(parsed.repoPath ? { repoPath: parsed.repoPath } : {}),
-        ...(parsed.workContextId ? { workContextId: parsed.workContextId } : {}),
+        ...(parsed.workContextId
+          ? { workContextId: parsed.workContextId }
+          : {}),
         targets,
         ...(parsed.links ? { links: parsed.links } : {}),
         ...(parsed.expiresAt ? { expiresAt: parsed.expiresAt } : {}),
@@ -236,7 +256,12 @@ export function createAutomationRunStore(input: {
           expiresAt: heartbeatExpiresAt,
         },
         ...(parsed.observationSummary
-          ? { lastObservation: { observedAt: now, summary: parsed.observationSummary } }
+          ? {
+              lastObservation: {
+                observedAt: now,
+                summary: parsed.observationSummary,
+              },
+            }
           : {}),
         cleanup: { state: 'none' },
         createdAt,
@@ -249,11 +274,18 @@ export function createAutomationRunStore(input: {
     },
 
     observe(id, rawInput, resolver) {
-      const existing = parseRow(getStmt.get(id) as AutomationRunRow | undefined);
+      const existing = parseRow(
+        getStmt.get(id) as AutomationRunRow | undefined
+      );
       if (!existing) {
-        throw new AutomationRunStoreError(404, 'automation_run_not_found', 'automation run not found', {
-          automationRunId: id,
-        });
+        throw new AutomationRunStoreError(
+          404,
+          'automation_run_not_found',
+          'automation run not found',
+          {
+            automationRunId: id,
+          }
+        );
       }
       if (existing.cleanup.state === 'retired') {
         throw new AutomationRunStoreError(
@@ -270,18 +302,24 @@ export function createAutomationRunStore(input: {
       const targets = resolver
         ? refreshTargetLiveness(baseTargets, resolver, now)
         : baseTargets;
-      const heartbeatExpiresAt = new Date(Date.parse(now) + ttlSeconds * 1000).toISOString();
+      const heartbeatExpiresAt = new Date(
+        Date.parse(now) + ttlSeconds * 1000
+      ).toISOString();
       const expiresAt = parsed.expiresAt ?? existing.expiresAt;
       const next: StoredAutomationRun = {
         ...existing,
         targets,
         ...(expiresAt ? { expiresAt } : {}),
-        heartbeat: { ttlSeconds, lastObservedAt: now, expiresAt: heartbeatExpiresAt },
+        heartbeat: {
+          ttlSeconds,
+          lastObservedAt: now,
+          expiresAt: heartbeatExpiresAt,
+        },
         lastObservation: {
           observedAt: now,
           // Carry the prior note forward on a bare heartbeat so an observe with
           // no summary refreshes the timestamp without erasing the last note.
-          ...(parsed.summary ?? existing.lastObservation?.summary
+          ...((parsed.summary ?? existing.lastObservation?.summary)
             ? { summary: parsed.summary ?? existing.lastObservation?.summary }
             : {}),
         },
@@ -298,11 +336,18 @@ export function createAutomationRunStore(input: {
     },
 
     retire(id, rawInput) {
-      const existing = parseRow(getStmt.get(id) as AutomationRunRow | undefined);
+      const existing = parseRow(
+        getStmt.get(id) as AutomationRunRow | undefined
+      );
       if (!existing) {
-        throw new AutomationRunStoreError(404, 'automation_run_not_found', 'automation run not found', {
-          automationRunId: id,
-        });
+        throw new AutomationRunStoreError(
+          404,
+          'automation_run_not_found',
+          'automation run not found',
+          {
+            automationRunId: id,
+          }
+        );
       }
       const parsed = parseAutomationRunRetireInput(rawInput);
       // Idempotent: retiring an already-retired run returns it unchanged (no

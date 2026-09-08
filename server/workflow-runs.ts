@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   WORKFLOW_RUN_SCHEMA_VERSION,
   parseWorkflowRunPublishInput,
@@ -83,6 +84,7 @@ function cleanLimit(limit: number | undefined): number {
 export function createWorkflowRunStore(input: {
   dbPath: string;
 }): WorkflowRunStore {
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);

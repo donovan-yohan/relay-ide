@@ -4,6 +4,7 @@ import * as path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   PIPELINE_HANDOFF_STAGES,
   isPipelineHandoffArtifact,
@@ -30,6 +31,9 @@ import {
 } from '../shared/work-context.js';
 
 const SCHEMA_VERSION = 2;
+const ERR_ARTIFACT_STORE_BUSY = 'artifact_store_busy';
+const ERR_SUPERSEDED_PAYLOAD_KIND_MISMATCH =
+  'superseded_artifact_payload_kind_mismatch';
 /** Hard cap for `q`-driven searches (#1065) — hub-wide, so keep results tight. */
 export const WORK_CONTEXT_ARTIFACT_SEARCH_MAX_LIMIT = 20;
 const DEFAULT_PAYLOAD_MEDIA_TYPE = 'application/json';
@@ -300,7 +304,7 @@ export function createWorkContextArtifactStore(input: {
     return createWorkContextArtifactStoreUnsafe(input);
   } catch (err) {
     if (isSqliteBusyError(err)) {
-      throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+      throw new WorkContextArtifactStoreError(503, ERR_ARTIFACT_STORE_BUSY);
     }
     throw err;
   }
@@ -325,6 +329,7 @@ function createWorkContextArtifactStoreUnsafe(input: {
     path.join(path.dirname(input.dbPath), 'work-context-artifacts', 'payloads');
   mkdirSync(payloadRoot, { recursive: true });
 
+  assertConfigDirSafeForDbPath(input.dbPath);
   const db = new Database(input.dbPath);
   db.pragma(`busy_timeout = ${input.busyTimeoutMs ?? 5000}`);
   db.pragma('journal_mode = WAL');
@@ -406,7 +411,7 @@ function createWorkContextArtifactStoreUnsafe(input: {
     if (expectedPayloadKind && row.payload_kind !== expectedPayloadKind) {
       throw new WorkContextArtifactStoreError(
         400,
-        'superseded_artifact_payload_kind_mismatch'
+        ERR_SUPERSEDED_PAYLOAD_KIND_MISMATCH
       );
     }
   }
@@ -417,7 +422,7 @@ function createWorkContextArtifactStoreUnsafe(input: {
     if (row.payload_kind !== 'pipeline-handoff-artifact') {
       throw new WorkContextArtifactStoreError(
         400,
-        'superseded_artifact_payload_kind_mismatch'
+        ERR_SUPERSEDED_PAYLOAD_KIND_MISMATCH
       );
     }
     const raw = readFileSync(row.payload_path, 'utf8');
@@ -671,7 +676,7 @@ function createWorkContextArtifactStoreUnsafe(input: {
         persist.immediate();
       } catch (err) {
         if (isSqliteBusyError(err)) {
-          throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+          throw new WorkContextArtifactStoreError(503, ERR_ARTIFACT_STORE_BUSY);
         }
         throw err;
       }
@@ -830,7 +835,7 @@ function createWorkContextArtifactStoreUnsafe(input: {
         persist.immediate();
       } catch (err) {
         if (isSqliteBusyError(err)) {
-          throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+          throw new WorkContextArtifactStoreError(503, ERR_ARTIFACT_STORE_BUSY);
         }
         throw err;
       }

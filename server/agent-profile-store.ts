@@ -32,6 +32,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { assertConfigDirSafeForDbPath } from './open-config-dir-database.js';
 import {
   AGENT_PROFILE_SECRET_KEY,
   builtInAgentProfileId,
@@ -357,6 +358,7 @@ export function initAgentProfileStore(configDir: string): AgentProfileStore {
 
 /** Factory taking an explicit DB path. Used directly by unit tests. */
 export function createAgentProfileStore(dbPath: string): AgentProfileStore {
+  assertConfigDirSafeForDbPath(dbPath);
   precreateSecretFile(dbPath);
   const db = new Database(dbPath);
   // The DB now holds a bearer secret. SQLite copies the main file's mode onto
