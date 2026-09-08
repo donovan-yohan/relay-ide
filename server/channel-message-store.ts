@@ -3073,6 +3073,9 @@ function runMigrations(db: Database.Database): void {
       ON channel_messages(channel_id, seq);
     CREATE INDEX IF NOT EXISTS idx_chm_thread
       ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_chm_async_run_id
+      ON channel_messages(json_extract(meta_json, '$.asyncRun.runId'))
+      WHERE meta_json IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_chmem_removed
       ON channel_members(channel_id) WHERE removed_at IS NOT NULL;
   `);

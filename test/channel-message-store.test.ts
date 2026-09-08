@@ -68,6 +68,33 @@ const AGENT: ChannelSenderRef = {
 };
 
 describe('channel-message-store schema migration', () => {
+  it('repairs a missing async-run index before preparing a migrated store (#1579)', () => {
+    const file = dbPath();
+    const migrated = createChannelMessageStore(file);
+    migrated.close();
+    const raw = new Database(file);
+    cleanup.push(() => raw.close());
+    raw.exec('DROP INDEX idx_chm_async_run_id');
+
+    const reopened = store(file);
+    expect(
+      reopened.getLastPrincipalProseForRunId({
+        channelId: 'topic:repair',
+        runId: 'chrun:repair',
+      })
+    ).toBeNull();
+    for (const includeParts of [false, true]) {
+      const plan = raw
+        .prepare(
+          `EXPLAIN QUERY PLAN ${buildGetLastPrincipalProseForRunIdSql(includeParts)}`
+        )
+        .all('topic:repair', 'chrun:repair') as Array<{ detail: string }>;
+      expect(plan.map((row) => row.detail).join('\n')).toContain(
+        'USING INDEX idx_chm_async_run_id'
+      );
+    }
+  });
+
   it('rebuilds a v13 callback ledger without losing recoverable rows', () => {
     const file = dbPath();
     const current = store(file);
