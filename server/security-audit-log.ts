@@ -265,7 +265,9 @@ export function verifySecurityAuditLog(
   if (!fs.existsSync(dbPath)) {
     return { ok: true, entriesVerified: 0, lastHash: null };
   }
-  assertConfigDirSafeForDbPath(dbPath);
+  // #1587: read-only verification must not require exclusive hub ownership —
+  // operators need to verify a live config dir's audit chain without stopping
+  // the hub. createSecurityAuditLog (write path) still asserts the guard.
   let db: Database.Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });

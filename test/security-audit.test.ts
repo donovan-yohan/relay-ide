@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -287,6 +288,45 @@ describe('security audit primitives', () => {
       ok: true,
       entriesVerified: 2,
     });
+  });
+
+  it('allows read-only verify against a live hub.lock config dir (#1587)', () => {
+    const configDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-audit-live-lock-')
+    );
+    tmpRoots.push(configDir);
+    const dbPath = path.join(configDir, 'audit.db');
+    const log = new SecurityAuditLog(dbPath);
+    log.append(sampleEvent({ eventId: 'evt-live' }));
+    log.close();
+
+    const sleeper = spawn(process.execPath, [
+      '-e',
+      'setInterval(() => {}, 1_000_000)',
+    ]);
+    try {
+      fs.writeFileSync(
+        path.join(configDir, 'hub.lock'),
+        JSON.stringify(
+          {
+            pid: sleeper.pid,
+            port: 3456,
+            host: '127.0.0.1',
+            startedAt: new Date().toISOString(),
+            hostname: os.hostname(),
+          },
+          null,
+          2
+        ) + '\n',
+        'utf8'
+      );
+      expect(verifySecurityAuditLog(dbPath)).toMatchObject({
+        ok: true,
+        entriesVerified: 1,
+      });
+    } finally {
+      sleeper.kill('SIGKILL');
+    }
   });
 
   it('enforces append-only persistence through triggers', () => {
