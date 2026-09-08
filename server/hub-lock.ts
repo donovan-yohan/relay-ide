@@ -125,7 +125,7 @@ function readConfiguredPort(configPath: string): {
     if (typeof port === 'number' && Number.isFinite(port)) {
       return { port, fromConfig: true };
     }
-    return { port: 3456, fromConfig: true };
+    return { port: 3456, fromConfig: false };
   } catch {
     return { port: 3456, fromConfig: false };
   }

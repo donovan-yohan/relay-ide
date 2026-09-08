@@ -342,6 +342,38 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
     }
   });
 
+  it('uses fallbackPort when config.json exists but has no numeric port', async () => {
+    const configDir = makeTmpDir();
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected tcp addr');
+    const port = addr.port;
+    try {
+      const configPath = path.join(configDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+      await expect(
+        assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(configDir, {
+          configPath,
+          fallbackPort: port,
+          timeoutMs: 200,
+        })
+      ).rejects.toThrow(/hub is listening on/);
+    } finally {
+      server.close();
+    }
+  });
+
   it('probes using the explicit config.json path even when it is outside the default dir', async () => {
     const outside = makeTmpDir();
     const configDir = makeTmpDir();
