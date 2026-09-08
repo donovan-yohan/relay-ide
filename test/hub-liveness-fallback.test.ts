@@ -302,7 +302,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
-  it('prefers the configured port over fallbackPort when config.json is readable', async () => {
+  it('prefers fallbackPort over config.json when provided (flag/env > config)', async () => {
     const configDir = makeTmpDir();
 
     const answering = http.createServer((req, res) => {
@@ -336,7 +336,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
           fallbackPort: listenerPort,
           timeoutMs: 200,
         })
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow(/hub is listening on/);
     } finally {
       answering.close();
     }
@@ -380,7 +380,8 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
     const configPath = path.join(outside, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ port: 54321 }), 'utf8');
 
-    // Listener on 3456 must not matter when the explicit config points elsewhere.
+    // Listener elsewhere must not matter when the explicit config points elsewhere
+    // AND no override port is provided.
     const server = http.createServer((req, res) => {
       if (req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -399,7 +400,6 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
       await expect(
         assertConfigDirNotOwnedByAnotherLiveHubOrListeningHub(configDir, {
           configPath,
-          fallbackPort: addr.port,
           timeoutMs: 200,
         })
       ).resolves.toBeUndefined();

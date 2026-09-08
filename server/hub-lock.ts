@@ -107,8 +107,9 @@ type HubLivenessProbeConfig = {
   /**
    * Effective port this process intends to use (flag > env > config > default).
    *
-   * Used only when the config file cannot be read, to avoid probing a hardcoded
-   * default that could be unrelated to this config dir.
+   * Preferred over the value in config.json so flag/env overrides are respected
+   * (and so we can probe the port a deployed hub may be bound to even if its
+   * config.json is stale). (#1587)
    */
   fallbackPort?: number | undefined;
 };
@@ -146,9 +147,7 @@ export async function probeLiveHubHealth(
   }
 
   const configured = readConfiguredPort(opts.configPath);
-  const port = configured.fromConfig
-    ? configured.port
-    : (opts.fallbackPort ?? configured.port);
+  const port = opts.fallbackPort ?? configured.port;
   const url = `http://127.0.0.1:${port}/health`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
