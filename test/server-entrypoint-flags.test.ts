@@ -91,4 +91,18 @@ describe('dist/server entrypoint flags (#1587)', () => {
     expect(code).toBe(1);
     expect(output).toContain('Unknown flag');
   });
+
+  it('rejects unexpected positional arguments', async () => {
+    const home = makeTmpDir();
+    const xdg = path.join(home, '.config');
+    const configPath = path.join(home, 'relay-test-config', 'config.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const { code, output } = await collectExit(['foo'], {
+      HOME: home,
+      XDG_CONFIG_HOME: xdg,
+      RELAY_IDE_CONFIG: configPath,
+    });
+    expect(code).toBe(1);
+    expect(output).toContain('Unexpected argument');
+  });
 });

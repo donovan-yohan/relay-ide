@@ -600,6 +600,7 @@ function parseServerEntrypointArgs(argv: string[]): ServerEntrypointArgs {
     if (arg.startsWith('-')) {
       throw new Error(`Unknown flag: ${arg}`);
     }
+    throw new Error(`Unexpected argument: ${arg}`);
   }
 
   if (port !== null && (!Number.isFinite(port) || port < 0)) {
