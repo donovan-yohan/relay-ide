@@ -88,11 +88,14 @@ export function assertConfigDirNotOwnedByAnotherLiveHub(
 ): void {
   const lock = readHubLock(configDir);
   if (!lock) return;
-  // A lock copied from another machine cannot be validated via pid liveness.
-  // Treat it as stale and rely on the liveness probe fallback instead (#1587).
-  if (lock.hostname !== os.hostname()) return;
-  if (!isPidAlive(lock.pid)) return;
   if (lock.pid === process.pid) return;
+  // Foreign-host locks must still block in the synchronous guard: store opens
+  // have no liveness probe fallback, so treating these as "absent" would allow
+  // accidental config-dir DB opens against a live hub (#1587).
+  if (lock.hostname !== os.hostname()) {
+    throw new HubConfigDirLockedError(configDir, lock);
+  }
+  if (!isPidAlive(lock.pid)) return;
   throw new HubConfigDirLockedError(configDir, lock);
 }
 

@@ -149,7 +149,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
     }
   });
 
-  it('ignores a hub.lock from another hostname and falls back to /health', async () => {
+  it('refuses when a hub.lock from another hostname exists (sync guard blocks)', async () => {
     const configDir = makeTmpDir();
     const server = http.createServer((req, res) => {
       if (req.url === '/health') {
@@ -190,7 +190,7 @@ describe('hub liveness fallback when hub.lock missing (#1587)', () => {
           configPath,
           timeoutMs: 500,
         })
-      ).rejects.toThrow(/hub is listening on/);
+      ).rejects.toThrow(/hub\.lock/);
     } finally {
       server.close();
     }
