@@ -39,11 +39,12 @@ function isHubOrCliSpawnTarget(line: string): boolean {
 function looksLikeChildProcessCall(line: string): boolean {
   // Avoid false positives on local method names like `spawn(command, args)`.
   return (
-    /\bspawn\s*\(\s*(process\.execPath|SERVER_SCRIPT|['"]node['"])/.test(
+    /\bspawn(?:Sync)?\s*\(\s*(process\.execPath|SERVER_SCRIPT|['"]node['"])/.test(
       line
     ) ||
     /\bexecFile(?:Sync)?\s*\(\s*(process\.execPath|['"]node['"])/.test(line) ||
-    /\bexecSync\s*\(\s*['"]node['"]/.test(line)
+    /\bexecSync\s*\(\s*['"]node['"]/.test(line) ||
+    /\bfork\s*\(/.test(line)
   );
 }
 
@@ -51,16 +52,15 @@ function snippetHasSafeEnv(snippet: string): boolean {
   // Negative-lane fixture tests intentionally delete config env; drift guard
   // should not fight the harness' own assertions.
   if (snippet.includes('E2E_FIXTURE_ENV_VAR')) return true;
-  // Either inherit parent env explicitly, or set at least one isolation var.
-  // This is intentionally simple: the goal is to prevent tests from drifting
-  // into ad-hoc child env objects that omit config isolation entirely.
-  if (!snippet.includes('env:')) return false;
-  if (snippet.includes('...process.env')) return true;
-  return (
+  // Tests that spawn the hub/CLI must ALWAYS pass a run-scoped config env.
+  // Bare `...process.env` is not sufficient: it can leak a developer's real
+  // hub config into CI or local runs (#1587).
+  if (!/\benv\s*[: ,]/.test(snippet)) return false;
+  const hasConfig =
     snippet.includes('RELAY_IDE_CONFIG') ||
-    snippet.includes('CONFIG_PATH_ENV_VAR') ||
-    snippet.includes('XDG_CONFIG_HOME')
-  );
+    snippet.includes('CONFIG_PATH_ENV_VAR');
+  const hasXdg = snippet.includes('XDG_CONFIG_HOME');
+  return hasConfig && hasXdg;
 }
 
 describe('spawn config isolation drift guard (#1587)', () => {
@@ -97,7 +97,7 @@ describe('spawn config isolation drift guard (#1587)', () => {
             file: rel,
             line: callLine + 1,
             message:
-              'hub/CLI spawn must pass env with RELAY_IDE_CONFIG/XDG_CONFIG_HOME or inherit ...process.env',
+              'hub/CLI spawn must pass env with RELAY_IDE_CONFIG + XDG_CONFIG_HOME (no bare ...process.env)',
           });
         }
       }

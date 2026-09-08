@@ -94,6 +94,7 @@ describe('hub.lock config-dir isolation (#1587)', () => {
         env: {
           ...process.env,
           HOME: home,
+          XDG_CONFIG_HOME: path.join(home, '.config'),
           RELAY_IDE_CONFIG: configPath,
         },
         stdio: ['ignore', 'pipe', 'pipe'],

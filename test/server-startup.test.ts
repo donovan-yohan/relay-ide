@@ -90,8 +90,18 @@ async function killAndWait(child: ChildProcess): Promise<void> {
 }
 
 function startServer(opts: StartServerOpts): ChildProcess {
+  const env = { ...process.env, ...opts.env };
+  // #1587: always pin XDG_CONFIG_HOME alongside RELAY_IDE_CONFIG for spawned hubs.
+  if (!env.XDG_CONFIG_HOME && env.HOME) {
+    env.XDG_CONFIG_HOME = path.join(env.HOME, '.config');
+  }
+  if (!env.RELAY_IDE_CONFIG) {
+    throw new Error(
+      'test invariant: RELAY_IDE_CONFIG must be set for server spawns'
+    );
+  }
   return spawn(process.execPath, [SERVER_SCRIPT], {
-    env: { ...process.env, ...opts.env },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }

@@ -51,7 +51,14 @@ describe('dist/server entrypoint flags (#1587)', () => {
 
   it('--help prints and exits 0 without touching config', async () => {
     const home = makeTmpDir();
-    const { code, output } = await collectExit(['--help'], { HOME: home });
+    const xdg = path.join(home, '.config');
+    const configPath = path.join(home, 'relay-test-config', 'config.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const { code, output } = await collectExit(['--help'], {
+      HOME: home,
+      XDG_CONFIG_HOME: xdg,
+      RELAY_IDE_CONFIG: configPath,
+    });
     expect(code).toBe(0);
     expect(output).toContain('Usage:');
     expect(fs.existsSync(path.join(home, '.config', 'relay-ide'))).toBe(false);
@@ -59,14 +66,28 @@ describe('dist/server entrypoint flags (#1587)', () => {
 
   it('--version prints and exits 0', async () => {
     const home = makeTmpDir();
-    const { code, output } = await collectExit(['--version'], { HOME: home });
+    const xdg = path.join(home, '.config');
+    const configPath = path.join(home, 'relay-test-config', 'config.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const { code, output } = await collectExit(['--version'], {
+      HOME: home,
+      XDG_CONFIG_HOME: xdg,
+      RELAY_IDE_CONFIG: configPath,
+    });
     expect(code).toBe(0);
     expect(output.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('rejects unknown flags', async () => {
     const home = makeTmpDir();
-    const { code, output } = await collectExit(['--nope'], { HOME: home });
+    const xdg = path.join(home, '.config');
+    const configPath = path.join(home, 'relay-test-config', 'config.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const { code, output } = await collectExit(['--nope'], {
+      HOME: home,
+      XDG_CONFIG_HOME: xdg,
+      RELAY_IDE_CONFIG: configPath,
+    });
     expect(code).toBe(1);
     expect(output).toContain('Unknown flag');
   });

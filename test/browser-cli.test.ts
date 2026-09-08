@@ -7,6 +7,10 @@ import * as http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 let tmpDir: string;
+let originalXdgConfigHome: string | undefined;
+let originalRelayConfig: string | undefined;
+let originalActorToken: string | undefined;
+let originalOperatorClientToken: string | undefined;
 
 type CapturedGatewayRequest = {
   method: string | undefined;
@@ -86,9 +90,35 @@ function parseEnvelope<T = unknown>(
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-cli-test-'));
   fs.writeFileSync(path.join(tmpDir, 'test.html'), '<h1>Test</h1>');
+  // This suite expects the CLI to authenticate with RELAY_IDE_BROWSER_TOKEN.
+  // Ensure higher-precedence tokens cannot leak in via the runner env.
+  originalActorToken = process.env.RELAY_IDE_ACTOR_TOKEN;
+  originalOperatorClientToken = process.env.RELAY_IDE_OPERATOR_CLIENT_TOKEN;
+  delete process.env.RELAY_IDE_ACTOR_TOKEN;
+  delete process.env.RELAY_IDE_OPERATOR_CLIENT_TOKEN;
+  // #1587: many tests in this file spawn `dist/bin/relay-ide.js` with an env
+  // object that spreads `process.env`. Pin config vars per-test so child
+  // processes never inherit the outer runner's config directory accidentally.
+  originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  originalRelayConfig = process.env.RELAY_IDE_CONFIG;
+  process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'xdg');
+  process.env.RELAY_IDE_CONFIG = path.join(tmpDir, 'config', 'config.json');
+  fs.mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
+  fs.mkdirSync(path.dirname(process.env.RELAY_IDE_CONFIG), { recursive: true });
 });
 
 afterEach(() => {
+  if (originalActorToken === undefined)
+    delete process.env.RELAY_IDE_ACTOR_TOKEN;
+  else process.env.RELAY_IDE_ACTOR_TOKEN = originalActorToken;
+  if (originalOperatorClientToken === undefined)
+    delete process.env.RELAY_IDE_OPERATOR_CLIENT_TOKEN;
+  else
+    process.env.RELAY_IDE_OPERATOR_CLIENT_TOKEN = originalOperatorClientToken;
+  if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  if (originalRelayConfig === undefined) delete process.env.RELAY_IDE_CONFIG;
+  else process.env.RELAY_IDE_CONFIG = originalRelayConfig;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
