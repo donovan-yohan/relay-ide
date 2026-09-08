@@ -212,7 +212,7 @@ describe('e2e harness config resolution (#1214)', () => {
     const shared = path.join(home, '.config', 'relay-ide', 'config.json');
     expect(() =>
       resolveE2eConfigPath({ [CONFIG_PATH_ENV_VAR]: shared })
-    ).toThrow(/shared Relay config root|not run-scoped/);
+    ).toThrow(/shared Relay config root/);
   });
 
   it('honors an inherited RELAY_IDE_CONFIG that is itself run-scoped', () => {
