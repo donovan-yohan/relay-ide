@@ -5,6 +5,7 @@ import type {
   AdapterConfig,
   AdapterStatus,
   AgentApprovalResponseInputV2,
+  AgentControlCommandInputV2,
   AgentInputResponseInputV2,
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
@@ -19,6 +20,7 @@ import type {
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
+import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
 import { cleanEnv } from '../utils.js';
 import { createLogger } from '../logger.js';
 import {
@@ -41,9 +43,12 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   // Ships gated off until the AskUserQuestion wire payload is pinned live (§13).
   questions: false,
   plans: false,
-  // SDK `supportedCommands` is gone; only a relay-owned catalog (+ any names the
-  // init line advertises) is emitted, so the slash-command menu stays off.
-  slashCommands: false,
+  // SDK `supportedCommands` is gone, so the catalog is relay-owned: the static
+  // `claude` control set (+ any names the init line advertises, merged as
+  // `dispatch: 'agent'`). Those relay controls are executable end to end
+  // (`getSlashCommands` → roster → `/channels/:id/agent-commands` →
+  // `executeControlCommand`), which is what this bit advertises.
+  slashCommands: true,
   queue: true,
   steer: true,
   interrupt: true,
@@ -57,37 +62,14 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   streaming: true,
 };
 
-const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] = [
-  {
-    id: 'relay:clear',
-    name: 'clear',
-    description: 'Start a new session with empty context',
-    aliases: ['reset', 'new'],
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'clear',
-  },
-  {
-    id: 'relay:resume',
-    name: 'resume',
-    description: 'Resume a saved Claude session',
-    aliases: ['continue'],
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'resume',
-  },
-  {
-    id: 'relay:model',
-    name: 'model',
-    description: 'Switch model for subsequent Claude responses',
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'model',
-  },
-];
+/**
+ * Relay-owned Claude controls. Shared with the channel binder through
+ * `relayControlCatalogForProvider('claude')` so the pre-bind roster preview,
+ * the control-lane admission gate, and this adapter can never disagree about
+ * which names are executable.
+ */
+const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] =
+  relayControlCatalogForProvider('claude');
 
 /** Claude supports only once/permanent accept and deny — no cancel, no amendments. */
 const CLAUDE_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
@@ -464,9 +446,26 @@ function pathsFromFileResult(
   return [{ path: filePath, ...(status ? { status } : { status: 'edited' }) }];
 }
 
-/** Build the slash-command catalog from an init line's `slash_commands`. */
+/**
+ * Merge an init line's `slash_commands` on top of the relay control catalog.
+ *
+ * Relay controls win every collision — including collisions with an alias
+ * (`/new`, `/reset`, `/continue`). The CLI advertises names Relay also owns
+ * (`clear`, `model`, `resume`); letting the advertised `dispatch: 'agent'`
+ * entry replace the relay one would silently delete the only executable copy,
+ * because the channel lane rejects agent-dispatch commands while the static
+ * catalog would still admit the name to the control endpoint.
+ */
 function slashCommandsFromInit(raw: unknown): AgentSlashCommandV2[] {
   const byKey = new Map<string, AgentSlashCommandV2>();
+  const reserved = new Set<string>();
+  for (const relay of RELAY_CLAUDE_COMMANDS) {
+    const key = (relay.collisionKey ?? relay.name).toLowerCase();
+    byKey.set(key, relay);
+    reserved.add(key);
+    reserved.add(relay.name.toLowerCase());
+    for (const alias of relay.aliases ?? []) reserved.add(alias.toLowerCase());
+  }
   const entries = Array.isArray(raw) ? raw : [];
   for (const entry of entries) {
     const name =
@@ -478,8 +477,7 @@ function slashCommandsFromInit(raw: unknown): AgentSlashCommandV2[] {
     const normalized = normalizeCommandName(name);
     if (!normalized) continue;
     const key = normalized.toLowerCase();
-    if (byKey.has(key)) continue;
-    const relayOverride = RELAY_CLAUDE_COMMANDS.find((c) => c.name === key);
+    if (reserved.has(key) || byKey.has(key)) continue;
     byKey.set(key, {
       id: `claude:${normalized}`,
       name: normalized,
@@ -487,14 +485,32 @@ function slashCommandsFromInit(raw: unknown): AgentSlashCommandV2[] {
       sourceLabel: 'Claude',
       dispatch: 'agent',
       collisionKey: key,
-      ...(relayOverride?.aliases ? { aliases: relayOverride.aliases } : {}),
     });
   }
-  for (const relay of RELAY_CLAUDE_COMMANDS) {
-    const key = relay.name.toLowerCase();
-    if (!byKey.has(key)) byKey.set(key, relay);
-  }
   return [...byKey.values()];
+}
+
+/**
+ * Match a leading `/name [arg]` against the relay control catalog. Anything the
+ * catalog does not own (including every CLI-advertised `dispatch: 'agent'`
+ * name) returns null and is forwarded to the CLI verbatim.
+ */
+function extractControlAction(
+  content: string
+): { action: string; arg: string } | null {
+  const match = content.match(/^\/(\S+)(?:\s+(.*))?/s);
+  const name = match?.[1]?.toLowerCase();
+  if (!name) return null;
+  const control = RELAY_CLAUDE_COMMANDS.find(
+    (entry) =>
+      entry.dispatch === 'relay-control' &&
+      (entry.name === name || (entry.aliases ?? []).includes(name))
+  );
+  if (!control) return null;
+  return {
+    action: control.collisionKey ?? control.name,
+    arg: (match?.[2] ?? '').trim(),
+  };
 }
 
 /** Strip reserved stream-json flags from operator-supplied claudeArgs. */
@@ -623,6 +639,12 @@ export class ClaudeProtocolAdapter
   private lastActivityAt = Date.now();
 
   private slashCommandsEmitted = false;
+  /**
+   * Live catalog: relay controls until an init line arrives, then relay
+   * controls + the CLI-advertised names. `getSlashCommands` is what the channel
+   * roster reads, so it must stay in sync with the last emitted session update.
+   */
+  private commandCatalog: AgentSlashCommandV2[] = [...RELAY_CLAUDE_COMMANDS];
   private providerExtensionSeq = 0;
   private interruptSeq = 0;
   private runtimeEnvRefreshTurnSeq = 0;
@@ -718,6 +740,10 @@ export class ClaudeProtocolAdapter
     return this.sessionId;
   }
 
+  getSlashCommands(): AgentSlashCommandV2[] {
+    return [...this.commandCatalog];
+  }
+
   /**
    * A live adapter transitively holds JSON-hostile references — the shared
    * registry's `setInterval` handle and, once spawned, a `ChildProcess`. The
@@ -740,6 +766,7 @@ export class ClaudeProtocolAdapter
     this._status = 'connected';
     this.claudeSessionId = null;
     this.slashCommandsEmitted = false;
+    this.commandCatalog = [...RELAY_CLAUDE_COMMANDS];
     this.lastActivityAt = Date.now();
     this.crashTimestamps.length = 0;
     this.approvalWaitStartedMs = null;
@@ -760,7 +787,7 @@ export class ClaudeProtocolAdapter
     });
     // Relay-owned controls are available immediately; the init line later
     // merges any CLI-advertised commands on top.
-    this.emitSessionUpdate({ slashCommands: RELAY_CLAUDE_COMMANDS });
+    this.emitSessionUpdate({ slashCommands: this.commandCatalog });
   }
 
   async refreshRuntimeEnv(processEnv: Record<string, string>): Promise<void> {
@@ -859,6 +886,7 @@ export class ClaudeProtocolAdapter
     this.completedActiveTurn = false;
     this.claudeSessionId = null;
     this.slashCommandsEmitted = false;
+    this.commandCatalog = [...RELAY_CLAUDE_COMMANDS];
     this.streamedTextItems.clear();
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
@@ -900,6 +928,7 @@ export class ClaudeProtocolAdapter
     this.turnStartedAtMs = null;
     this.completedActiveTurn = false;
     this.slashCommandsEmitted = false;
+    this.commandCatalog = [...RELAY_CLAUDE_COMMANDS];
     this.streamedTextItems.clear();
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
@@ -940,7 +969,7 @@ export class ClaudeProtocolAdapter
       fastModeAvailable: true,
       error: null,
     });
-    this.emitSessionUpdate({ slashCommands: RELAY_CLAUDE_COMMANDS });
+    this.emitSessionUpdate({ slashCommands: this.commandCatalog });
   }
 
   // ── User actions ─────────────────────────────────────────────────────────
@@ -950,6 +979,16 @@ export class ClaudeProtocolAdapter
       throw new Error('Cannot send a Claude message before connect');
     }
     this.lastActivityAt = Date.now();
+
+    // A bare relay control typed as message text (agent-session surfaces that
+    // have no control endpoint) runs the control instead of opening a turn.
+    // Channel posts never reach here as bare text — the binder wraps them in a
+    // context packet and routes `@claude /clear` to the control lane first.
+    const control = extractControlAction(input.content);
+    if (control !== null) {
+      await this.handleControlAction(control.action, control.arg);
+      return;
+    }
 
     if (
       this.activeTurnId !== null ||
@@ -994,6 +1033,111 @@ export class ClaudeProtocolAdapter
       type: 'user',
       message: { role: 'user', content: this.buildUserContent(input) },
     });
+  }
+
+  /**
+   * Channel control lane (`POST /channels/:id/agent-commands` → binder →
+   * here). Only the relay-owned catalog is executable; CLI-advertised
+   * `dispatch: 'agent'` names are rejected upstream by the binder.
+   */
+  async executeControlCommand(
+    input: AgentControlCommandInputV2
+  ): Promise<{ config?: Record<string, unknown> }> {
+    const command = input.command.trim().toLowerCase();
+    const known = RELAY_CLAUDE_COMMANDS.find(
+      (entry) =>
+        entry.dispatch === 'relay-control' &&
+        (entry.name === command || (entry.aliases ?? []).includes(command))
+    );
+    if (!known) throw new Error('unsupported Claude control command');
+    if (known.destructive && input.confirmed !== true) {
+      throw new Error('Claude control command requires confirmation');
+    }
+    await this.handleControlAction(
+      known.collisionKey ?? known.name,
+      input.args?.trim() ?? ''
+    );
+    return { config: this.currentControlConfig() };
+  }
+
+  /**
+   * Every control here replaces or restarts the subprocess, so none of them is
+   * safe mid-turn: tearing the child down under a live turn strands the Relay
+   * turn without a terminal patch (the channel binding would sit at `working`
+   * forever). Operators interrupt first, exactly like the queue rules.
+   */
+  private async handleControlAction(
+    action: string,
+    arg: string
+  ): Promise<void> {
+    const config = this.config;
+    if (!config) {
+      throw new Error('Cannot run a Claude control command before connect');
+    }
+    if (this.activeTurnId !== null || this.queue.length > 0) {
+      throw new Error(
+        'Claude controls are unavailable while a turn is active — interrupt first'
+      );
+    }
+    switch (action) {
+      case 'clear': {
+        // Fresh session: drop the resume id so the next turn spawns a brand-new
+        // child. Never call `disconnect()` — the base class clears the patch
+        // handlers, and the channel bridge subscription must survive a /clear.
+        await this.onDisconnect();
+        await this.connect(config);
+        break;
+      }
+      case 'resume': {
+        if (!arg) {
+          throw new Error(
+            'resume requires a session id argument: /resume <sessionId>'
+          );
+        }
+        await this.resumeSession(arg);
+        break;
+      }
+      case 'model': {
+        if (!arg) throw new Error('model requires an argument');
+        // The CLI takes its model from argv, so the running child cannot be
+        // re-modelled in place. Detach it and keep `claudeSessionId`: the next
+        // turn respawns with the new `--model` and `--resume <id>`, preserving
+        // the conversation.
+        this.config = { ...config, model: arg };
+        await this.stopChildForRespawn();
+        this.emitSessionUpdate({ config: { model: arg } });
+        break;
+      }
+      default:
+        throw new Error('unsupported Claude control command');
+    }
+    this.lastActivityAt = Date.now();
+  }
+
+  /** Public settings only; never argv, env, or the operator's claudeArgs. */
+  private currentControlConfig(): Record<string, unknown> {
+    return {
+      ...(this.config?.model ? { model: this.config.model } : {}),
+      ...(this.config?.permissionMode
+        ? { permissionMode: this.config.permissionMode }
+        : {}),
+    };
+  }
+
+  /**
+   * Detach and stop the child WITHOUT the disconnect teardown, so the stored
+   * `claudeSessionId`, patch handlers, and registry entry all survive. Detaching
+   * before the stop keeps `handleClientClose` from scoring a crash.
+   */
+  private async stopChildForRespawn(): Promise<void> {
+    const dead = this.client;
+    this.client = null;
+    this.streamedTextItems.clear();
+    this.streamedReasoningItems.clear();
+    this.streamTextBuffers.clear();
+    this.streamReasoningBuffers.clear();
+    this.resetCurrentStreamMessage();
+    if (dead) await dead.stop().catch(() => undefined);
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
@@ -1569,9 +1713,8 @@ export class ClaudeProtocolAdapter
     // init is re-emitted every turn — only surface slash commands once.
     if (!this.slashCommandsEmitted && Array.isArray(message.slash_commands)) {
       this.slashCommandsEmitted = true;
-      this.emitSessionUpdate({
-        slashCommands: slashCommandsFromInit(message.slash_commands),
-      });
+      this.commandCatalog = slashCommandsFromInit(message.slash_commands);
+      this.emitSessionUpdate({ slashCommands: this.commandCatalog });
     }
   }
 

@@ -29,6 +29,7 @@ import {
   type AgentPatchV2,
   type AgentSessionV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
+import { relayControlCatalogForProvider } from '../../../shared/agent-command-catalog.js';
 
 // ── Fake child + spawn harness ────────────────────────────────────────────────
 
@@ -201,7 +202,7 @@ function successResult(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
-  it('advertises the claude v2 capability set with questions/slashCommands gated off', () => {
+  it('advertises the claude v2 capability set with slash commands on and questions gated off', () => {
     const adapter = new ClaudeProtocolAdapter(
       makeHarness().spawnFn,
       inertRegistry()
@@ -216,7 +217,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       interrupt: true,
       streaming: true,
       questions: false,
-      slashCommands: false,
+      slashCommands: true,
     });
   });
 
@@ -2140,6 +2141,240 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       )
     ).toEqual(['synthetic first', 'synthetic second']);
     expect(new Set(assistantMsgs.map((item) => item.id)).size).toBe(2);
+
+    await adapter.disconnect();
+  });
+});
+
+// ── Slash commands ────────────────────────────────────────────────────────────
+
+describe('ClaudeProtocolAdapter slash commands', () => {
+  /** Drive one full turn so the scripted init line lands on the adapter. */
+  async function runInitTurn(
+    adapter: ClaudeProtocolAdapter,
+    harness: ReturnType<typeof makeHarness>,
+    slashCommands: unknown[],
+    turnId = 'turn-init'
+  ): Promise<void> {
+    const send = adapter.sendMessage({ turnId, content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+      slash_commands: slashCommands,
+    });
+    child.serverWrite(successResult());
+    await send;
+    await tick();
+  }
+
+  it('exposes the shared relay control catalog to the channel roster before any spawn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+
+    // Identical to what `relayControlCatalogForProvider('claude')` gives the
+    // binder's pre-bind preview — a divergence here is an unexecutable menu row.
+    expect(adapter.getSlashCommands()).toEqual(
+      relayControlCatalogForProvider('claude')
+    );
+    expect(
+      adapter.getSlashCommands().every((c) => c.dispatch === 'relay-control')
+    ).toBe(true);
+    expect(harness.spawns).toHaveLength(0);
+
+    await adapter.disconnect();
+  });
+
+  it('merges init-advertised commands as agent dispatch and never lets them shadow a relay control or its alias', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await runInitTurn(adapter, harness, [
+      'compact',
+      { name: 'review' },
+      'model', // collides with a relay control name
+      'new', // collides with the relay `clear` alias
+      'compact', // duplicate → deduped
+      '   ', // blank → dropped
+    ]);
+
+    const catalog = adapter.getSlashCommands();
+    expect(catalog.filter((c) => c.name === 'model')).toEqual([
+      expect.objectContaining({ dispatch: 'relay-control', source: 'relay' }),
+    ]);
+    expect(catalog.some((c) => c.name === 'new')).toBe(false);
+    expect(catalog.filter((c) => c.name === 'compact')).toEqual([
+      expect.objectContaining({
+        dispatch: 'agent',
+        source: 'sdk',
+        id: 'claude:compact',
+      }),
+    ]);
+    expect(catalog.map((c) => c.name)).toEqual([
+      'clear',
+      'resume',
+      'model',
+      'compact',
+      'review',
+    ]);
+
+    // The last emitted session update matches what the roster now reports.
+    const slashPatches = patches.filter(
+      (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p
+    );
+    const last = slashPatches[slashPatches.length - 1];
+    expect(
+      last?.type === 'agent-session-updated-v2' && last.slashCommands
+    ).toEqual(catalog);
+
+    await adapter.disconnect();
+  });
+
+  it('executeControlCommand runs `clear` through an alias, keeps patch subscribers, and drops the resume id', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await runInitTurn(adapter, harness, ['compact']);
+
+    const before = patches.length;
+    await adapter.executeControlCommand({ command: 'new', confirmed: true });
+
+    // Bridge/onPatch subscribers survive (disconnect() would have cleared them).
+    expect(patches.length).toBeGreaterThan(before);
+    expect(patches.slice(before).map((p) => p.type)).toContain(
+      'agent-session-snapshot-v2'
+    );
+    // Catalog is back to relay-only for the fresh session.
+    expect(adapter.getSlashCommands()).toEqual(
+      relayControlCatalogForProvider('claude')
+    );
+
+    // Next turn spawns WITHOUT --resume: the session really was cleared.
+    const spawnsBefore = harness.spawns.length;
+    void adapter.sendMessage({ turnId: 'turn-after-clear', content: 'hi' });
+    await waitFor(() => harness.spawns.length > spawnsBefore);
+    expect(harness.latest().args).not.toContain('--resume');
+
+    await adapter.disconnect();
+  });
+
+  it('rejects a destructive control without confirmation and an unknown command', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+
+    await expect(
+      adapter.executeControlCommand({ command: 'clear' })
+    ).rejects.toThrow('requires confirmation');
+    await expect(
+      adapter.executeControlCommand({ command: 'compact' })
+    ).rejects.toThrow('unsupported Claude control command');
+    expect(harness.spawns).toHaveLength(0);
+
+    await adapter.disconnect();
+  });
+
+  it('`model` respawns with the new --model while keeping --resume, and reports it back as config', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect({ ...baseConfig(), model: 'sonnet' });
+    await runInitTurn(adapter, harness, ['compact']);
+    expect(harness.latest().args).toContain('sonnet');
+
+    const result = await adapter.executeControlCommand({
+      command: 'model',
+      args: ' opus ',
+    });
+    expect(result.config).toMatchObject({ model: 'opus' });
+    expect(
+      patches.some(
+        (p) =>
+          p.type === 'agent-session-updated-v2' && p.config?.model === 'opus'
+      )
+    ).toBe(true);
+
+    const spawnsBefore = harness.spawns.length;
+    void adapter.sendMessage({ turnId: 'turn-after-model', content: 'hi' });
+    await waitFor(() => harness.spawns.length > spawnsBefore);
+    const args = harness.latest().args;
+    expect(args[args.indexOf('--model') + 1]).toBe('opus');
+    // The provider conversation is preserved across the respawn.
+    expect(args[args.indexOf('--resume') + 1]).toBe('claude-session-1');
+
+    await adapter.disconnect();
+  });
+
+  it('`resume` without an argument is rejected before any teardown', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+    await runInitTurn(adapter, harness, ['compact']);
+
+    await expect(
+      adapter.executeControlCommand({ command: 'continue' })
+    ).rejects.toThrow('resume requires a session id argument');
+    // Still the same session — nothing was torn down.
+    await adapter.sendMessage({ turnId: 'turn-still-live', content: 'hi' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite(successResult());
+    await tick();
+
+    await adapter.disconnect();
+  });
+
+  it('refuses controls mid-turn instead of stranding the active turn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+    void adapter.sendMessage({ turnId: 'turn-live', content: 'work' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    await expect(
+      adapter.executeControlCommand({ command: 'clear', confirmed: true })
+    ).rejects.toThrow('interrupt first');
+
+    child.serverWrite(successResult());
+    await tick();
+    await adapter.disconnect();
+  });
+
+  it('sendMessage runs a bare relay control instead of opening a turn, and forwards every other slash text verbatim', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await runInitTurn(adapter, harness, ['compact']);
+
+    // `/clear` is a relay control → no turn, no user frame.
+    const before = patches.length;
+    await adapter.sendMessage({ turnId: 'turn-slash', content: '/clear' });
+    expect(
+      patches.slice(before).some((p) => p.type === 'agent-turn-started-v2')
+    ).toBe(false);
+
+    // An agent-dispatch (CLI-advertised) command is NOT intercepted: the exact
+    // "/cmd args" text reaches the CLI as a normal stream-json user frame.
+    await adapter.sendMessage({
+      turnId: 'turn-agent-cmd',
+      content: '/compact keep the plan',
+    });
+    const child = harness.latest().child;
+    const frames = await child.waitForFrames(1);
+    expect(frames[0]).toMatchObject({
+      type: 'user',
+      message: { role: 'user', content: '/compact keep the plan' },
+    });
+    child.serverWrite(successResult());
+    await tick();
 
     await adapter.disconnect();
   });

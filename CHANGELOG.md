@@ -30,6 +30,8 @@ workflow.
   add controls, with an explicit project selector in New Chat (#1347)
 - `@agent/` opens a provider-aware command palette for channel controls,
   including Codex Fast Mode, model, and reasoning-effort changes (#1344)
+- Claude agents now surface `@claude/` command palette controls for a fresh
+  session, resuming a saved session, and switching model
 
 #### Changed
 

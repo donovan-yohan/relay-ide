@@ -181,6 +181,49 @@ const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
   },
 ];
 
+/**
+ * Claude Code controls. The CLI has no live command-list RPC, so this static
+ * catalog is the whole relay-control surface for `claude`: the channel roster
+ * previews it before a runtime is bound, `isControlMessage` admits `@claude
+ * /clear` to the control lane from it, and `ClaudeProtocolAdapter` executes
+ * exactly these names. Commands the CLI advertises on its init line are merged
+ * in by the adapter as `dispatch: 'agent'` entries and never override these.
+ */
+const CLAUDE_CONTROLS: AgentSlashCommandV2[] = [
+  {
+    id: 'relay:clear',
+    name: 'clear',
+    aliases: ['reset', 'new'],
+    description: 'Start a new session with empty context',
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'clear',
+    destructive: true,
+  },
+  {
+    id: 'relay:resume',
+    name: 'resume',
+    aliases: ['continue'],
+    description: 'Resume a saved Claude session by id',
+    argumentHint: '<sessionId>',
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'resume',
+  },
+  {
+    id: 'relay:model',
+    name: 'model',
+    description: 'Switch model for subsequent Claude responses',
+    argumentHint: '<model>',
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'model',
+  },
+];
+
 export function relayControlCatalogForProvider(
   providerId: string
 ): AgentSlashCommandV2[] {
@@ -189,7 +232,9 @@ export function relayControlCatalogForProvider(
       ? CODEX_CONTROLS
       : providerId === 'prime-agent'
         ? PRIME_AGENT_CONTROLS
-        : [];
+        : providerId === 'claude'
+          ? CLAUDE_CONTROLS
+          : [];
   return controls.map((command) => ({
     ...command,
     ...(command.aliases ? { aliases: [...command.aliases] } : {}),

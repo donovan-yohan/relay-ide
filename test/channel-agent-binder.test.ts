@@ -1262,6 +1262,56 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(rows(store)).toHaveLength(0);
   });
 
+  it('previews and routes the Claude relay controls without a bound runtime', async () => {
+    const calls: Array<{ command: string; confirmed?: boolean }> = [];
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => relayControlCatalogForProvider('claude'),
+          executeControlCommand: (input: {
+            command: string;
+            confirmed?: boolean;
+          }) => {
+            calls.push(input);
+            return {};
+          },
+        });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'claude',
+          displayName: 'Claude',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['claude'],
+    });
+
+    // Pre-bind preview: the composer palette has rows before any spawn.
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster[0]?.commands?.map((command) => command.name)).toEqual([
+      'clear',
+      'resume',
+      'model',
+    ]);
+    // `@claude /clear` must be admitted to the control lane, not posted.
+    expect(binder.isControlMessage('@claude /clear')).toBe(true);
+    expect(binder.isControlMessage('@claude /compact')).toBe(false);
+
+    await binder.executeCommand(
+      CH,
+      builtInAgentProfileId('claude'),
+      'new',
+      undefined,
+      true
+    );
+    expect(calls).toEqual([{ command: 'clear', confirmed: true }]);
+  });
+
   it('treats a connected adapter command catalog as authoritative, including empty', async () => {
     const { binder } = makeBinder({
       build: (agentType) => {
