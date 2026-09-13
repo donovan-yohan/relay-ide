@@ -330,6 +330,8 @@ export interface ChannelBridgeRetentionSnapshot {
   assistantItemIds: number;
   detailItemIds: number;
   turnsWithRows: number;
+  turnImages: number;
+  turnAttributions: number;
   retainedTextBytes: number;
   retainedDetailBytes: number;
 }
@@ -536,6 +538,8 @@ export function bindSessionToChannel(
       assistantItemIds: assistantItemAliases.size,
       detailItemIds: detailItemAliases.size,
       turnsWithRows: turnsWithRows.size,
+      turnImages: turnImages.size,
+      turnAttributions: turnAttributions.size,
       retainedTextBytes,
       retainedDetailBytes,
     });
@@ -890,6 +894,7 @@ export function bindSessionToChannel(
     message: ChannelMessage
   ): void {
     if (!input.onAssistantMessageFinalized) return;
+    if (input.isLateOutputTurn?.(turnId)) return;
     const state = turnImages.get(turnId);
     const combinedParts = [...(message.parts ?? []), ...(state?.parts ?? [])];
     const failureNotes = state?.failureNotes ?? [];
@@ -1180,15 +1185,19 @@ export function bindSessionToChannel(
       // terminal boundary. Its model/effort must remain the turn's original
       // snapshot rather than whatever a later control selected meanwhile.
       if (!turnImages.has(turnId)) turnAttributions.delete(turnId);
-      for (const [itemId, alias] of assistantItemAliases) {
-        if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
-      }
-      for (const [itemId, streamKey] of detailItemAliases) {
-        if (streamKey.startsWith(`${turnId}\u0000`)) {
-          detailItemAliases.delete(itemId);
-        }
-      }
+      pruneTurnAliases(turnId);
       reportRetention();
+    }
+  }
+
+  function pruneTurnAliases(turnId: string): void {
+    for (const [itemId, alias] of assistantItemAliases) {
+      if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
+    }
+    for (const [itemId, streamKey] of detailItemAliases) {
+      if (streamKey.startsWith(`${turnId}\u0000`)) {
+        detailItemAliases.delete(itemId);
+      }
     }
   }
 
@@ -1203,14 +1212,10 @@ export function bindSessionToChannel(
         finalizeDetail(stream, 'interrupted');
       }
     }
-    for (const [itemId, alias] of assistantItemAliases) {
-      if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
-    }
-    for (const [itemId, streamKey] of detailItemAliases) {
-      if (streamKey.startsWith(`${turnId}\u0000`)) {
-        detailItemAliases.delete(itemId);
-      }
-    }
+    markTurnImagesTerminal(turnId);
+    turnsWithRows.delete(turnId);
+    if (!turnImages.has(turnId)) turnAttributions.delete(turnId);
+    pruneTurnAliases(turnId);
     reportRetention();
   }
 
@@ -1253,6 +1258,9 @@ export function bindSessionToChannel(
       if (message) hub.completeStreamBroadcast(message);
     } catch (err) {
       logger.warn('channel bridge late-output row failed:', err);
+    } finally {
+      if (!turnImages.has(patch.turnId)) turnAttributions.delete(patch.turnId);
+      reportRetention();
     }
     return true;
   }

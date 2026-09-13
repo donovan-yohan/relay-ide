@@ -294,6 +294,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -639,6 +641,8 @@ describe('channel-agent-bridge lifecycle', () => {
         assistantItemIds: 0,
         detailItemIds: 0,
         turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
         retainedTextBytes: 0,
         retainedDetailBytes: 0,
       });
@@ -823,6 +827,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -863,6 +869,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -937,6 +945,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -994,6 +1004,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -1059,6 +1071,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -1284,6 +1298,8 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantItemIds: 0,
       detailItemIds: 0,
       turnsWithRows: 0,
+      turnImages: 0,
+      turnAttributions: 0,
       retainedTextBytes: 0,
       retainedDetailBytes: 0,
     });
@@ -2026,6 +2042,41 @@ describe('channel-agent-bridge lifecycle', () => {
         itemId: 'msg-1#late',
       },
     });
+  });
+
+  it('releases drained turn image, row and attribution retention after late patches (#1579)', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    let isLate = false;
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    const drainControl: { freeze?: (turnId: string) => void } = {};
+    const onFinalized = vi.fn();
+    bindSessionToChannel({
+      channelId: 'topic:drain-retention',
+      agentFramework: 'claude',
+      adapter,
+      store,
+      hub,
+      isLateOutputTurn: (turnId) => isLate && turnId === 'turn-1',
+      onDrainFreezeReady: (freeze) => { drainControl.freeze = freeze; },
+      onRetentionSnapshot: (snapshot) => { retained = snapshot; },
+      onAssistantMessageFinalized: onFinalized,
+    });
+    adapter.broadcastPatch(assistantUpdated('s', 'turn-1', 'done', 'before drain'));
+    adapter.broadcastPatch(assistantStarted('s', 'turn-1', 'partial'));
+    adapter.broadcastPatch(textDelta('s', 'turn-1', 'partial', 'partial'));
+    expect(retained).toMatchObject({ turnImages: 1, turnsWithRows: 1, turnAttributions: 1 });
+
+    isLate = true;
+    if (!drainControl.freeze) throw new Error('missing drain freeze control');
+    drainControl.freeze('turn-1');
+    expect(retained).toMatchObject({ turnImages: 0, turnsWithRows: 0, turnAttributions: 0 });
+    adapter.broadcastPatch(textDelta('s', 'turn-1', 'partial', ' late delta'));
+    adapter.broadcastPatch(assistantUpdated('s', 'turn-1', 'partial', 'late final'));
+    expect(retained).toMatchObject({ turnImages: 0, turnsWithRows: 0, turnAttributions: 0 });
+    adapter.broadcastPatch(turnCompleted('s', 'turn-1'));
+    expect(retained).toMatchObject({ turnImages: 0, turnsWithRows: 0, turnAttributions: 0 });
+    expect(onFinalized).not.toHaveBeenCalled();
   });
 
   it('freezes in-flight streams as interrupted on drain and diverts post-drain patches (#1579 item 4)', () => {
